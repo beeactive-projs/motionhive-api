@@ -57,6 +57,6 @@ CREATE INDEX IF NOT EXISTS idx_user_role_user_id ON user_role (user_id);
 CREATE INDEX IF NOT EXISTS idx_user_role_role_id ON user_role (role_id);
 
 -- Blog Post
-CREATE INDEX IF NOT EXISTS idx_blog_post_status ON blog_post (status);
+CREATE INDEX IF NOT EXISTS idx_blog_post_is_published ON blog_post (is_published);
 CREATE INDEX IF NOT EXISTS idx_blog_post_slug ON blog_post (slug);
-CREATE INDEX IF NOT EXISTS idx_blog_post_author_id ON blog_post (author_id);
+CREATE INDEX IF NOT EXISTS idx_blog_post_published_at ON blog_post (published_at);

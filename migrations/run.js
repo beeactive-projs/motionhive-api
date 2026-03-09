@@ -178,9 +178,26 @@ async function runMigrations() {
           }
         }
       } catch (err) {
-        console.log('FAILED');
-        console.error(`  Error: ${err.message}`);
-        failed++;
+        // In safe mode, "already exists" / "duplicate key" errors mean the migration
+        // was run before tracking was in place — record it and move on
+        const isAlreadyApplied =
+          isSafe &&
+          (err.message.includes('already exists') ||
+            err.message.includes('duplicate key'));
+
+        if (isAlreadyApplied) {
+          console.log('SKIP (already applied)');
+          try {
+            await client.query(
+              'INSERT INTO _migrations (name) VALUES ($1) ON CONFLICT DO NOTHING',
+              [file],
+            );
+          } catch (_) {}
+        } else {
+          console.log('FAILED');
+          console.error(`  Error: ${err.message}`);
+          failed++;
+        }
       }
     }
 
