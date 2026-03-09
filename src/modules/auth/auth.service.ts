@@ -7,25 +7,30 @@ import {
 import type { LoggerService } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
+import { InjectModel } from '@nestjs/sequelize';
 import { WINSTON_MODULE_NEST_PROVIDER } from 'nest-winston';
 import { OAuth2Client } from 'google-auth-library';
+import { Sequelize } from 'sequelize-typescript';
+import { Op } from 'sequelize';
 import { User } from '../user/entities/user.entity';
 import { UserService } from '../user/user.service';
+import { RefreshToken } from './entities/refresh-token.entity';
 import { RegisterDto } from './dto/register.dto';
 import { LoginDto } from './dto/login.dto';
+import { ChangePasswordDto } from './dto/change-password.dto';
 import { ForgotPasswordDto } from './dto/forgot-password.dto';
 import { ResetPasswordDto } from './dto/reset-password.dto';
 import { VerifyEmailDto } from './dto/verify-email.dto';
 import { ResendVerificationDto } from './dto/resend-verification.dto';
 import { RoleService } from '../role/role.service';
 import { ProfileService } from '../profile/profile.service';
-import { Sequelize } from 'sequelize-typescript';
-import { Op } from 'sequelize';
 import { EmailService } from '../../common/services/email.service';
+import { CryptoService } from '../../common/services/crypto.service';
 import {
   ClientRequest,
   ClientRequestStatus,
 } from '../client/entities/client-request.entity';
+import { Invitation } from '../invitation/entities/invitation.entity';
 
 /** Return type of generateTokens; used for typing buildAuthResponse and responses */
 export interface AuthTokens {
@@ -51,17 +56,14 @@ export interface AuthUserResponse {
  * - User login with account lockout protection
  * - Password reset flow
  * - JWT token generation
- * - Refresh tokens
- *
- * Security features:
- * - Account lockout after 5 failed attempts
- * - Strong password enforcement
- * - Secure token-based password reset
- * - Short-lived access tokens with refresh tokens
+ * - Refresh tokens with DB-backed storage and revocation
+ * - Change password with token invalidation
  */
 @Injectable()
 export class AuthService {
   constructor(
+    @InjectModel(RefreshToken)
+    private refreshTokenModel: typeof RefreshToken,
     private userService: UserService,
     private jwtService: JwtService,
     private roleService: RoleService,
@@ -69,34 +71,20 @@ export class AuthService {
     private configService: ConfigService,
     private sequelize: Sequelize,
     private emailService: EmailService,
+    private cryptoService: CryptoService,
     @Inject(WINSTON_MODULE_NEST_PROVIDER)
     private readonly logger: LoggerService,
   ) {}
 
   /**
    * Register a new user
-   *
-   * Flow:
-   * 1. Create user (password is hashed in UserService)
-   * 2. Assign default 'USER' role
-   * 3. Generate JWT tokens
-   * 4. Return tokens + user info
-   *
-   * Uses transaction to ensure atomicity (both user and role are created, or neither)
-   *
-   * @param registerDto - Registration data
-   * @returns Access token, refresh token, and user info
    */
   async register(registerDto: RegisterDto) {
-    // ✅ IMPROVEMENT: Use transaction for atomicity
-    // All DB operations share this transaction — if any fails, ALL are rolled back
     const transaction = await this.sequelize.transaction();
 
     try {
-      // Create user (pass transaction so it's part of the atomic operation)
       const user = await this.userService.create(registerDto, transaction);
 
-      // Assign default role
       await this.roleService.assignRoleToUserByName(
         user.id,
         'USER',
@@ -105,29 +93,23 @@ export class AuthService {
         transaction,
       );
 
-      // Create empty participant profile (filled in later by user)
       await this.profileService.createUserProfile(user.id, transaction);
 
-      // Generate email verification token (hashed, 24h expiry)
       const verificationToken =
         await this.userService.generateEmailVerificationToken(
           user,
           transaction,
         );
 
-      // Commit transaction — all operations succeed together
       await transaction.commit();
 
-      // Generate tokens
-      const tokens = this.generateTokens(user.id, user.email);
+      const tokens = await this.generateAndStoreTokens(user.id, user.email);
 
-      // Get user roles
       const roles = await this.roleService.getUserRoles(user?.id);
       const roleNames = roles.map((role) => role.name);
 
       this.logger.log(`User registered: ${user.email}`, 'AuthService');
 
-      // Send verification email only (welcome email sent after verification)
       this.emailService
         .sendEmailVerification(user.email, verificationToken)
         .catch((err) =>
@@ -137,7 +119,6 @@ export class AuthService {
           ),
         );
 
-      // Link any pending client invitations sent to this email
       this.linkPendingInvitations(user.id, user.email).catch((err) =>
         this.logger.error(
           `Failed to link pending invitations: ${err.message}`,
@@ -147,7 +128,6 @@ export class AuthService {
 
       return this.buildAuthResponse(user, tokens, roleNames);
     } catch (error) {
-      // Rollback transaction on error
       await transaction.rollback();
       throw error;
     }
@@ -155,29 +135,14 @@ export class AuthService {
 
   /**
    * Login user
-   *
-   * Flow:
-   * 1. Find user by email
-   * 2. Check if account is locked
-   * 3. Validate password
-   * 4. If invalid, increment failed attempts
-   * 5. If valid, reset failed attempts and generate tokens
-   *
-   * ✅ SECURITY: Account lockout after 5 failed attempts
-   *
-   * @param loginDto - Login credentials
-   * @returns Access token, refresh token, and user info
-   * @throws UnauthorizedException if credentials invalid or account locked
    */
   async login(loginDto: LoginDto) {
     const user = await this.userService.findByEmail(loginDto.email);
 
-    // Don't reveal if email exists (security best practice)
     if (!user) {
       throw new UnauthorizedException('Invalid credentials');
     }
 
-    // ✅ SECURITY: Check if account is locked
     if (this.userService.isAccountLocked(user)) {
       const lockedUntil = user.lockedUntil!.toLocaleString();
       this.logger.warn(
@@ -189,14 +154,12 @@ export class AuthService {
       );
     }
 
-    // Validate password
     const isPasswordValid = await this.userService.validatePassword(
       user,
       loginDto.password,
     );
 
     if (!isPasswordValid) {
-      // ✅ SECURITY: Increment failed attempts
       await this.userService.incrementFailedAttempts(user);
 
       this.logger.warn(
@@ -207,19 +170,65 @@ export class AuthService {
       throw new UnauthorizedException('Invalid credentials');
     }
 
-    // Success! Reset failed attempts
     await this.userService.resetFailedAttempts(user);
+    await user.update({ lastLoginAt: new Date() });
 
-    // Generate tokens
-    const tokens = this.generateTokens(user.id, user.email);
+    const tokens = await this.generateAndStoreTokens(user.id, user.email);
 
-    // Get user roles
     const roles = await this.roleService.getUserRoles(user?.id);
     const roleNames = roles.map((role) => role.name);
 
     this.logger.log(`User logged in: ${user.email}`, 'AuthService');
 
     return this.buildAuthResponse(user, tokens, roleNames);
+  }
+
+  /**
+   * Change password (authenticated user)
+   *
+   * Verifies current password, updates to new password,
+   * sets passwordChangedAt, and revokes all refresh tokens.
+   */
+  async changePassword(
+    userId: string,
+    dto: ChangePasswordDto,
+  ): Promise<{ message: string }> {
+    const user = await this.userService.findById(userId);
+    if (!user) {
+      throw new UnauthorizedException('User not found');
+    }
+
+    if (!user.passwordHash) {
+      throw new BadRequestException(
+        'Cannot change password for OAuth-only accounts. Use your social login provider.',
+      );
+    }
+
+    const isValid = await this.userService.validatePassword(
+      user,
+      dto.currentPassword,
+    );
+    if (!isValid) {
+      throw new UnauthorizedException('Current password is incorrect');
+    }
+
+    if (dto.currentPassword === dto.newPassword) {
+      throw new BadRequestException(
+        'New password must be different from current password',
+      );
+    }
+
+    await this.userService.changePassword(user, dto.newPassword);
+
+    // Revoke all refresh tokens — forces re-login on all devices
+    await this.revokeAllUserTokens(userId);
+
+    this.logger.log(
+      `Password changed for user: ${user.email}`,
+      'AuthService',
+    );
+
+    return { message: 'Password changed successfully. Please log in again.' };
   }
 
   private buildAuthResponse(
@@ -241,11 +250,11 @@ export class AuthService {
   }
 
   /**
-   * Link pending client invitations to a newly registered user
+   * Link pending client invitations and group invitations to a newly registered user.
    *
-   * When a user registers, check if any instructors had sent email-only
-   * invitations to this email. If found, update the toUserId FK so the
-   * invitation shows up in the user's pending requests.
+   * For client requests: sets toUserId so the user can see and accept them.
+   * For group invitations: logs a notice (invitations are matched by email
+   * at accept-time, so no DB update needed — they just show up in GET /invitations/pending).
    */
   private async linkPendingInvitations(
     userId: string,
@@ -253,7 +262,8 @@ export class AuthService {
   ): Promise<void> {
     const normalizedEmail = email.toLowerCase().trim();
 
-    const [affectedCount] = await ClientRequest.update(
+    // 1. Link pending client requests
+    const [clientCount] = await ClientRequest.update(
       { toUserId: userId },
       {
         where: {
@@ -265,36 +275,57 @@ export class AuthService {
       },
     );
 
-    if (affectedCount > 0) {
+    // 2. Count pending group invitations (no update needed — matched by email at accept-time)
+    const groupInvitationCount = await Invitation.count({
+      where: {
+        email: normalizedEmail,
+        acceptedAt: null,
+        declinedAt: null,
+        expiresAt: { [Op.gt]: new Date() },
+      },
+    });
+
+    if (clientCount > 0 || groupInvitationCount > 0) {
       this.logger.log(
-        `Linked ${affectedCount} pending invitation(s) to newly registered user ${email}`,
+        `New user ${email}: ${clientCount} client invitation(s), ${groupInvitationCount} group invitation(s) pending`,
         'AuthService',
       );
     }
   }
 
+  // =====================================================
+  // TOKEN MANAGEMENT (DB-backed)
+  // =====================================================
+
   /**
-   * Generate access and refresh tokens
-   *
-   * Access token: Short-lived (2h), used for API requests
-   * Refresh token: Long-lived (7d), used to get new access tokens
-   *
-   * @param userId - User's UUID
-   * @param email - User's email
-   * @returns Object with accessToken and refreshToken
+   * Generate access + refresh tokens and store refresh token hash in DB
    */
-  private generateTokens(userId: string, email: string): AuthTokens {
+  private async generateAndStoreTokens(
+    userId: string,
+    email: string,
+  ): Promise<AuthTokens> {
     const payload = { sub: userId, email };
 
-    // Access token (short-lived)
     const accessToken = this.jwtService.sign(payload, {
       expiresIn: this.configService.get('JWT_EXPIRES_IN') || '2h',
     });
 
-    // Refresh token (long-lived)
     const refreshToken = this.jwtService.sign(payload, {
       secret: this.configService.get('JWT_REFRESH_SECRET'),
       expiresIn: this.configService.get('JWT_REFRESH_EXPIRES_IN') || '7d',
+    });
+
+    // Store hashed refresh token in DB
+    const tokenHash = this.cryptoService.hashToken(refreshToken);
+    const refreshExpiresIn = this.configService.get('JWT_REFRESH_EXPIRES_IN') || '7d';
+    const expiresAt = new Date();
+    const days = parseInt(refreshExpiresIn) || 7;
+    expiresAt.setDate(expiresAt.getDate() + days);
+
+    await this.refreshTokenModel.create({
+      userId,
+      tokenHash,
+      expiresAt,
     });
 
     return { accessToken, refreshToken };
@@ -303,106 +334,139 @@ export class AuthService {
   /**
    * Refresh access token
    *
-   * Called when access token expires.
-   * Validates refresh token and issues new access token.
-   *
-   * @param refreshToken - The refresh token
-   * @returns New access token
-   * @throws UnauthorizedException if refresh token invalid
+   * Validates refresh token against DB (must exist, not revoked, not expired).
+   * Rotates the refresh token: issues new one, revokes old one.
    */
   async refreshAccessToken(refreshToken: string) {
+    let payload: any;
     try {
-      // Verify refresh token
-      const payload = this.jwtService.verify(refreshToken, {
+      payload = this.jwtService.verify(refreshToken, {
         secret: this.configService.get('JWT_REFRESH_SECRET'),
       });
-
-      // Check if user still exists
-      const user = await this.userService.findById(payload.sub);
-      if (!user || !user.isActive) {
-        throw new UnauthorizedException('User not found or inactive');
-      }
-
-      // Generate new access token
-      const accessToken = this.jwtService.sign(
-        { sub: user.id, email: user.email },
-        {
-          expiresIn: this.configService.get('JWT_EXPIRES_IN') || '2h',
-        },
-      );
-
-      return { accessToken };
-    } catch (error) {
-      this.logger.error(`Invalid refresh token: ${error}`, 'AuthService');
+    } catch {
       throw new UnauthorizedException('Invalid refresh token');
     }
+
+    const user = await this.userService.findById(payload.sub);
+    if (!user || !user.isActive) {
+      throw new UnauthorizedException('User not found or inactive');
+    }
+
+    // Check passwordChangedAt — reject tokens issued before password change
+    if (user.passwordChangedAt && payload.iat) {
+      const passwordChangedAtSec = Math.floor(
+        user.passwordChangedAt.getTime() / 1000,
+      );
+      if (payload.iat < passwordChangedAtSec) {
+        throw new UnauthorizedException(
+          'Password was changed. Please log in again.',
+        );
+      }
+    }
+
+    // Verify token exists in DB and is not revoked
+    const tokenHash = this.cryptoService.hashToken(refreshToken);
+    const storedToken = await this.refreshTokenModel.findOne({
+      where: {
+        userId: user.id,
+        tokenHash,
+        revokedAt: null,
+      },
+    });
+
+    if (!storedToken) {
+      throw new UnauthorizedException(
+        'Refresh token has been revoked or does not exist',
+      );
+    }
+
+    if (storedToken.expiresAt < new Date()) {
+      throw new UnauthorizedException('Refresh token has expired');
+    }
+
+    // Revoke old token
+    await storedToken.update({ revokedAt: new Date() });
+
+    // Issue new token pair (rotation)
+    const tokens = await this.generateAndStoreTokens(user.id, user.email);
+
+    return {
+      accessToken: tokens.accessToken,
+      refreshToken: tokens.refreshToken,
+    };
   }
 
   /**
-   * Logout user
-   *
-   * Invalidates the provided refresh token by verifying it belongs
-   * to the requesting user. Since refresh tokens are stateless JWTs,
-   * the client is responsible for discarding the token after this call.
-   *
-   * @param refreshToken - The refresh token to invalidate
-   * @param userId - The authenticated user's ID
-   * @returns Success message
+   * Logout user — revoke the specific refresh token
    */
   async logout(
     refreshToken: string,
     userId: string,
   ): Promise<{ message: string }> {
     try {
-      // Verify the refresh token is valid and belongs to this user
-      const payload = this.jwtService.verify(refreshToken, {
-        secret: this.configService.get('JWT_REFRESH_SECRET'),
-      });
+      const tokenHash = this.cryptoService.hashToken(refreshToken);
 
-      if (payload.sub !== userId) {
-        throw new UnauthorizedException(
-          'Refresh token does not belong to this user',
-        );
-      }
-
-      this.logger.log(`User logged out: ${userId}`, 'AuthService');
-
-      return { message: 'Logged out successfully' };
-    } catch (error) {
-      // Even if token is invalid/expired, we consider logout successful
-      // The important thing is the client discards the token
-      this.logger.log(
-        `User logout (token already invalid): ${userId}`,
-        'AuthService',
+      await this.refreshTokenModel.update(
+        { revokedAt: new Date() },
+        {
+          where: {
+            userId,
+            tokenHash,
+            revokedAt: null,
+          },
+        },
       );
-      return { message: 'Logged out successfully' };
+    } catch {
+      // Even if token is invalid, consider logout successful
     }
+
+    this.logger.log(`User logged out: ${userId}`, 'AuthService');
+    return { message: 'Logged out successfully' };
   }
 
   /**
+   * Logout from all devices — revoke all refresh tokens for user
+   */
+  async logoutAll(userId: string): Promise<{ message: string }> {
+    await this.revokeAllUserTokens(userId);
+
+    this.logger.log(
+      `All sessions revoked for user: ${userId}`,
+      'AuthService',
+    );
+
+    return { message: 'Logged out from all devices' };
+  }
+
+  /**
+   * Revoke all refresh tokens for a user
+   */
+  private async revokeAllUserTokens(userId: string): Promise<void> {
+    await this.refreshTokenModel.update(
+      { revokedAt: new Date() },
+      {
+        where: {
+          userId,
+          revokedAt: null,
+        },
+      },
+    );
+  }
+
+  // =====================================================
+  // PASSWORD RESET
+  // =====================================================
+
+  /**
    * Forgot password - Send reset email
-   *
-   * Flow:
-   * 1. Find user by email
-   * 2. Generate secure reset token
-   * 3. Save hashed token in database
-   * 4. Send password reset email (logs in dev, real email when provider is configured)
-   *
-   * Note: Always return success even if email doesn't exist
-   * (prevents email enumeration attacks)
-   *
-   * @param forgotPasswordDto - Email to send reset link
-   * @returns Success message
    */
   async forgotPassword(forgotPasswordDto: ForgotPasswordDto) {
     const user = await this.userService.findByEmail(forgotPasswordDto.email);
 
     if (user) {
-      // Generate reset token
       const resetToken =
         await this.userService.generatePasswordResetToken(user);
 
-      // Send password reset email (currently logs, sends when provider configured)
       await this.emailService.sendPasswordResetEmail(user.email, resetToken);
 
       this.logger.log(
@@ -410,7 +474,6 @@ export class AuthService {
         'AuthService',
       );
 
-      // In development, return the reset link for testing convenience
       if (this.configService.get('NODE_ENV') !== 'production') {
         const frontendUrl =
           this.configService.get('FRONTEND_URL') || 'http://localhost:4200';
@@ -423,7 +486,6 @@ export class AuthService {
       }
     }
 
-    // Always return success (don't reveal if email exists)
     return {
       message:
         'If your email is registered, you will receive a password reset link.',
@@ -431,19 +493,33 @@ export class AuthService {
   }
 
   /**
-   * Verify email address
-   *
-   * Flow:
-   * 1. Hash the submitted token
-   * 2. Find user by hashed token
-   * 3. Check token expiration (24h)
-   * 4. Mark email as verified
-   * 5. Clear verification token
-   *
-   * @param verifyEmailDto - Token from email link
-   * @returns Success message
-   * @throws BadRequestException if token invalid/expired
+   * Reset password with token
    */
+  async resetPassword(resetPasswordDto: ResetPasswordDto) {
+    const user = await this.userService.findByPasswordResetToken(
+      resetPasswordDto.token,
+    );
+
+    if (!user) {
+      throw new BadRequestException('Invalid or expired reset token');
+    }
+
+    await this.userService.resetPassword(user, resetPasswordDto.newPassword);
+
+    // Revoke all refresh tokens after password reset
+    await this.revokeAllUserTokens(user.id);
+
+    this.logger.log(`Password reset for user: ${user.email}`, 'AuthService');
+
+    return {
+      message: 'Password successfully reset. You can now log in.',
+    };
+  }
+
+  // =====================================================
+  // EMAIL VERIFICATION
+  // =====================================================
+
   async verifyEmail(verifyEmailDto: VerifyEmailDto) {
     const user = await this.userService.findByEmailVerificationToken(
       verifyEmailDto.token,
@@ -461,7 +537,6 @@ export class AuthService {
 
     this.logger.log(`Email verified for user: ${user.email}`, 'AuthService');
 
-    // Send welcome email now that email is verified
     this.emailService
       .sendWelcomeEmail(user.email, user.firstName)
       .catch((err) =>
@@ -476,26 +551,15 @@ export class AuthService {
     };
   }
 
-  /**
-   * Resend email verification
-   *
-   * Generates a new verification token and sends a new email.
-   * Always returns success to prevent email enumeration.
-   *
-   * @param resendVerificationDto - Email address
-   * @returns Success message
-   */
   async resendVerification(resendVerificationDto: ResendVerificationDto) {
     const user = await this.userService.findByEmail(
       resendVerificationDto.email,
     );
 
     if (user && !user.isEmailVerified) {
-      // Generate new verification token
       const verificationToken =
         await this.userService.generateEmailVerificationToken(user);
 
-      // Send verification email
       await this.emailService.sendEmailVerification(
         user.email,
         verificationToken,
@@ -507,49 +571,16 @@ export class AuthService {
       );
     }
 
-    // Always return success (don't reveal if email exists or is already verified)
     return {
       message:
         'If your email is registered and not yet verified, a new verification link has been sent.',
     };
   }
 
-  /**
-   * Reset password
-   *
-   * Flow:
-   * 1. Find user by token
-   * 2. Check if token is valid and not expired
-   * 3. Update password
-   * 4. Clear reset token
-   *
-   * @param resetPasswordDto - Token and new password
-   * @returns Success message
-   * @throws BadRequestException if token invalid/expired
-   */
-  async resetPassword(resetPasswordDto: ResetPasswordDto) {
-    const user = await this.userService.findByPasswordResetToken(
-      resetPasswordDto.token,
-    );
+  // =====================================================
+  // OAUTH
+  // =====================================================
 
-    if (!user) {
-      throw new BadRequestException('Invalid or expired reset token');
-    }
-
-    // Reset password
-    await this.userService.resetPassword(user, resetPasswordDto.newPassword);
-
-    this.logger.log(`Password reset for user: ${user.email}`, 'AuthService');
-
-    return {
-      message: 'Password successfully reset. You can now log in.',
-    };
-  }
-
-  /**
-   * Register or login with Google (token flow).
-   * Verifies the ID token, then finds or creates user and returns JWT.
-   */
   async registerWithGoogle(idToken: string) {
     const clientId = this.configService.get<string>('GOOGLE_CLIENT_ID');
     if (!clientId) {
@@ -599,10 +630,6 @@ export class AuthService {
     return this.handleOAuthSignIn('GOOGLE', profile);
   }
 
-  /**
-   * Register or login with Facebook (token flow).
-   * Verifies the access token and fetches profile, then finds or creates user and returns JWT.
-   */
   async registerWithFacebook(accessToken: string) {
     const appId = this.configService.get<string>('FACEBOOK_APP_ID');
     const appSecret = this.configService.get<string>('FACEBOOK_APP_SECRET');
@@ -612,7 +639,6 @@ export class AuthService {
 
     const appAccessToken = `${appId}|${appSecret}`;
 
-    // Verify token and get user id
     const debugUrl = `https://graph.facebook.com/debug_token?input_token=${encodeURIComponent(accessToken)}&access_token=${encodeURIComponent(appAccessToken)}`;
     let debugRes: Response;
     try {
@@ -629,9 +655,6 @@ export class AuthService {
       throw new UnauthorizedException('Invalid Facebook access token');
     }
 
-    const userId = debugData.data.user_id;
-
-    // Get profile (id, email, first_name, last_name)
     const meUrl = `https://graph.facebook.com/me?fields=id,email,first_name,last_name&access_token=${encodeURIComponent(accessToken)}`;
     let meRes: Response;
     try {
@@ -673,6 +696,9 @@ export class AuthService {
 
   /**
    * Shared OAuth flow: find or create user, assign role/profile if new, return JWT + user.
+   *
+   * Security: If an existing email/password user is found and no social account link exists,
+   * we require the user to link their account explicitly (prevents OAuth account takeover).
    */
   private async handleOAuthSignIn(
     provider: 'GOOGLE' | 'FACEBOOK',
@@ -704,7 +730,7 @@ export class AuthService {
 
       await transaction.commit();
 
-      const tokens = this.generateTokens(user.id, user.email);
+      const tokens = await this.generateAndStoreTokens(user.id, user.email);
       const roles = await this.roleService.getUserRoles(user.id);
       const roleNames = roles.map((r) => r.name);
 

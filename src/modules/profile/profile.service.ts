@@ -6,6 +6,7 @@ import {
 } from '@nestjs/common';
 import type { LoggerService } from '@nestjs/common';
 import { InjectModel } from '@nestjs/sequelize';
+import { Sequelize } from 'sequelize-typescript';
 import { Op, Transaction } from 'sequelize';
 import { WINSTON_MODULE_NEST_PROVIDER } from 'nest-winston';
 import { UserProfile } from './entities/user-profile.entity';
@@ -18,6 +19,7 @@ import { DiscoverInstructorsDto } from './dto/discover-instructors.dto';
 import { RoleService } from '../role/role.service';
 import { UserService } from '../user/user.service';
 import { User } from '../user/entities/user.entity';
+import { buildPaginatedResponse } from '../../common/dto/pagination.dto';
 
 /**
  * Profile Service
@@ -36,6 +38,7 @@ export class ProfileService {
     private userProfileModel: typeof UserProfile,
     @InjectModel(InstructorProfile)
     private instructorProfileModel: typeof InstructorProfile,
+    private sequelize: Sequelize,
     private roleService: RoleService,
     private userService: UserService,
     @Inject(WINSTON_MODULE_NEST_PROVIDER)
@@ -114,21 +117,35 @@ export class ProfileService {
       throw new ConflictException('Instructor profile already exists');
     }
 
-    // Create the profile
-    const profile = await this.instructorProfileModel.create({
-      userId: userId,
-      displayName: dto.displayName || null,
-    });
+    // Wrap in transaction: create profile + assign role must both succeed
+    const transaction = await this.sequelize.transaction();
+    try {
+      const profile = await this.instructorProfileModel.create(
+        { userId: userId, displayName: dto.displayName || null },
+        { transaction },
+      );
 
-    // Assign INSTRUCTOR role (global, not group-scoped yet)
-    await this.roleService.assignRoleToUserByName(userId, 'INSTRUCTOR');
+      // Assign INSTRUCTOR role (global, not group-scoped yet)
+      await this.roleService.assignRoleToUserByName(
+        userId,
+        'INSTRUCTOR',
+        undefined,
+        undefined,
+        transaction,
+      );
 
-    this.logger.log(
-      `User ${userId} activated instructor profile`,
-      'ProfileService',
-    );
+      await transaction.commit();
 
-    return profile;
+      this.logger.log(
+        `User ${userId} activated instructor profile`,
+        'ProfileService',
+      );
+
+      return profile;
+    } catch (error) {
+      await transaction.rollback();
+      throw error;
+    }
   }
 
   /**
@@ -226,7 +243,7 @@ export class ProfileService {
     };
 
     if (dto.city) {
-      where.locationCity = { [Op.like]: `%${dto.city}%` };
+      where.locationCity = { [Op.iLike]: `%${dto.city}%` };
     }
 
     if (dto.country) {
@@ -236,10 +253,10 @@ export class ProfileService {
     // Search across displayName, bio, firstName, lastName using cross-table OR
     if (dto.search) {
       where[Op.or] = [
-        { displayName: { [Op.like]: `%${dto.search}%` } },
-        { bio: { [Op.like]: `%${dto.search}%` } },
-        { '$user.first_name$': { [Op.like]: `%${dto.search}%` } },
-        { '$user.last_name$': { [Op.like]: `%${dto.search}%` } },
+        { displayName: { [Op.iLike]: `%${dto.search}%` } },
+        { bio: { [Op.iLike]: `%${dto.search}%` } },
+        { '$user.first_name$': { [Op.iLike]: `%${dto.search}%` } },
+        { '$user.last_name$': { [Op.iLike]: `%${dto.search}%` } },
       ];
     }
 
@@ -287,19 +304,7 @@ export class ProfileService {
       socialLinks: profile.showSocialLinks ? profile.socialLinks : null,
     }));
 
-    const totalPages = Math.ceil(totalItems / limit);
-
-    return {
-      data,
-      meta: {
-        page,
-        limit,
-        totalItems,
-        totalPages,
-        hasNextPage: page < totalPages,
-        hasPreviousPage: page > 1,
-      },
-    };
+    return buildPaginatedResponse(data, totalItems, page, limit);
   }
 
   /**

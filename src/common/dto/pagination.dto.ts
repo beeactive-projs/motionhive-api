@@ -41,18 +41,17 @@ export class PaginationDto {
 /**
  * Paginated response wrapper
  *
- * Standard shape for all paginated API responses.
+ * Matches PrimeNG p-table / p-paginator expected format:
+ * - items: the data array
+ * - total: total number of records
+ * - page: current page (1-indexed)
+ * - pageSize: items per page
  */
 export interface PaginatedResponse<T> {
-  data: T[];
-  meta: {
-    page: number;
-    limit: number;
-    totalItems: number;
-    totalPages: number;
-    hasNextPage: boolean;
-    hasPreviousPage: boolean;
-  };
+  items: T[];
+  total: number;
+  page: number;
+  pageSize: number;
 }
 
 /**
@@ -63,7 +62,7 @@ export function getOffset(page: number, limit: number): number {
 }
 
 /**
- * Helper to build paginated response
+ * Helper to build paginated response (PrimeNG-compatible)
  */
 export function buildPaginatedResponse<T>(
   data: T[],
@@ -71,17 +70,10 @@ export function buildPaginatedResponse<T>(
   page: number,
   limit: number,
 ): PaginatedResponse<T> {
-  const totalPages = Math.ceil(totalItems / limit);
-
   return {
-    data,
-    meta: {
-      page,
-      limit,
-      totalItems,
-      totalPages,
-      hasNextPage: page < totalPages,
-      hasPreviousPage: page > 1,
-    },
+    items: data,
+    total: totalItems,
+    page,
+    pageSize: limit,
   };
 }

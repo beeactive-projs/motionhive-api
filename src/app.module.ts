@@ -21,6 +21,8 @@ import { SessionModule } from './modules/session/session.module';
 import { InvitationModule } from './modules/invitation/invitation.module';
 import { ClientModule } from './modules/client/client.module';
 import { BlogModule } from './modules/blog/blog.module';
+import { NotificationModule } from './modules/notification/notification.module';
+import { AnalyticsModule } from './modules/analytics/analytics.module';
 import { CamelCaseInterceptor } from './common/interceptors/camel-case.interceptor';
 
 /**
@@ -106,6 +108,8 @@ import { CamelCaseInterceptor } from './common/interceptors/camel-case.intercept
     InvitationModule, // Invitation management
     ClientModule, // Instructor-Client relationships
     BlogModule, // Blog posts + Cloudinary image uploads
+    NotificationModule, // Notification system (Phase 1 — dummy/logger)
+    AnalyticsModule, // Analytics & reporting
   ],
 
   controllers: [],

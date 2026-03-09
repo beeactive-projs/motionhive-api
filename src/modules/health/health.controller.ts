@@ -5,6 +5,7 @@ import {
   SequelizeHealthIndicator,
 } from '@nestjs/terminus';
 import { ApiTags, ApiOperation, ApiResponse } from '@nestjs/swagger';
+import { ConfigService } from '@nestjs/config';
 
 /**
  * Health Check Controller
@@ -23,6 +24,7 @@ export class HealthController {
   constructor(
     private health: HealthCheckService,
     private db: SequelizeHealthIndicator,
+    private configService: ConfigService,
   ) {}
 
   /**
@@ -62,10 +64,47 @@ export class HealthController {
     return this.health.check([
       // Check database connection
       () => this.db.pingCheck('database'),
-
-      // You can add more checks here:
-      // () => this.redis.pingCheck('redis'),
-      // () => this.disk.checkStorage('storage', { threshold: 250 * 1024 * 1024 * 1024 }),
     ]);
+  }
+
+  /**
+   * App configuration endpoint (mobile-first)
+   *
+   * Returns app version requirements and feature flags.
+   * No authentication required — used by mobile clients before login.
+   */
+  @Get('/config')
+  @ApiOperation({ summary: 'App configuration (mobile)' })
+  @ApiResponse({
+    status: 200,
+    description: 'App configuration and feature flags',
+    schema: {
+      example: {
+        minimumVersion: '1.0.0',
+        latestVersion: '1.0.0',
+        forceUpdate: false,
+        maintenanceMode: false,
+        features: {
+          payments: false,
+          liveSession: false,
+          chat: false,
+          pushNotifications: false,
+        },
+      },
+    },
+  })
+  getAppConfig() {
+    return {
+      minimumVersion: this.configService.get('APP_MIN_VERSION') || '1.0.0',
+      latestVersion: this.configService.get('APP_LATEST_VERSION') || '1.0.0',
+      forceUpdate: false,
+      maintenanceMode: this.configService.get('MAINTENANCE_MODE') === 'true',
+      features: {
+        payments: false,
+        liveSession: false,
+        chat: false,
+        pushNotifications: false,
+      },
+    };
   }
 }

@@ -62,9 +62,20 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       throw new UnauthorizedException('User not found or has been deleted');
     }
 
-    // Optional: Check if user is active
     if (!user.isActive) {
       throw new UnauthorizedException('User account is deactivated');
+    }
+
+    // Reject tokens issued before password was changed
+    if (user.passwordChangedAt && payload.iat) {
+      const passwordChangedAtSec = Math.floor(
+        user.passwordChangedAt.getTime() / 1000,
+      );
+      if (payload.iat < passwordChangedAtSec) {
+        throw new UnauthorizedException(
+          'Password was changed. Please log in again.',
+        );
+      }
     }
 
     // Load user's global roles (not org-specific)

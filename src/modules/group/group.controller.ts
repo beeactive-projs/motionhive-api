@@ -12,6 +12,7 @@ import {
 } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
 import { ApiTags } from '@nestjs/swagger';
+import { Throttle } from '@nestjs/throttler';
 import { GroupService } from './group.service';
 import { CreateGroupDto } from './dto/create-group.dto';
 import { UpdateGroupDto } from './dto/update-group.dto';
@@ -113,11 +114,40 @@ export class GroupController {
     return { message: 'Group deleted successfully' };
   }
 
+  @Post(':id/transfer-ownership')
+  @UseGuards(AuthGuard('jwt'))
+  @ApiEndpoint({
+    summary: 'Transfer group ownership',
+    description: 'Transfer ownership to another member. Current owner only.',
+    auth: true,
+    responses: [{ status: 200, description: 'Ownership transferred' }],
+  })
+  async transferOwnership(
+    @Param('id') id: string,
+    @Request() req,
+    @Body() dto: { newOwnerId: string },
+  ) {
+    return this.groupService.transferOwnership(id, req.user.id, dto.newOwnerId);
+  }
+
+  @Get(':id/stats')
+  @UseGuards(AuthGuard('jwt'))
+  @ApiEndpoint({
+    summary: 'Get group statistics',
+    description: 'Member count, session counts, etc. Requires group membership.',
+    auth: true,
+    responses: [{ status: 200, description: 'Group statistics' }],
+  })
+  async getStats(@Param('id') id: string, @Request() req) {
+    return this.groupService.getGroupStats(id, req.user.id);
+  }
+
   // =====================================================
   // SELF-JOIN (auth required)
   // =====================================================
 
   @Post(':id/join')
+  @Throttle({ default: { limit: 10, ttl: 60000 } })
   @UseGuards(AuthGuard('jwt'))
   @ApiEndpoint(GroupDocs.selfJoin)
   async selfJoin(@Param('id') id: string, @Request() req) {
@@ -203,6 +233,7 @@ export class GroupController {
   }
 
   @Post('join/:token')
+  @Throttle({ default: { limit: 10, ttl: 60000 } })
   @UseGuards(AuthGuard('jwt'))
   @ApiEndpoint(GroupDocs.joinViaLink)
   async joinViaLink(@Param('token') token: string, @Request() req) {

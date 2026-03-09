@@ -8,11 +8,13 @@ import {
 import type { LoggerService } from '@nestjs/common';
 import { InjectModel } from '@nestjs/sequelize';
 import { WINSTON_MODULE_NEST_PROVIDER } from 'nest-winston';
+import { Sequelize } from 'sequelize-typescript';
 import { Op } from 'sequelize';
 import { Session } from './entities/session.entity';
 import { SessionParticipant } from './entities/session-participant.entity';
 import { CreateSessionDto } from './dto/create-session.dto';
 import { UpdateSessionDto } from './dto/update-session.dto';
+import { buildPaginatedResponse } from '../../common/dto/pagination.dto';
 
 /** Shape of recurringRule JSON stored on Session (for recurring sessions). */
 interface RecurringRule {
@@ -59,6 +61,7 @@ export class SessionService {
     private memberModel: typeof GroupMember,
     @InjectModel(InstructorClient)
     private instructorClientModel: typeof InstructorClient,
+    private sequelize: Sequelize,
     private emailService: EmailService,
     @Inject(WINSTON_MODULE_NEST_PROVIDER)
     private readonly logger: LoggerService,
@@ -89,6 +92,13 @@ export class SessionService {
       }
     }
 
+    // Check for scheduling conflicts (warning, not blocking)
+    const { hasConflict, conflicts } = await this.checkConflicts(
+      userId,
+      new Date(dto.scheduledAt),
+      dto.durationMinutes,
+    );
+
     const session = await this.sessionModel.create({
       groupId: dto.groupId,
       instructorId: userId,
@@ -107,17 +117,19 @@ export class SessionService {
       recurringRule: dto.recurringRule ?? null,
     });
 
-    // TODO: [JOB SYSTEM] Schedule reminder email job (e.g., 1 hour before scheduledAt)
-    // TODO: [JOB SYSTEM] Schedule status transition to IN_PROGRESS at scheduledAt
-    // TODO: [JOB SYSTEM] Schedule status transition to COMPLETED at scheduledAt + durationMinutes
-    // TODO: [JOB SYSTEM] If isRecurring, generate next session instances from recurringRule
-
     this.logger.log(
       `Session created: "${session.title}" by user ${userId}`,
       'SessionService',
     );
 
-    return session;
+    // Return session with conflict warning if applicable
+    const result = session.toJSON() as any;
+    if (hasConflict) {
+      result.warning = `Schedule conflict with ${conflicts.length} existing session(s)`;
+      result.conflictingSessionIds = conflicts.map((c) => c.id);
+    }
+
+    return result;
   }
 
   /**
@@ -199,30 +211,24 @@ export class SessionService {
       return true;
     });
 
-    const totalPages = Math.ceil(totalItems / limit);
-
-    return {
-      data: uniqueSessions,
-      meta: {
-        page,
-        limit,
-        totalItems,
-        totalPages,
-        hasNextPage: page < totalPages,
-        hasPreviousPage: page > 1,
-      },
-    };
+    return buildPaginatedResponse(uniqueSessions, totalItems, page, limit);
   }
 
   /**
-   * Discover public sessions (no auth required in future, but currently requires auth)
-   *
-   * Returns PUBLIC sessions, optionally filtered by search query.
+   * Discover public sessions with advanced filters.
    */
   async discoverSessions(
     page: number = 1,
     limit: number = 20,
-    search?: string,
+    filters?: {
+      search?: string;
+      sessionType?: string;
+      dateFrom?: string;
+      dateTo?: string;
+      maxDurationMinutes?: number;
+      sortBy?: string;
+      sortDir?: 'ASC' | 'DESC';
+    },
   ) {
     const offset = (page - 1) * limit;
 
@@ -232,13 +238,38 @@ export class SessionService {
       scheduledAt: { [Op.gte]: new Date() },
     };
 
-    if (search) {
+    if (filters?.search) {
       where[Op.or] = [
-        { title: { [Op.like]: `%${search}%` } },
-        { description: { [Op.like]: `%${search}%` } },
-        { location: { [Op.like]: `%${search}%` } },
+        { title: { [Op.iLike]: `%${filters.search}%` } },
+        { description: { [Op.iLike]: `%${filters.search}%` } },
+        { location: { [Op.iLike]: `%${filters.search}%` } },
       ];
     }
+
+    if (filters?.sessionType) {
+      where.sessionType = filters.sessionType;
+    }
+
+    if (filters?.dateFrom) {
+      where.scheduledAt = {
+        ...where.scheduledAt,
+        [Op.gte]: new Date(filters.dateFrom),
+      };
+    }
+
+    if (filters?.dateTo) {
+      where.scheduledAt = {
+        ...where.scheduledAt,
+        [Op.lte]: new Date(filters.dateTo),
+      };
+    }
+
+    if (filters?.maxDurationMinutes) {
+      where.durationMinutes = { [Op.lte]: filters.maxDurationMinutes };
+    }
+
+    const sortField = filters?.sortBy || 'scheduledAt';
+    const sortDir = filters?.sortDir || 'ASC';
 
     const { rows: data, count: totalItems } =
       await this.sessionModel.findAndCountAll({
@@ -250,25 +281,13 @@ export class SessionService {
             attributes: ['id', 'firstName', 'lastName', 'avatarId'],
           },
         ],
-        order: [['scheduledAt', 'ASC']],
+        order: [[sortField, sortDir]],
         limit,
         offset,
         distinct: true,
       });
 
-    const totalPages = Math.ceil(totalItems / limit);
-
-    return {
-      data,
-      meta: {
-        page,
-        limit,
-        totalItems,
-        totalPages,
-        hasNextPage: page < totalPages,
-        hasPreviousPage: page > 1,
-      },
-    };
+    return buildPaginatedResponse(data, totalItems, page, limit);
   }
 
   /**
@@ -428,6 +447,182 @@ export class SessionService {
     );
 
     return cloned;
+  }
+
+  // =====================================================
+  // RESCHEDULE & CONFLICT DETECTION
+  // =====================================================
+
+  /**
+   * Reschedule a session (instructor only).
+   * Updates scheduledAt and notifies all active participants.
+   */
+  async rescheduleSession(
+    sessionId: string,
+    userId: string,
+    newScheduledAt: string,
+    reason?: string,
+  ): Promise<Session> {
+    const session = await this.sessionModel.findByPk(sessionId, {
+      include: [
+        {
+          model: SessionParticipant,
+          where: { status: { [Op.ne]: 'CANCELLED' } },
+          required: false,
+          include: [{ model: User, attributes: ['email', 'firstName'] }],
+        },
+      ],
+    });
+
+    if (!session) {
+      throw new NotFoundException('Session not found');
+    }
+
+    if (session.instructorId !== userId) {
+      throw new ForbiddenException(
+        'Only the instructor can reschedule this session',
+      );
+    }
+
+    if (['COMPLETED', 'CANCELLED'].includes(session.status)) {
+      throw new BadRequestException(
+        'Cannot reschedule a completed or cancelled session',
+      );
+    }
+
+    const oldScheduledAt = session.scheduledAt;
+    await session.update({ scheduledAt: newScheduledAt });
+
+    // Notify participants (fire-and-forget)
+    const activeParticipants = (session.participants || []).filter(
+      (p) => !['CANCELLED', 'NO_SHOW'].includes(p.status),
+    );
+
+    for (const participant of activeParticipants) {
+      if (participant.user?.email) {
+        // TODO: Create dedicated reschedule email template
+        this.logger.log(
+          `[RESCHEDULE] Notify ${participant.user.email}: "${session.title}" moved from ${oldScheduledAt} to ${newScheduledAt}${reason ? ` — ${reason}` : ''}`,
+          'SessionService',
+        );
+      }
+    }
+
+    this.logger.log(
+      `Session "${session.title}" rescheduled from ${oldScheduledAt} to ${newScheduledAt}`,
+      'SessionService',
+    );
+
+    return session;
+  }
+
+  /**
+   * Check for scheduling conflicts for an instructor.
+   * Returns overlapping sessions if any exist.
+   */
+  async checkConflicts(
+    instructorId: string,
+    scheduledAt: Date,
+    durationMinutes: number,
+    excludeSessionId?: string,
+  ): Promise<{ hasConflict: boolean; conflicts: Session[] }> {
+    const startTime = new Date(scheduledAt);
+    const endTime = new Date(startTime.getTime() + durationMinutes * 60000);
+
+    const where: any = {
+      instructorId,
+      status: { [Op.in]: ['SCHEDULED', 'IN_PROGRESS'] },
+    };
+
+    if (excludeSessionId) {
+      where.id = { [Op.ne]: excludeSessionId };
+    }
+
+    const sessions = await this.sessionModel.findAll({ where });
+
+    const conflicts = sessions.filter((s) => {
+      const sStart = new Date(s.scheduledAt);
+      const sEnd = new Date(sStart.getTime() + s.durationMinutes * 60000);
+      return sStart < endTime && sEnd > startTime;
+    });
+
+    return { hasConflict: conflicts.length > 0, conflicts };
+  }
+
+  /**
+   * Calendar view: sessions grouped by date for a date range.
+   */
+  async getCalendar(
+    userId: string,
+    startDate: string,
+    endDate: string,
+  ): Promise<Record<string, Session[]>> {
+    const start = new Date(startDate);
+    const end = new Date(endDate);
+
+    const [memberships, registrations, clientRelationships] = await Promise.all([
+      this.memberModel.findAll({
+        where: { userId, leftAt: null },
+        attributes: ['groupId'],
+      }),
+      this.participantModel.findAll({
+        where: { userId, status: { [Op.ne]: 'CANCELLED' } },
+        attributes: ['sessionId'],
+      }),
+      this.instructorClientModel.findAll({
+        where: { clientId: userId, status: 'ACTIVE' },
+        attributes: ['instructorId'],
+      }),
+    ]);
+
+    const groupIds = memberships.map((m) => m.groupId);
+    const registeredSessionIds = registrations.map((r) => r.sessionId);
+    const clientOfInstructorIds = clientRelationships.map((r) => r.instructorId);
+
+    const whereClause = {
+      scheduledAt: { [Op.gte]: start, [Op.lte]: end },
+      [Op.or]: [
+        { instructorId: userId },
+        ...(groupIds.length > 0
+          ? [{ groupId: { [Op.in]: groupIds }, visibility: { [Op.in]: ['GROUP', 'PUBLIC'] } }]
+          : []),
+        ...(clientOfInstructorIds.length > 0
+          ? [{ instructorId: { [Op.in]: clientOfInstructorIds }, visibility: 'CLIENTS' }]
+          : []),
+        ...(registeredSessionIds.length > 0
+          ? [{ id: { [Op.in]: registeredSessionIds } }]
+          : []),
+        { visibility: 'PUBLIC' },
+      ],
+    };
+
+    const sessions = await this.sessionModel.findAll({
+      where: whereClause,
+      include: [
+        {
+          model: User,
+          as: 'instructor',
+          attributes: ['id', 'firstName', 'lastName', 'avatarId'],
+        },
+      ],
+      order: [['scheduledAt', 'ASC']],
+    });
+
+    const calendar: Record<string, Session[]> = {};
+    const seen = new Set<string>();
+
+    for (const session of sessions) {
+      if (seen.has(session.id)) continue;
+      seen.add(session.id);
+
+      const dateKey = new Date(session.scheduledAt).toISOString().split('T')[0];
+      if (!calendar[dateKey]) {
+        calendar[dateKey] = [];
+      }
+      calendar[dateKey].push(session);
+    }
+
+    return calendar;
   }
 
   // =====================================================
@@ -634,65 +829,89 @@ export class SessionService {
     sessionId: string,
     userId: string,
   ): Promise<SessionParticipant> {
-    const session = await this.sessionModel.findByPk(sessionId, {
-      include: [SessionParticipant],
-    });
-
-    if (!session) {
+    // Pre-check: load session for visibility assertion (outside transaction)
+    const sessionCheck = await this.sessionModel.findByPk(sessionId);
+    if (!sessionCheck) {
       throw new NotFoundException('Session not found');
     }
 
-    await this.assertCanViewSession(session, userId);
+    // Guard: cannot join DRAFT sessions
+    if (sessionCheck.status === 'DRAFT') {
+      throw new BadRequestException('Session is not published yet');
+    }
 
-    if (session.instructorId === userId) {
+    await this.assertCanViewSession(sessionCheck, userId);
+
+    if (sessionCheck.instructorId === userId) {
       throw new BadRequestException('You cannot join your own session');
     }
 
-    const existing = await this.participantModel.findOne({
-      where: { sessionId: sessionId, userId: userId },
-    });
+    // Use transaction with pessimistic locking to prevent capacity race conditions
+    const transaction = await this.sequelize.transaction();
+    try {
+      // Re-load session with FOR UPDATE lock to prevent concurrent joins exceeding capacity
+      const session = await this.sessionModel.findByPk(sessionId, {
+        include: [SessionParticipant],
+        lock: transaction.LOCK.UPDATE,
+        transaction,
+      });
 
-    if (existing && existing.status !== 'CANCELLED') {
-      throw new BadRequestException(
-        'You are already registered for this session',
-      );
-    }
-
-    // Check capacity
-    if (session.maxParticipants) {
-      const activeCount = session.participants.filter(
-        (p) => !['CANCELLED', 'NO_SHOW'].includes(p.status),
-      ).length;
-
-      if (activeCount >= session.maxParticipants) {
-        throw new BadRequestException('Session is full');
+      if (!session) {
+        await transaction.rollback();
+        throw new NotFoundException('Session not found');
       }
+
+      const existing = await this.participantModel.findOne({
+        where: { sessionId, userId },
+        transaction,
+      });
+
+      if (existing && existing.status !== 'CANCELLED') {
+        await transaction.rollback();
+        throw new BadRequestException(
+          'You are already registered for this session',
+        );
+      }
+
+      // Check capacity under lock
+      if (session.maxParticipants) {
+        const activeCount = session.participants.filter(
+          (p) => !['CANCELLED', 'NO_SHOW'].includes(p.status),
+        ).length;
+
+        if (activeCount >= session.maxParticipants) {
+          await transaction.rollback();
+          throw new BadRequestException('Session is full');
+        }
+      }
+
+      let participant: SessionParticipant;
+
+      // If previously cancelled, reactivate
+      if (existing && existing.status === 'CANCELLED') {
+        await existing.update(
+          { status: 'REGISTERED', checkedInAt: null },
+          { transaction },
+        );
+        participant = existing;
+      } else {
+        participant = await this.participantModel.create(
+          { sessionId, userId, status: 'REGISTERED' },
+          { transaction },
+        );
+      }
+
+      await transaction.commit();
+
+      // Notify instructor (fire-and-forget, outside transaction)
+      this.notifyInstructorOfJoinLeave(session, userId, 'joined').catch(() => {});
+
+      return participant;
+    } catch (error) {
+      // Only rollback if transaction hasn't been committed or rolled back already
+      try { await transaction.rollback(); } catch {}
+      throw error;
     }
-
-    // If previously cancelled, reactivate
-    if (existing && existing.status === 'CANCELLED') {
-      await existing.update({ status: 'REGISTERED', checkedInAt: null });
-
-      // Notify instructor
-      // TODO: [JOB SYSTEM] Move to background job
-      this.notifyInstructorOfJoinLeave(session, userId, 'joined').catch(
-        () => {},
-      );
-
-      return existing;
-    }
-
-    const participant = await this.participantModel.create({
-      sessionId: sessionId,
-      userId: userId,
-      status: 'REGISTERED',
-    });
-
-    // Notify instructor
-    // TODO: [JOB SYSTEM] Move to background job
-    this.notifyInstructorOfJoinLeave(session, userId, 'joined').catch(() => {});
-
-    return participant;
   }
 
   /**
@@ -701,42 +920,52 @@ export class SessionService {
    * Enforces cancellation policy: cannot leave within CANCELLATION_CUTOFF_HOURS of session start.
    */
   async leaveSession(sessionId: string, userId: string): Promise<void> {
-    const session = await this.sessionModel.findByPk(sessionId);
+    const transaction = await this.sequelize.transaction();
+    try {
+      const session = await this.sessionModel.findByPk(sessionId, { transaction });
 
-    if (!session) {
-      throw new NotFoundException('Session not found');
-    }
+      if (!session) {
+        await transaction.rollback();
+        throw new NotFoundException('Session not found');
+      }
 
-    const participant = await this.participantModel.findOne({
-      where: {
-        sessionId: sessionId,
-        userId: userId,
-        status: { [Op.ne]: 'CANCELLED' },
-      },
-    });
+      const participant = await this.participantModel.findOne({
+        where: {
+          sessionId,
+          userId,
+          status: { [Op.ne]: 'CANCELLED' },
+        },
+        transaction,
+      });
 
-    if (!participant) {
-      throw new NotFoundException('You are not registered for this session');
-    }
+      if (!participant) {
+        await transaction.rollback();
+        throw new NotFoundException('You are not registered for this session');
+      }
 
-    // Cancellation policy check
-    const now = new Date();
-    const sessionStart = new Date(session.scheduledAt);
-    const cutoffTime = new Date(
-      sessionStart.getTime() - this.CANCELLATION_CUTOFF_HOURS * 60 * 60 * 1000,
-    );
-
-    if (now > cutoffTime) {
-      throw new BadRequestException(
-        `Cannot cancel within ${this.CANCELLATION_CUTOFF_HOURS} hours of session start time`,
+      // Cancellation policy check
+      const now = new Date();
+      const sessionStart = new Date(session.scheduledAt);
+      const cutoffTime = new Date(
+        sessionStart.getTime() - this.CANCELLATION_CUTOFF_HOURS * 60 * 60 * 1000,
       );
+
+      if (now > cutoffTime) {
+        await transaction.rollback();
+        throw new BadRequestException(
+          `Cannot cancel within ${this.CANCELLATION_CUTOFF_HOURS} hours of session start time`,
+        );
+      }
+
+      await participant.update({ status: 'CANCELLED' }, { transaction });
+      await transaction.commit();
+
+      // Notify instructor (fire-and-forget, outside transaction)
+      this.notifyInstructorOfJoinLeave(session, userId, 'left').catch(() => {});
+    } catch (error) {
+      try { await transaction.rollback(); } catch {}
+      throw error;
     }
-
-    await participant.update({ status: 'CANCELLED' });
-
-    // Notify instructor
-    // TODO: [JOB SYSTEM] Move to background job
-    this.notifyInstructorOfJoinLeave(session, userId, 'left').catch(() => {});
   }
 
   /**
@@ -821,46 +1050,62 @@ export class SessionService {
     instructorUserId: string,
     dto: UpdateParticipantStatusDto,
   ): Promise<SessionParticipant> {
-    const session = await this.sessionModel.findByPk(sessionId);
+    const transaction = await this.sequelize.transaction();
+    try {
+      const session = await this.sessionModel.findByPk(sessionId, { transaction });
 
-    if (!session) {
-      throw new NotFoundException('Session not found');
+      if (!session) {
+        await transaction.rollback();
+        throw new NotFoundException('Session not found');
+      }
+
+      if (session.instructorId !== instructorUserId) {
+        await transaction.rollback();
+        throw new ForbiddenException(
+          'Only the instructor can update participant status',
+        );
+      }
+
+      const participant = await this.participantModel.findOne({
+        where: { sessionId, userId: participantUserId },
+        include: [{ model: User, attributes: ['email', 'firstName'] }],
+        transaction,
+      });
+
+      if (!participant) {
+        await transaction.rollback();
+        throw new NotFoundException('Participant not found');
+      }
+
+      const oldStatus = participant.status;
+      const updateData: any = { status: dto.status };
+
+      // Auto-set checkedInAt when marking as ATTENDED
+      if (dto.status === 'ATTENDED' && !participant.checkedInAt) {
+        updateData.checkedInAt = new Date();
+      }
+
+      await participant.update(updateData, { transaction });
+      await transaction.commit();
+
+      // Notify participant of status change (fire-and-forget, outside transaction)
+      if (oldStatus !== dto.status && participant.user) {
+        this.emailService
+          .sendParticipantStatusEmail(
+            participant.user.email,
+            participant.user.firstName,
+            session.title,
+            dto.status,
+            session.scheduledAt,
+          )
+          .catch(() => {});
+      }
+
+      return participant;
+    } catch (error) {
+      try { await transaction.rollback(); } catch {}
+      throw error;
     }
-
-    if (session.instructorId !== instructorUserId) {
-      throw new ForbiddenException(
-        'Only the instructor can update participant status',
-      );
-    }
-
-    const participant = await this.participantModel.findOne({
-      where: { sessionId: sessionId, userId: participantUserId },
-      include: [{ model: User, attributes: ['email', 'firstName'] }],
-    });
-
-    if (!participant) {
-      throw new NotFoundException('Participant not found');
-    }
-
-    const oldStatus = participant.status;
-    const updateData: any = { status: dto.status };
-
-    // Auto-set checkedInAt when marking as ATTENDED
-    if (dto.status === 'ATTENDED' && !participant.checkedInAt) {
-      updateData.checkedInAt = new Date();
-    }
-
-    await participant.update(updateData);
-
-    // Notify participant of status change (if status actually changed)
-    // TODO: [JOB SYSTEM] Move to background job queue
-    if (oldStatus !== dto.status && participant.user) {
-      this.emailService
-        .sendWelcomeEmail(participant.user.email, participant.user.firstName)
-        .catch(() => {}); // Best effort notification
-    }
-
-    return participant;
   }
 
   // =====================================================
@@ -880,11 +1125,24 @@ export class SessionService {
       (p) => !['CANCELLED', 'NO_SHOW'].includes(p.status),
     );
 
+    // Load instructor name for email template
+    const instructor = await User.findByPk(session.instructorId, {
+      attributes: ['firstName', 'lastName'],
+    });
+    const instructorName = instructor
+      ? `${instructor.firstName} ${instructor.lastName}`
+      : 'Your instructor';
+
     for (const participant of activeParticipants) {
       if (participant.user?.email) {
-        // TODO: Create a dedicated cancellation email template
         this.emailService
-          .sendWelcomeEmail(participant.user.email, participant.user.firstName)
+          .sendSessionCancelledEmail(
+            participant.user.email,
+            participant.user.firstName,
+            session.title,
+            instructorName,
+            session.scheduledAt,
+          )
           .catch(() => {});
       }
     }

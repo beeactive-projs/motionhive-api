@@ -12,6 +12,7 @@ import {
 } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
 import { ApiTags } from '@nestjs/swagger';
+import { Throttle } from '@nestjs/throttler';
 import { ClientService } from './client.service';
 import { CreateClientRequestDto } from './dto/create-client-request.dto';
 import { UpdateClientDto } from './dto/update-client.dto';
@@ -83,13 +84,11 @@ export class ClientController {
    * Instructor sends an invitation to a user to become their client.
    */
   @Post('invite')
+  @Throttle({ default: { limit: 10, ttl: 3600000 } })
   @UseGuards(RolesGuard)
-  // @Roles('INSTRUCTOR', 'ADMIN', 'SUPER_ADMIN')
+  @Roles('INSTRUCTOR', 'ADMIN', 'SUPER_ADMIN')
   @ApiEndpoint({ ...ClientDocs.sendInvitation, body: CreateClientRequestDto })
   async sendInvitation(@Request() req, @Body() dto: CreateClientRequestDto) {
-    console.log('i am heree');
-    console.log(req);
-
     return this.clientService.sendClientInvitationByEmail(
       req.user.id,
       dto.email,
@@ -102,6 +101,7 @@ export class ClientController {
    * User requests to become a client of the specified instructor.
    */
   @Post('request/:instructorId')
+  @Throttle({ default: { limit: 5, ttl: 3600000 } })
   @ApiEndpoint(ClientDocs.requestToBeClient)
   async requestToBeClient(
     @Request() req,

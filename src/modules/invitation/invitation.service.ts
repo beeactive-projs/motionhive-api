@@ -9,11 +9,13 @@ import type { LoggerService } from '@nestjs/common';
 import { InjectModel } from '@nestjs/sequelize';
 import { ConfigService } from '@nestjs/config';
 import { WINSTON_MODULE_NEST_PROVIDER } from 'nest-winston';
+import { Sequelize } from 'sequelize-typescript';
 import { Invitation } from './entities/invitation.entity';
 import { CreateInvitationDto } from './dto/create-invitation.dto';
 import { GroupService } from '../group/group.service';
 import { RoleService } from '../role/role.service';
 import { CryptoService, EmailService } from '../../common/services';
+import { buildPaginatedResponse } from '../../common/dto/pagination.dto';
 import { User } from '../user/entities/user.entity';
 import { Group } from '../group/entities/group.entity';
 import { Role } from '../role/entities/role.entity';
@@ -36,6 +38,7 @@ export class InvitationService {
     private invitationModel: typeof Invitation,
     @InjectModel(GroupMember)
     private memberModel: typeof GroupMember,
+    private sequelize: Sequelize,
     private groupService: GroupService,
     private roleService: RoleService,
     private cryptoService: CryptoService,
@@ -203,18 +206,29 @@ export class InvitationService {
       );
     }
 
-    // Add user to group
-    await this.groupService.addMember(invitation.groupId, userId);
+    // Wrap in transaction: addMember + assignRole + markAccepted must all succeed or all fail
+    const transaction = await this.sequelize.transaction();
+    try {
+      // Add user to group (pass transaction so it participates)
+      await this.groupService.addMember(invitation.groupId, userId, transaction);
 
-    // Assign role (group-scoped)
-    await this.roleService.assignRoleToUser(
-      userId,
-      invitation.roleId,
-      invitation.groupId,
-    );
+      // Assign role (group-scoped)
+      await this.roleService.assignRoleToUser(
+        userId,
+        invitation.roleId,
+        invitation.groupId,
+        undefined,
+        transaction,
+      );
 
-    // Mark as accepted
-    await invitation.update({ acceptedAt: new Date() });
+      // Mark as accepted
+      await invitation.update({ acceptedAt: new Date() }, { transaction });
+
+      await transaction.commit();
+    } catch (error) {
+      await transaction.rollback();
+      throw error;
+    }
 
     this.logger.log(
       `Invitation accepted: user ${userId} joined group ${invitation.groupId}`,
@@ -222,13 +236,22 @@ export class InvitationService {
     );
 
     // Notify the inviter that the invitation was accepted
-    // TODO: [JOB SYSTEM] Move to background job when Redis/Bull is configured
+    // TODO: [NOTIFICATION SYSTEM] Move to notification module when implemented
     const inviterUser = await User.findByPk(invitation.inviterId, {
       attributes: ['email', 'firstName'],
     });
-    if (inviterUser) {
+    const acceptingUser = await User.findByPk(userId, {
+      attributes: ['firstName', 'lastName'],
+    });
+    if (inviterUser && acceptingUser) {
+      const accepterName = `${acceptingUser.firstName} ${acceptingUser.lastName}`;
       this.emailService
-        .sendWelcomeEmail(inviterUser.email, inviterUser.firstName)
+        .sendInvitationAcceptedEmail(
+          inviterUser.email,
+          inviterUser.firstName,
+          accepterName,
+          invitation.group?.name || 'your group',
+        )
         .catch(() => {});
     }
 
@@ -426,18 +449,7 @@ export class InvitationService {
         distinct: true,
       });
 
-    const totalPages = Math.ceil(totalItems / limit);
-    return {
-      data,
-      meta: {
-        page,
-        limit,
-        totalItems,
-        totalPages,
-        hasNextPage: page < totalPages,
-        hasPreviousPage: page > 1,
-      },
-    };
+    return buildPaginatedResponse(data, totalItems, page, limit);
   }
 
   /**
@@ -469,17 +481,6 @@ export class InvitationService {
         distinct: true,
       });
 
-    const totalPages = Math.ceil(totalItems / limit);
-    return {
-      data,
-      meta: {
-        page,
-        limit,
-        totalItems,
-        totalPages,
-        hasNextPage: page < totalPages,
-        hasPreviousPage: page > 1,
-      },
-    };
+    return buildPaginatedResponse(data, totalItems, page, limit);
   }
 }

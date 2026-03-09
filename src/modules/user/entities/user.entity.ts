@@ -147,6 +147,12 @@ export class User extends Model {
     type: DataType.DATE,
     allowNull: true,
   })
+  declare passwordChangedAt: Date | null;
+
+  @Column({
+    type: DataType.DATE,
+    allowNull: true,
+  })
   declare lastLoginAt: Date;
 
   @CreatedAt

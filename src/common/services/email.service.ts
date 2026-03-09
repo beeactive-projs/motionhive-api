@@ -9,6 +9,8 @@ import {
   passwordResetTemplate,
   invitationTemplate,
   sessionCancelledTemplate,
+  invitationAcceptedTemplate,
+  participantStatusTemplate,
 } from './email-templates';
 
 /**
@@ -202,6 +204,55 @@ export class EmailService {
       participantName,
       sessionTitle,
       instructorName,
+      formattedDate,
+    );
+
+    await this.send(email, subject, html);
+  }
+
+  // =====================================================
+  // INVITATION RESPONSE EMAILS
+  // =====================================================
+
+  /**
+   * Notify inviter that their group invitation was accepted
+   */
+  async sendInvitationAcceptedEmail(
+    email: string,
+    inviterName: string,
+    accepterName: string,
+    groupName: string,
+  ): Promise<void> {
+    const subject = `${accepterName} accepted your invitation to ${groupName}`;
+    const html = invitationAcceptedTemplate(inviterName, accepterName, groupName);
+
+    await this.send(email, subject, html);
+  }
+
+  /**
+   * Notify participant of a status change on their session registration
+   */
+  async sendParticipantStatusEmail(
+    email: string,
+    participantName: string,
+    sessionTitle: string,
+    newStatus: string,
+    scheduledAt: Date,
+  ): Promise<void> {
+    const formattedDate = scheduledAt.toLocaleDateString('en-US', {
+      weekday: 'long',
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+
+    const subject = `Session "${sessionTitle}" — status updated`;
+    const html = participantStatusTemplate(
+      participantName,
+      sessionTitle,
+      newStatus,
       formattedDate,
     );
 

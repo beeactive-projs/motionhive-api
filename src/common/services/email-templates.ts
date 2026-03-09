@@ -300,6 +300,56 @@ export function sessionCancelledTemplate(
   return baseLayout(content, `Session "${sessionTitle}" has been cancelled`);
 }
 
+export function invitationAcceptedTemplate(
+  inviterName: string,
+  accepterName: string,
+  groupName: string,
+): string {
+  const content = `
+    ${heading('Invitation Accepted!')}
+    ${subheading(`Great news — someone joined your group`)}
+    ${paragraph(`Hi ${inviterName}, <strong>${accepterName}</strong> has accepted your invitation and joined <strong>${groupName}</strong>.`)}
+    ${divider()}
+    ${paragraph('You can view your group members in the BeeActive app.')}
+  `;
+
+  return baseLayout(content, `${accepterName} accepted your invitation to ${groupName}`);
+}
+
+export function participantStatusTemplate(
+  participantName: string,
+  sessionTitle: string,
+  newStatus: string,
+  scheduledAt: string,
+): string {
+  const statusLabels: Record<string, string> = {
+    CONFIRMED: 'confirmed',
+    CANCELLED: 'cancelled',
+    ATTENDED: 'marked as attended',
+    NO_SHOW: 'marked as no-show',
+  };
+  const statusLabel = statusLabels[newStatus] || newStatus.toLowerCase();
+
+  const content = `
+    ${heading('Session Status Update')}
+    ${subheading(`Your registration status has changed`)}
+
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:0 0 24px;">
+      <tr>
+        <td style="background-color:#f8fafc;border-radius:8px;padding:20px;border-left:4px solid ${COLORS.accent};">
+          <p style="margin:0 0 8px;font-size:16px;font-weight:600;color:${COLORS.textDark};">${sessionTitle}</p>
+          <p style="margin:0 0 4px;font-size:14px;color:${COLORS.textBody};">Scheduled: ${scheduledAt}</p>
+          <p style="margin:0;font-size:14px;color:${COLORS.textBody};">Status: <strong>${statusLabel}</strong></p>
+        </td>
+      </tr>
+    </table>
+
+    ${paragraph(`Hi ${participantName}, your registration for this session has been ${statusLabel} by the instructor.`)}
+  `;
+
+  return baseLayout(content, `Your session status has been updated`);
+}
+
 export function sessionReminderTemplate(
   participantName: string,
   sessionTitle: string,

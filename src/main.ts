@@ -160,6 +160,7 @@ A comprehensive REST API for managing fitness training sessions, trainers, and c
     .addTag('Clients', 'Instructor-client relationships')
     .addTag('Sessions', 'Training session management')
     .addTag('Invitations', 'Invitation management')
+    .addTag('Analytics', 'Analytics and reporting')
     .addTag('Health', 'Application health checks')
     .addServer('http://localhost:3000', 'Local development')
     .addServer('https://beeactive-api-production.up.railway.app', 'Production')

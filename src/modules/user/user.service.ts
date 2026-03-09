@@ -1,7 +1,9 @@
 import { Injectable, ConflictException, Inject } from '@nestjs/common';
+import type { LoggerService } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectModel } from '@nestjs/sequelize';
-import { Transaction } from 'sequelize';
+import { WINSTON_MODULE_NEST_PROVIDER } from 'nest-winston';
+import { Op, Transaction } from 'sequelize';
 import { User } from './entities/user.entity';
 import {
   SocialAccount,
@@ -11,6 +13,12 @@ import * as bcrypt from 'bcrypt';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { CryptoService } from '../../common/services';
+import { UserProfile } from '../profile/entities/user-profile.entity';
+import { InstructorProfile } from '../profile/entities/instructor-profile.entity';
+import { GroupMember } from '../group/entities/group-member.entity';
+import { SessionParticipant } from '../session/entities/session-participant.entity';
+import { InstructorClient } from '../client/entities/instructor-client.entity';
+import { Invitation } from '../invitation/entities/invitation.entity';
 
 export interface OAuthProfile {
   providerUserId: string;
@@ -41,6 +49,8 @@ export class UserService {
     private socialAccountModel: typeof SocialAccount,
     private configService: ConfigService,
     private cryptoService: CryptoService,
+    @Inject(WINSTON_MODULE_NEST_PROVIDER)
+    private readonly logger: LoggerService,
   ) {}
 
   /**
@@ -133,9 +143,18 @@ export class UserService {
       return { user: existingSocial.user as User, isNewUser: false };
     }
 
-    // 2. User exists by email? Link social account.
+    // 2. User exists by email? Link social account only if safe.
     const existingUser = await this.findByEmail(profile.email);
     if (existingUser) {
+      // If user has a password (email/password account), only auto-link
+      // if their email is already verified (proves ownership).
+      // Otherwise, reject to prevent OAuth account takeover.
+      if (existingUser.passwordHash && !existingUser.isEmailVerified) {
+        throw new ConflictException(
+          'An account with this email already exists. Please log in with your password and verify your email before linking a social account.',
+        );
+      }
+
       await this.socialAccountModel.create(
         {
           userId: existingUser.id,
@@ -218,6 +237,80 @@ export class UserService {
     user.isActive = false;
     await user.save();
     await user.destroy(); // Soft delete (paranoid: true)
+
+    this.logger.log(`Account deleted (soft): ${userId}`, 'UserService');
+  }
+
+  /**
+   * Export all user data (GDPR Article 20 - Data Portability).
+   *
+   * Returns a JSON object with all user-related data:
+   * profile, social accounts, group memberships, session participation,
+   * client relationships, and invitations.
+   */
+  async exportUserData(userId: string): Promise<Record<string, any>> {
+    const user = await this.userModel.findByPk(userId, {
+      attributes: {
+        exclude: [
+          'passwordHash',
+          'passwordResetToken',
+          'passwordResetExpires',
+          'emailVerificationToken',
+          'emailVerificationExpires',
+        ],
+      },
+    });
+
+    if (!user) {
+      throw new ConflictException('User not found');
+    }
+
+    const [
+      socialAccounts,
+      userProfile,
+      instructorProfile,
+      groupMemberships,
+      sessionParticipations,
+      clientRelationships,
+      invitations,
+    ] = await Promise.all([
+      this.socialAccountModel.findAll({
+        where: { userId },
+        attributes: ['provider', 'providerEmail', 'createdAt'],
+      }),
+      UserProfile.findOne({ where: { userId } }),
+      InstructorProfile.findOne({ where: { userId } }),
+      GroupMember.findAll({
+        where: { userId },
+        attributes: ['groupId', 'isOwner', 'nickname', 'joinedAt', 'leftAt'],
+      }),
+      SessionParticipant.findAll({
+        where: { userId },
+        attributes: ['sessionId', 'status', 'checkedInAt', 'createdAt'],
+      }),
+      InstructorClient.findAll({
+        where: { [Op.or]: [{ instructorId: userId }, { clientId: userId }] },
+        attributes: ['instructorId', 'clientId', 'status', 'createdAt'],
+      }),
+      Invitation.findAll({
+        where: { email: user.email },
+        attributes: ['groupId', 'acceptedAt', 'declinedAt', 'createdAt'],
+      }),
+    ]);
+
+    this.logger.log(`Data export generated for user: ${userId}`, 'UserService');
+
+    return {
+      exportedAt: new Date().toISOString(),
+      user: user.toJSON(),
+      socialAccounts: socialAccounts.map((s) => s.toJSON()),
+      userProfile: userProfile?.toJSON() || null,
+      instructorProfile: instructorProfile?.toJSON() || null,
+      groupMemberships: groupMemberships.map((m) => m.toJSON()),
+      sessionParticipations: sessionParticipations.map((p) => p.toJSON()),
+      clientRelationships: clientRelationships.map((c) => c.toJSON()),
+      invitations: invitations.map((i) => i.toJSON()),
+    };
   }
 
   /**
@@ -397,19 +490,29 @@ export class UserService {
   }
 
   /**
-   * Reset user password
-   *
-   * @param user - User object
-   * @param newPassword - New plain password
+   * Reset user password (via forgot-password flow)
    */
   async resetPassword(user: User, newPassword: string): Promise<void> {
     const bcryptRounds = this.configService.get<number>('BCRYPT_ROUNDS') || 12;
     user.passwordHash = await bcrypt.hash(newPassword, bcryptRounds);
 
-    // Clear reset token
+    // Clear reset token and lockout state
     user.passwordResetToken = null;
     user.passwordResetExpires = null;
+    user.failedLoginAttempts = 0;
+    user.lockedUntil = null;
+    user.passwordChangedAt = new Date();
 
+    await user.save();
+  }
+
+  /**
+   * Change password (authenticated user knows current password)
+   */
+  async changePassword(user: User, newPassword: string): Promise<void> {
+    const bcryptRounds = this.configService.get<number>('BCRYPT_ROUNDS') || 12;
+    user.passwordHash = await bcrypt.hash(newPassword, bcryptRounds);
+    user.passwordChangedAt = new Date();
     await user.save();
   }
 }

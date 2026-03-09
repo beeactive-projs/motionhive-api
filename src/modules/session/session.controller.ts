@@ -12,11 +12,13 @@ import {
 } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
 import { ApiTags } from '@nestjs/swagger';
+import { Throttle } from '@nestjs/throttler';
 import { SessionService } from './session.service';
 import { CreateSessionDto } from './dto/create-session.dto';
 import { UpdateSessionDto } from './dto/update-session.dto';
 import { UpdateParticipantStatusDto } from './dto/update-participant-status.dto';
 import { CloneSessionDto } from './dto/clone-session.dto';
+import { RescheduleSessionDto } from './dto/reschedule-session.dto';
 import { DiscoverSessionsDto } from './dto/discover-sessions.dto';
 import { GenerateInstancesDto } from './dto/generate-instances.dto';
 import { ApiEndpoint } from '../../common/decorators/api-response.decorator';
@@ -73,11 +75,31 @@ export class SessionController {
   @Get('discover')
   @ApiEndpoint(SessionDocs.discoverSessions)
   async discoverSessions(@Query() query: DiscoverSessionsDto) {
-    return this.sessionService.discoverSessions(
-      query.page,
-      query.limit,
-      query.search,
-    );
+    return this.sessionService.discoverSessions(query.page, query.limit, {
+      search: query.search,
+      sessionType: query.sessionType,
+      dateFrom: query.dateFrom,
+      dateTo: query.dateTo,
+      maxDurationMinutes: query.maxDurationMinutes,
+      sortBy: query.sortBy,
+      sortDir: query.sortDir,
+    });
+  }
+
+  @Get('calendar')
+  @ApiEndpoint({
+    summary: 'Calendar view',
+    description:
+      'Get sessions grouped by date for a date range. Returns { "2026-03-10": [...sessions] }.',
+    auth: true,
+    responses: [{ status: 200, description: 'Sessions grouped by date' }],
+  })
+  async getCalendar(
+    @Request() req,
+    @Query('start') start: string,
+    @Query('end') end: string,
+  ) {
+    return this.sessionService.getCalendar(req.user.id, start, end);
   }
 
   @Get(':id')
@@ -146,17 +168,40 @@ export class SessionController {
     );
   }
 
+  @Patch(':id/reschedule')
+  @ApiEndpoint({
+    summary: 'Reschedule a session',
+    description: 'Update the scheduled time and notify all participants. Instructor only.',
+    auth: true,
+    responses: [{ status: 200, description: 'Session rescheduled successfully' }],
+    body: RescheduleSessionDto,
+  })
+  async reschedule(
+    @Param('id') id: string,
+    @Request() req,
+    @Body() dto: RescheduleSessionDto,
+  ) {
+    return this.sessionService.rescheduleSession(
+      id,
+      req.user.id,
+      dto.scheduledAt,
+      dto.reason,
+    );
+  }
+
   // =====================================================
   // PARTICIPANT MANAGEMENT
   // =====================================================
 
   @Post(':id/join')
+  @Throttle({ default: { limit: 10, ttl: 60000 } })
   @ApiEndpoint(SessionDocs.joinSession)
   async joinSession(@Param('id') id: string, @Request() req) {
     return this.sessionService.joinSession(id, req.user.id);
   }
 
   @Post(':id/leave')
+  @Throttle({ default: { limit: 10, ttl: 60000 } })
   @ApiEndpoint(SessionDocs.leaveSession)
   async leaveSession(@Param('id') id: string, @Request() req) {
     await this.sessionService.leaveSession(id, req.user.id);

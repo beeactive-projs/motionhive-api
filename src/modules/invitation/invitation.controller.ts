@@ -11,6 +11,7 @@ import {
 } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
 import { ApiTags } from '@nestjs/swagger';
+import { Throttle } from '@nestjs/throttler';
 import { InvitationService } from './invitation.service';
 import { CreateInvitationDto } from './dto/create-invitation.dto';
 import { ApiEndpoint } from '../../common/decorators/api-response.decorator';
@@ -36,6 +37,7 @@ export class InvitationController {
   constructor(private readonly invitationService: InvitationService) {}
 
   @Post()
+  @Throttle({ default: { limit: 20, ttl: 3600000 } })
   @ApiEndpoint({ ...InvitationDocs.create, body: CreateInvitationDto })
   async create(@Request() req, @Body() dto: CreateInvitationDto) {
     return this.invitationService.create(req.user.id, dto);
@@ -73,6 +75,7 @@ export class InvitationController {
   }
 
   @Post(':id/resend')
+  @Throttle({ default: { limit: 3, ttl: 3600000 } })
   @ApiEndpoint(InvitationDocs.resend)
   async resend(@Param('id') id: string, @Request() req) {
     return this.invitationService.resend(id, req.user.id);

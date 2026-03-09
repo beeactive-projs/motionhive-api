@@ -399,7 +399,7 @@ export class ClientService {
       : 'An instructor';
 
     this.emailService
-      .sendWelcomeEmail(targetUser.email, targetUser.firstName)
+      .sendClientInvitationEmail(targetUser.email, instructorName, message)
       .catch((err: Error) =>
         this.logger.error(
           `Failed to send client invitation email: ${err.message}`,

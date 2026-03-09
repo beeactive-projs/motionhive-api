@@ -8,7 +8,7 @@ import {
 import type { LoggerService } from '@nestjs/common';
 import { InjectModel } from '@nestjs/sequelize';
 import { WINSTON_MODULE_NEST_PROVIDER } from 'nest-winston';
-import { Op, Sequelize, literal } from 'sequelize';
+import { Op, Sequelize, Transaction, literal } from 'sequelize';
 import { Group, JoinPolicy } from './entities/group.entity';
 import { GroupMember } from './entities/group-member.entity';
 import { CreateGroupDto } from './dto/create-group.dto';
@@ -21,6 +21,7 @@ import { InstructorProfile } from '../profile/entities/instructor-profile.entity
 import { InstructorClient } from '../client/entities/instructor-client.entity';
 import { EmailService } from '../../common/services/email.service';
 import { CryptoService } from '../../common/services/crypto.service';
+import { buildPaginatedResponse } from '../../common/dto/pagination.dto';
 
 /**
  * Group Service
@@ -73,13 +74,22 @@ export class GroupService {
   }
 
   /**
-   * Ensure slug is unique by appending a number if needed
+   * Ensure slug is unique by appending a number if needed.
+   * Accepts optional transaction to participate in caller's transaction.
    */
-  private async ensureUniqueSlug(baseSlug: string): Promise<string> {
+  private async ensureUniqueSlug(
+    baseSlug: string,
+    transaction?: Transaction,
+  ): Promise<string> {
     let slug = baseSlug;
     let counter = 1;
 
-    while (await this.groupModel.findOne({ where: { slug } })) {
+    while (
+      await this.groupModel.findOne({
+        where: { slug },
+        ...(transaction ? { transaction } : {}),
+      })
+    ) {
       slug = `${baseSlug}-${counter}`;
       counter++;
     }
@@ -100,55 +110,76 @@ export class GroupService {
    */
   async create(userId: string, dto: CreateGroupDto): Promise<Group> {
     const baseSlug = this.generateSlug(dto.name);
-    const slug = await this.ensureUniqueSlug(baseSlug);
+    const MAX_SLUG_RETRIES = 3;
 
-    // Use transaction to ensure group + owner member are created atomically
-    const sequelize = this.groupModel.sequelize!;
-    const transaction = await sequelize.transaction();
+    for (let attempt = 0; attempt <= MAX_SLUG_RETRIES; attempt++) {
+      const sequelize = this.groupModel.sequelize!;
+      const transaction = await sequelize.transaction();
 
-    try {
-      const group = await this.groupModel.create(
-        {
-          instructorId: userId,
-          name: dto.name,
-          slug,
-          description: dto.description,
-          timezone: dto.timezone || 'Europe/Bucharest',
-          isPublic: dto.isPublic || false,
-          joinPolicy: dto.joinPolicy || JoinPolicy.INVITE_ONLY,
-          tags: dto.tags,
-          contactEmail: dto.contactEmail,
-          contactPhone: dto.contactPhone,
-          address: dto.address,
-          city: dto.city,
-          country: dto.country,
-          memberCount: 1, // Owner counts as first member
-        },
-        { transaction },
-      );
+      try {
+        // Generate slug inside transaction to reduce race window
+        const slug = await this.ensureUniqueSlug(baseSlug, transaction);
 
-      // Add creator as owner member
-      await this.memberModel.create(
-        {
-          groupId: group.id,
-          userId: userId,
-          isOwner: true,
-        },
-        { transaction },
-      );
+        const group = await this.groupModel.create(
+          {
+            instructorId: userId,
+            name: dto.name,
+            slug,
+            description: dto.description,
+            timezone: dto.timezone || 'Europe/Bucharest',
+            isPublic: dto.isPublic || false,
+            joinPolicy: dto.joinPolicy || JoinPolicy.INVITE_ONLY,
+            tags: dto.tags,
+            contactEmail: dto.contactEmail,
+            contactPhone: dto.contactPhone,
+            address: dto.address,
+            city: dto.city,
+            country: dto.country,
+            memberCount: 1, // Owner counts as first member
+          },
+          { transaction },
+        );
 
-      await transaction.commit();
+        // Add creator as owner member
+        await this.memberModel.create(
+          {
+            groupId: group.id,
+            userId: userId,
+            isOwner: true,
+          },
+          { transaction },
+        );
 
-      this.logger.log(
-        `Group created: ${group.name} (${group.id}) by instructor ${userId}`,
-        'GroupService',
-      );
+        await transaction.commit();
 
-      return group;
-    } catch (error) {
-      await transaction.rollback();
-      throw error;
+        this.logger.log(
+          `Group created: ${group.name} (${group.id}) by instructor ${userId}`,
+          'GroupService',
+        );
+
+        return group;
+      } catch (error: any) {
+        await transaction.rollback();
+
+        // Retry on unique constraint violation (slug collision from concurrent create)
+        const isUniqueViolation =
+          error.name === 'SequelizeUniqueConstraintError' &&
+          error.fields?.slug !== undefined;
+
+        if (isUniqueViolation && attempt < MAX_SLUG_RETRIES) {
+          this.logger.warn(
+            `Slug collision for "${baseSlug}", retrying (attempt ${attempt + 1})`,
+            'GroupService',
+          );
+          continue;
+        }
+
+        throw error;
+      }
     }
+
+    // Should never reach here, but TypeScript needs it
+    throw new BadRequestException('Failed to generate unique slug');
   }
 
   /**
@@ -351,18 +382,7 @@ export class GroupService {
       isClient: clientIdSet.has(member.userId),
     }));
 
-    const totalPages = Math.ceil(totalItems / limit);
-    return {
-      data,
-      meta: {
-        page,
-        limit,
-        totalItems,
-        totalPages,
-        hasNextPage: page < totalPages,
-        hasPreviousPage: page > 1,
-      },
-    };
+    return buildPaginatedResponse(data, totalItems, page, limit);
   }
 
   /**
@@ -456,12 +476,12 @@ export class GroupService {
       isActive: true,
     };
 
-    // Filter by tags using MySQL JSON_CONTAINS with parameterized queries
+    // Filter by tags using PostgreSQL jsonb @> operator
     if (dto.tags && dto.tags.length > 0) {
       const sequelize = this.groupModel.sequelize!;
       const tagConditions = dto.tags.map((tag) =>
         literal(
-          `JSON_CONTAINS(tags, ${sequelize.escape(JSON.stringify(tag))})`,
+          `tags::jsonb @> ${sequelize.escape(JSON.stringify([tag]))}::jsonb`,
         ),
       );
       where[Op.and] = [
@@ -471,7 +491,7 @@ export class GroupService {
     }
 
     if (dto.city) {
-      where.city = { [Op.like]: `%${dto.city}%` };
+      where.city = { [Op.iLike]: `%${dto.city}%` };
     }
 
     if (dto.country) {
@@ -480,8 +500,8 @@ export class GroupService {
 
     if (dto.search) {
       where[Op.or] = [
-        { name: { [Op.like]: `%${dto.search}%` } },
-        { description: { [Op.like]: `%${dto.search}%` } },
+        { name: { [Op.iLike]: `%${dto.search}%` } },
+        { description: { [Op.iLike]: `%${dto.search}%` } },
       ];
     }
 
@@ -506,19 +526,7 @@ export class GroupService {
         offset,
       });
 
-    const totalPages = Math.ceil(totalItems / limit);
-
-    return {
-      data,
-      meta: {
-        page,
-        limit,
-        totalItems,
-        totalPages,
-        hasNextPage: page < totalPages,
-        hasPreviousPage: page > 1,
-      },
-    };
+    return buildPaginatedResponse(data, totalItems, page, limit);
   }
 
   /**
@@ -854,16 +862,19 @@ export class GroupService {
   async addMember(
     groupId: string,
     userId: string,
+    externalTransaction?: Transaction,
   ): Promise<GroupMember> {
     // Check if already a member
     const existing = await this.memberModel.findOne({
       where: { groupId, userId, leftAt: null },
+      ...(externalTransaction ? { transaction: externalTransaction } : {}),
     });
 
     if (existing) return existing;
 
+    // If caller provides a transaction, use it; otherwise create our own
     const sequelize = this.groupModel.sequelize!;
-    const transaction = await sequelize.transaction();
+    const transaction = externalTransaction || (await sequelize.transaction());
 
     try {
       const member = await this.memberModel.create(
@@ -877,12 +888,113 @@ export class GroupService {
         transaction,
       });
 
-      await transaction.commit();
+      // Only commit if we own the transaction
+      if (!externalTransaction) await transaction.commit();
       return member;
+    } catch (error) {
+      if (!externalTransaction) await transaction.rollback();
+      throw error;
+    }
+  }
+
+  // =====================================================
+  // OWNERSHIP TRANSFER & STATS
+  // =====================================================
+
+  /**
+   * Transfer group ownership to another member.
+   */
+  async transferOwnership(
+    groupId: string,
+    currentOwnerId: string,
+    newOwnerId: string,
+  ): Promise<{ message: string }> {
+    await this.assertOwner(groupId, currentOwnerId);
+
+    if (currentOwnerId === newOwnerId) {
+      throw new BadRequestException('You are already the owner');
+    }
+
+    const newOwnerMember = await this.memberModel.findOne({
+      where: { groupId, userId: newOwnerId, leftAt: null },
+    });
+
+    if (!newOwnerMember) {
+      throw new BadRequestException(
+        'New owner must be an active member of the group',
+      );
+    }
+
+    const sequelize = this.groupModel.sequelize!;
+    const transaction = await sequelize.transaction();
+
+    try {
+      // Remove owner flag from current owner
+      await this.memberModel.update(
+        { isOwner: false },
+        { where: { groupId, userId: currentOwnerId }, transaction },
+      );
+
+      // Set new owner
+      await this.memberModel.update(
+        { isOwner: true },
+        { where: { groupId, userId: newOwnerId }, transaction },
+      );
+
+      // Update group instructorId
+      await this.groupModel.update(
+        { instructorId: newOwnerId },
+        { where: { id: groupId }, transaction },
+      );
+
+      await transaction.commit();
     } catch (error) {
       await transaction.rollback();
       throw error;
     }
+
+    this.logger.log(
+      `Group ${groupId} ownership transferred from ${currentOwnerId} to ${newOwnerId}`,
+      'GroupService',
+    );
+
+    return { message: 'Ownership transferred successfully' };
+  }
+
+  /**
+   * Get group statistics (member count, session count, etc.)
+   */
+  async getGroupStats(
+    groupId: string,
+    userId: string,
+  ): Promise<{
+    memberCount: number;
+    sessionCount: number;
+    upcomingSessionCount: number;
+    completedSessionCount: number;
+  }> {
+    await this.assertMember(groupId, userId);
+
+    const [memberCount, sessionCount, upcomingSessionCount, completedSessionCount] =
+      await Promise.all([
+        this.memberModel.count({ where: { groupId, leftAt: null } }),
+        Session.count({ where: { groupId } }),
+        Session.count({
+          where: {
+            groupId,
+            status: 'SCHEDULED',
+            scheduledAt: { [Op.gte]: new Date() },
+          },
+        }),
+        Session.count({ where: { groupId, status: 'COMPLETED' } }),
+      ]);
+
+    return {
+      memberCount,
+      sessionCount,
+      upcomingSessionCount,
+      completedSessionCount,
+    };
   }
 
   /**

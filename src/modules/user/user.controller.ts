@@ -1,6 +1,7 @@
 import {
   Controller,
   Get,
+  Post,
   Patch,
   Delete,
   Body,
@@ -9,6 +10,7 @@ import {
 } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
 import { ApiTags } from '@nestjs/swagger';
+import { Throttle } from '@nestjs/throttler';
 import { UserService } from './user.service';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { ApiEndpoint } from '../../common/decorators/api-response.decorator';
@@ -72,9 +74,26 @@ export class UserController {
   }
 
   /**
+   * Export all user data (GDPR Article 20 - Data Portability)
+   */
+  @Post('me/data-export')
+  @Throttle({ default: { limit: 2, ttl: 3600000 } })
+  @ApiEndpoint({
+    summary: 'Export my data',
+    description:
+      'Export all user data as JSON (GDPR Article 20). Includes profile, memberships, sessions, etc.',
+    auth: true,
+    responses: [{ status: 200, description: 'User data export' }],
+  })
+  async exportData(@Request() req) {
+    return this.userService.exportUserData(req.user.id);
+  }
+
+  /**
    * Delete account (GDPR - soft delete)
    */
   @Delete('me')
+  @Throttle({ default: { limit: 1, ttl: 3600000 } })
   @ApiEndpoint(UserDocs.deleteAccount)
   async deleteAccount(@Request() req) {
     await this.userService.deleteAccount(req.user.id);
