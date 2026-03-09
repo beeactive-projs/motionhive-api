@@ -44,17 +44,18 @@ src/
 │   ├── services/              # CloudinaryService, CryptoService, EmailService
 │   └── validators/            # StrongPasswordValidator
 └── modules/
-    ├── auth/                  # Register, login, refresh, OAuth, password reset
-    ├── user/                  # User entity, /users/me
+    ├── auth/                  # Register, login, refresh, OAuth, password reset, change password
+    ├── user/                  # User entity, /users/me, GDPR data export
     ├── role/                  # RBAC: Role, Permission, UserRole entities
     ├── profile/               # UserProfile, InstructorProfile, discovery
-    ├── group/                 # Group CRUD, members, join links, discovery
-    ├── session/               # Sessions, participants, recurring, visibility
+    ├── group/                 # Group CRUD, members, join links, discovery, ownership transfer, stats
+    ├── session/               # Sessions, participants, recurring, visibility, reschedule, calendar
     ├── invitation/            # Group invitations
     ├── client/                # Instructor-client relationships & requests
     ├── blog/                  # Blog posts, Cloudinary image upload
+    ├── analytics/             # Instructor summary, user activity, platform stats
     ├── notification/          # Notification system (Phase 1 — dummy/logger, @Global)
-    └── health/                # Terminus health checks
+    └── health/                # Terminus health checks, app config
 ```
 
 ### Module Pattern
@@ -77,7 +78,7 @@ Roles: `SUPER_ADMIN`, `ADMIN`, `SUPPORT`, `INSTRUCTOR`, `USER`
 
 ### Database
 - PostgreSQL (Neon) via `DATABASE_URL` or individual `DB_*` vars
-- Migrations in `/migrations/` (000-007), run with `node migrations/run.js`
+- Migrations in `/migrations/` (000-013), run with `node migrations/run.js`
 - Custom enum types for status fields
 
 ### Client Module (Instructor-Client Relationships)
@@ -89,44 +90,37 @@ Two tables: `instructor_client` (active relationships) + `client_request` (invit
 ### Environment Variables
 Required: `JWT_SECRET`, `JWT_REFRESH_SECRET`
 Recommended: `DATABASE_URL`, `PORT`, `FRONTEND_URL` (prod), `RESEND_API_KEY`
-Optional: `REDIS_HOST`, `GOOGLE_CLIENT_ID`, `FACEBOOK_APP_ID`, `CLOUDINARY_*`
+Optional: `REDIS_HOST`, `REDIS_PORT`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `FACEBOOK_APP_ID`, `FACEBOOK_APP_SECRET`, `CLOUDINARY_*`, `BCRYPT_ROUNDS`, `JWT_EXPIRES_IN`, `JWT_REFRESH_EXPIRES_IN`, `EMAIL_FROM`, `EMAIL_FROM_NAME`
 
 ## Known Issues & Technical Debt
 
 > See `IMPROVEMENT_PLAN.md` for the full detailed plan with file paths, line numbers, and implementation order.
 
-### Critical (Fix Before New Features)
-- ~~**PostgreSQL compatibility**: `JSON_CONTAINS` → `@>` jsonb, `Op.like` → `Op.iLike`~~ **FIXED**
-- ~~**Wrong email templates**: `sendWelcomeEmail` placeholders~~ **FIXED** — proper templates added
-- **OAuth account linking**: Silently links OAuth accounts to existing email/password accounts without user consent — account takeover risk
-- ~~**Debug code**: `console.log(req)` in `client.controller.ts`~~ **FIXED**
-
-### Data Integrity
-- **Transaction gaps**: `invitation.accept()`, `profile.createInstructorProfile()`, `session.joinSession()`, `session.leaveSession()` perform multi-table operations without transactions
-- **Race conditions**: Session capacity check (overbooking), slug generation (duplicates), pending request deduplication
+### Remaining Issues
+- **OAuth account linking**: Partially fixed — rejects unverified email/password accounts, but still auto-links OAuth to verified accounts without explicit user consent
 - **Cascade deletes**: No cascade logic when user is soft-deleted (orphaned groups, sessions, relationships)
-
-### Auth
-- **Refresh tokens are stateless** — cannot be revoked on logout. Stolen token valid for 7 days
-- **No refresh token rotation** — same token reused for entire lifetime
-- ~~**Password reset doesn't clear lockout**~~ **FIXED** — now clears `failedLoginAttempts` and `lockedUntil`
-- ~~**`lastLoginAt` never updated**~~ **FIXED** — now set on successful login
-
-### Missing Infrastructure
 - **Job system**: Bull/Redis imported but no processors exist. No session reminders, no auto status transitions, no recurring session generation, no expiry cleanup
 - **Notification system**: Phase 1 dummy module created (logs only). See `NOTIFICATION_SYSTEM_PLAN.md` for full plan
 - **APPROVAL join policy**: Exists in enum but not implemented (dead code path)
 - **Waitlist**: Sessions return "full" with no waitlist option
-
-### API Gaps
-- No change password endpoint
 - No batch invite endpoint
-- No session rescheduling (must delete + recreate)
-- No calendar view endpoint
-- No analytics/stats endpoints
-- Group invitations don't support non-registered users (unlike client invitations which do)
-- ~~Missing pagination validation~~ **FIXED** — PaginationDto has `@Min(1)` and `@Max(100)`, PrimeNG-compatible format
-- Missing rate limiting on join, invite, and delete endpoints
+- Group invitation acceptance requires a registered account (invitations can be sent to any email)
+
+### Previously Fixed (Sprints 1-7)
+- ~~PostgreSQL compatibility~~ **FIXED** — `@>` jsonb, `Op.iLike`
+- ~~Wrong email templates~~ **FIXED** — proper templates added
+- ~~Debug console.log~~ **FIXED**
+- ~~Transaction gaps~~ **FIXED** — all multi-table operations now use transactions
+- ~~Race conditions~~ **FIXED** — pessimistic locking on session capacity, retry on slug uniqueness
+- ~~Stateless refresh tokens~~ **FIXED** — DB-backed with rotation and revocation
+- ~~No change password~~ **FIXED** — `PATCH /auth/change-password` with `passwordChangedAt` invalidation
+- ~~No session rescheduling~~ **FIXED** — `PATCH /sessions/:id/reschedule`
+- ~~No calendar view~~ **FIXED** — `GET /sessions/calendar`
+- ~~No analytics~~ **FIXED** — full analytics module (instructor summary, user activity, platform stats)
+- ~~Missing rate limiting~~ **FIXED** — `@Throttle()` on all sensitive endpoints
+- ~~Pagination validation~~ **FIXED** — PrimeNG-compatible `{ items, total, page, pageSize }`
+- ~~Password reset lockout~~ **FIXED** — clears `failedLoginAttempts` and `lockedUntil`
+- ~~lastLoginAt~~ **FIXED** — set on successful login
 
 ## Coding Conventions
 - File names: kebab-case (`create-user.dto.ts`)
