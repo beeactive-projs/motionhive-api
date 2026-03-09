@@ -114,7 +114,7 @@ export class ClientService {
           include: [
             {
               model: Group,
-              where: { createdBy: instructorId },
+              where: { instructorId },
               attributes: ['id', 'name'],
             },
           ],

@@ -6,6 +6,7 @@ import { CreateBlogPostDto } from './dto/create-blog-post.dto';
 import { UpdateBlogPostDto } from './dto/update-blog-post.dto';
 import { BlogQueryDto } from './dto/blog-query.dto';
 import { CloudinaryService } from '../../common/services/cloudinary.service';
+import { buildPaginatedResponse } from '../../common/dto/pagination.dto';
 
 @Injectable()
 export class BlogService {
@@ -41,19 +42,7 @@ export class BlogService {
       offset,
     });
 
-    const totalPages = Math.ceil(count / limit);
-
-    return {
-      data: rows,
-      meta: {
-        page,
-        limit,
-        totalItems: count,
-        totalPages,
-        hasNextPage: page < totalPages,
-        hasPreviousPage: page > 1,
-      },
-    };
+    return buildPaginatedResponse(rows, count, page, limit);
   }
 
   async findBySlug(slug: string): Promise<BlogPost> {
