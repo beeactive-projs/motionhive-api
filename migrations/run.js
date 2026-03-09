@@ -64,20 +64,11 @@ function getClientConfig() {
   };
 }
 
-// All migration files in order
-const ALL_MIGRATIONS = [
-  '000_drop_existing_schema.sql',
-  '001_create_core_tables.sql',
-  '002_create_group_tables.sql',
-  '003_create_session_tables.sql',
-  '004_create_profile_tables.sql',
-  '005_seed_roles_permissions.sql',
-  '006_create_super_admin.sql',
-  '007_create_client_tables.sql',
-  '008_create_blog_table.sql',
-  '009_seed_blog_posts.sql',
-  '010_add_invited_email_to_client_request.sql',
-];
+// Auto-discover all .sql migration files, sorted by filename (numeric prefix)
+const ALL_MIGRATIONS = fs
+  .readdirSync(__dirname)
+  .filter((f) => f.endsWith('.sql'))
+  .sort();
 
 async function runMigrations() {
   const args = process.argv.slice(2);
