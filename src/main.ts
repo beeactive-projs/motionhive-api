@@ -188,6 +188,10 @@ A comprehensive REST API for managing fitness training sessions, trainers, and c
   // In production: allow FRONTEND_URL + Railway/Vercel preview domains + DEV_ORIGINS
   const productionOrigins = [
     process.env.FRONTEND_URL,
+    'https://beeactive.fit',
+    'https://www.beeactive.fit',
+    'https://beeactive-dev.fit',
+    'https://www.beeactive-dev.fit',
     /\.vercel\.app$/,
     /\.railway\.app$/,
     /\.netlify\.app$/,
