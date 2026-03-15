@@ -33,6 +33,13 @@ export class BlogService {
     if (query.category) {
       where.category = query.category;
     }
+    if (query.search) {
+      const term = `%${query.search}%`;
+      where[Op.or] = [
+        { title: { [Op.iLike]: term } },
+        { excerpt: { [Op.iLike]: term } },
+      ];
+    }
 
     const { rows, count } = await this.blogPostModel.findAndCountAll({
       where,

@@ -24,4 +24,12 @@ export class BlogQueryDto {
   @IsString()
   @IsOptional()
   category?: string;
+
+  @ApiPropertyOptional({
+    example: 'fitness',
+    description: 'Search by title, excerpt, or tags',
+  })
+  @IsString()
+  @IsOptional()
+  search?: string;
 }
