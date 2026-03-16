@@ -23,6 +23,8 @@ import { ClientModule } from './modules/client/client.module';
 import { BlogModule } from './modules/blog/blog.module';
 import { NotificationModule } from './modules/notification/notification.module';
 import { AnalyticsModule } from './modules/analytics/analytics.module';
+import { FeedbackModule } from './modules/feedback/feedback.module';
+import { WaitlistModule } from './modules/waitlist/waitlist.module';
 import { CamelCaseInterceptor } from './common/interceptors/camel-case.interceptor';
 
 /**
@@ -110,6 +112,8 @@ import { CamelCaseInterceptor } from './common/interceptors/camel-case.intercept
     BlogModule, // Blog posts + Cloudinary image uploads
     NotificationModule, // Notification system (Phase 1 — dummy/logger)
     AnalyticsModule, // Analytics & reporting
+    FeedbackModule, // User feedback (bugs, suggestions)
+    WaitlistModule, // Pre-launch waitlist signups
   ],
 
   controllers: [],
