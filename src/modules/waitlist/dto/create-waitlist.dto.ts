@@ -1,5 +1,6 @@
-import { IsString, IsNotEmpty, IsEmail, IsOptional, MaxLength, IsIn } from 'class-validator';
+import { IsString, IsNotEmpty, IsEmail, IsOptional, MaxLength, IsEnum } from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { WaitlistRole } from '../../../common/enums/waitlist-role.enum';
 
 export class CreateWaitlistDto {
   @ApiProperty({ example: 'john@example.com' })
@@ -14,14 +15,13 @@ export class CreateWaitlistDto {
   name?: string;
 
   @ApiPropertyOptional({
-    example: 'leader',
-    enum: ['leader', 'participant'],
+    example: WaitlistRole.INSTRUCTOR,
+    enum: WaitlistRole,
     description: 'Whether the person leads activities or participates',
   })
-  @IsString()
+  @IsEnum(WaitlistRole)
   @IsOptional()
-  @IsIn(['leader', 'participant'])
-  role?: string;
+  role?: WaitlistRole;
 
   @ApiPropertyOptional({
     example: 'blog-cta',

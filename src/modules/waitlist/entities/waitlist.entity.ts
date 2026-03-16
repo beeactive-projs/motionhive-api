@@ -6,6 +6,7 @@ import {
   CreatedAt,
   UpdatedAt,
 } from 'sequelize-typescript';
+import { WaitlistRole } from '../../../common/enums/waitlist-role.enum';
 
 @Table({
   tableName: 'waitlist',
@@ -37,7 +38,7 @@ export class Waitlist extends Model {
     type: DataType.STRING(50),
     allowNull: true,
   })
-  declare role: string | null;
+  declare role: WaitlistRole | null;
 
   @Column({
     type: DataType.STRING(500),

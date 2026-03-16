@@ -1,12 +1,13 @@
 import { ApiEndpointOptions } from '../decorators/api-response.decorator';
 import { ApiStandardResponses } from './standard-responses';
+import { WaitlistRole } from '../enums/waitlist-role.enum';
 
 export const WaitlistDocs = {
   create: {
     summary: 'Join the waitlist',
     description:
-      'Add an email to the BeeActive waitlist. No authentication required. ' +
-      'Optionally include name, role (leader/participant), and signup source.',
+      `Add an email to the BeeActive waitlist. No authentication required. ` +
+      `Optionally include name, role (${Object.values(WaitlistRole).join('/')}), and signup source.`,
     auth: false,
     responses: [
       {
