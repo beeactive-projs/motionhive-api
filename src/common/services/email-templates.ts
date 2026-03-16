@@ -5,7 +5,7 @@
  * - Dark navy (#0f172a) header/footer
  * - Orange/amber (#f59e0b) accent color
  * - Clean white content area
- * - Lightning bolt branding
+ * - Cloudinary-hosted bee logo
  *
  * All templates use the base layout for consistent branding.
  */
@@ -14,18 +14,29 @@
 // BRAND COLORS (from BeeActive UI)
 // =====================================================
 
+const LOGO_URL =
+  'https://res.cloudinary.com/dom4dfr1q/image/upload/v1773687604/beeactive-logo-navy-p_nga9sa.png';
+
 const COLORS = {
   bgDark: '#0f172a', // Dark navy background
   bgDarker: '#0a1628', // Even darker navy
+  bgOuter: '#f4f4f5', // Light outer background
   bgCard: '#1e293b', // Card background
   accent: '#f59e0b', // Orange/amber accent
   accentHover: '#d97706', // Darker amber
   accentLight: '#fef3c7', // Light amber
+  highlightBg: '#fefce8', // Warm yellow highlight
+  highlightText: '#92400e', // Dark amber text
+  highlightStrong: '#78350f', // Darker amber text
+  cardBg: '#f8fafc', // Summary card background
+  cardBorder: '#e2e8f0', // Summary card border
   textWhite: '#ffffff',
   textLight: '#e2e8f0',
   textMuted: '#94a3b8',
+  textMutedFooter: '#64748b',
   textDark: '#1e293b',
-  textBody: '#334155',
+  textBody: '#27272a', // Updated to match new templates
+  textBodyAlt: '#334155',
   green: '#22c55e',
   greenBg: '#052e16',
   border: '#1e293b',
@@ -45,14 +56,23 @@ const COLORS = {
  * - White content area
  * - Dark navy footer with links
  */
-function baseLayout(content: string, preheader?: string): string {
+function baseLayout(
+  content: string,
+  preheader?: string,
+  footerNote?: string,
+): string {
+  const FONT =
+    "-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif";
+
   return `
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" xmlns="http://www.w3.org/1999/xhtml" xmlns:v="urn:schemas-microsoft-com:vml" xmlns:o="urn:schemas-microsoft-com:office:office">
 <head>
-  <meta charset="UTF-8">
+  <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <meta name="color-scheme" content="light">
+  <meta name="supported-color-schemes" content="light">
   <title>BeeActive</title>
   <!--[if mso]>
   <noscript>
@@ -63,51 +83,77 @@ function baseLayout(content: string, preheader?: string): string {
     </xml>
   </noscript>
   <![endif]-->
+  <style>
+    body,table,td,a{-webkit-text-size-adjust:100%;-ms-text-size-adjust:100%;}
+    table,td{mso-table-lspace:0pt;mso-table-rspace:0pt;}
+    img{-ms-interpolation-mode:bicubic;border:0;height:auto;line-height:100%;outline:none;text-decoration:none;}
+    body{margin:0;padding:0;width:100%!important;height:100%!important;background-color:${COLORS.bgOuter};}
+    @media only screen and (max-width:600px){
+      .email-container{width:100%!important;}
+      .content-padding{padding:32px 24px!important;}
+      .header-padding{padding:24px 24px!important;}
+      .footer-padding{padding:24px 24px!important;}
+    }
+  </style>
 </head>
-<body style="margin:0;padding:0;background-color:${COLORS.bgDarker};font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif;">
-  ${preheader ? `<div style="display:none;max-height:0;overflow:hidden;mso-hide:all;">${preheader}</div>` : ''}
+<body style="margin:0;padding:0;background-color:${COLORS.bgOuter};font-family:${FONT};">
+  ${preheader ? `<div style="display:none;max-height:0px;overflow:hidden;mso-hide:all;">${preheader}&nbsp;&zwnj;&nbsp;&zwnj;&nbsp;&zwnj;&nbsp;&zwnj;&nbsp;&zwnj;&nbsp;&zwnj;&nbsp;&zwnj;&nbsp;&zwnj;</div>` : ''}
 
-  <!-- Outer wrapper -->
-  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:${COLORS.bgDarker};">
+  <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="background-color:${COLORS.bgOuter};">
     <tr>
-      <td align="center" style="padding:24px 16px;">
+      <td align="center" style="padding:40px 16px;">
 
-        <!-- Email container -->
-        <table role="presentation" width="600" cellpadding="0" cellspacing="0" style="max-width:600px;width:100%;">
+        <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="560" class="email-container" style="max-width:560px;width:100%;">
 
           <!-- HEADER -->
           <tr>
-            <td style="background-color:${COLORS.bgDark};padding:32px 40px;border-radius:16px 16px 0 0;text-align:center;">
-              <!-- Logo -->
-              <table role="presentation" cellpadding="0" cellspacing="0" style="margin:0 auto;">
+            <td class="header-padding" style="background-color:${COLORS.bgDark};padding:28px 40px;border-radius:12px 12px 0 0;">
+              <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%">
                 <tr>
-                  <td style="background-color:${COLORS.accent};width:40px;height:40px;border-radius:10px;text-align:center;vertical-align:middle;">
-                    <span style="font-size:22px;line-height:40px;">&#9889;</span>
-                  </td>
-                  <td style="padding-left:12px;">
-                    <span style="font-size:24px;font-weight:700;color:${COLORS.textWhite};letter-spacing:-0.5px;">Bee</span><span style="font-size:24px;font-weight:700;color:${COLORS.accent};letter-spacing:-0.5px;">Active</span>
+                  <td style="font-size:0;">
+                    <table role="presentation" cellspacing="0" cellpadding="0" border="0">
+                      <tr>
+                        <td style="width:36px;height:36px;">
+                          <img src="${LOGO_URL}" alt="BeeActive" width="36" height="36" style="display:block;width:36px;height:36px;border-radius:6px;" />
+                        </td>
+                        <td style="padding-left:10px;font-size:18px;font-weight:700;color:${COLORS.textWhite};font-family:${FONT};letter-spacing:-0.3px;">
+                          Bee<span style="color:${COLORS.accent};">Active</span>
+                        </td>
+                      </tr>
+                    </table>
                   </td>
                 </tr>
               </table>
             </td>
           </tr>
 
+          <!-- AMBER ACCENT LINE -->
+          <tr>
+            <td style="background-color:${COLORS.accent};height:3px;font-size:1px;line-height:1px;">&nbsp;</td>
+          </tr>
+
           <!-- CONTENT -->
           <tr>
-            <td style="background-color:${COLORS.contentBg};padding:40px 40px 32px;">
+            <td class="content-padding" style="background-color:${COLORS.contentBg};padding:44px 40px 40px 40px;">
               ${content}
             </td>
           </tr>
 
           <!-- FOOTER -->
           <tr>
-            <td style="background-color:${COLORS.bgDark};padding:28px 40px;border-radius:0 0 16px 16px;text-align:center;">
-              <p style="margin:0 0 8px;font-size:13px;color:${COLORS.textMuted};">
-                &copy; ${new Date().getFullYear()} BeeActive. All rights reserved.
-              </p>
-              <p style="margin:0;font-size:12px;color:${COLORS.textMuted};">
-                Transform your lifestyle today
-              </p>
+            <td class="footer-padding" style="background-color:${COLORS.bgDark};padding:24px 40px;border-radius:0 0 12px 12px;">
+              <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%">
+                <tr>
+                  <td style="font-size:12px;line-height:1.5;color:${COLORS.textMutedFooter};font-family:${FONT};">
+                    <a href="https://beeactive.fit" style="color:${COLORS.accent};text-decoration:none;font-weight:600;">beeactive.fit</a>
+                  </td>
+                </tr>
+                <tr>
+                  <td style="font-size:11px;line-height:1.5;color:#475569;font-family:${FONT};padding-top:8px;">
+                    ${footerNote || `&copy; ${new Date().getFullYear()} BeeActive. All rights reserved.`}
+                  </td>
+                </tr>
+              </table>
             </td>
           </tr>
 
@@ -266,10 +312,7 @@ export function invitationTemplate(
     ${securityNote("If you don't know the person who sent this, you can safely ignore this email.")}
   `;
 
-  return baseLayout(
-    content,
-    `${inviterName} invited you to join ${groupName}`,
-  );
+  return baseLayout(content, `${inviterName} invited you to join ${groupName}`);
 }
 
 export function sessionCancelledTemplate(
@@ -313,7 +356,10 @@ export function invitationAcceptedTemplate(
     ${paragraph('You can view your group members in the BeeActive app.')}
   `;
 
-  return baseLayout(content, `${accepterName} accepted your invitation to ${groupName}`);
+  return baseLayout(
+    content,
+    `${accepterName} accepted your invitation to ${groupName}`,
+  );
 }
 
 export function participantStatusTemplate(
@@ -348,6 +394,70 @@ export function participantStatusTemplate(
   `;
 
   return baseLayout(content, `Your session status has been updated`);
+}
+
+export function waitlistConfirmationTemplate(name?: string): string {
+  const greeting = name ? `Hi ${name},` : 'Hi there,';
+
+  const content = `
+    ${heading("You're on the list! &#127881;")}
+    ${subheading('Thanks for your interest in BeeActive')}
+    ${paragraph(`${greeting} we're thrilled that you want to be part of the BeeActive community.`)}
+    ${paragraph("We're working hard to build a platform that makes fitness more accessible, social, and fun. You'll be among the <strong>first to know</strong> when we launch.")}
+
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:24px 0;">
+      <tr>
+        <td style="background-color:${COLORS.highlightBg};border-radius:8px;padding:16px 20px;border-left:4px solid ${COLORS.accent};">
+          <p style="margin:0;font-size:14px;color:${COLORS.highlightStrong};line-height:1.5;">
+            &#128640; <strong>What happens next?</strong> We'll send you an invite as soon as early access opens. Stay tuned!
+          </p>
+        </td>
+      </tr>
+    </table>
+
+    ${divider()}
+    ${paragraph('In the meantime, follow us for updates and sneak peeks.')}
+  `;
+
+  return baseLayout(
+    content,
+    "You're on the BeeActive waitlist!",
+    "You're receiving this because you signed up for the BeeActive waitlist.",
+  );
+}
+
+export function feedbackConfirmationTemplate(
+  type: string,
+  title: string,
+  name?: string,
+): string {
+  const greeting = name ? `Hi ${name},` : 'Hi there,';
+  const typeLabel = type.charAt(0).toUpperCase() + type.slice(1);
+
+  const content = `
+    ${heading('Feedback Received &#9989;')}
+    ${subheading('We appreciate you taking the time to write to us')}
+    ${paragraph(`${greeting} thank you for your ${type}. Every piece of feedback helps us build a better platform.`)}
+
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:16px 0 24px;">
+      <tr>
+        <td style="background-color:${COLORS.cardBg};border:1px solid ${COLORS.cardBorder};border-radius:8px;padding:16px 20px;">
+          <p style="margin:0 0 4px;font-size:12px;color:${COLORS.textMuted};text-transform:uppercase;letter-spacing:0.5px;">Your ${typeLabel}</p>
+          <p style="margin:0;font-size:15px;font-weight:600;color:${COLORS.textDark};line-height:1.4;">${title}</p>
+        </td>
+      </tr>
+    </table>
+
+    ${paragraph("Our team reviews every submission. While we can't respond to each one individually, your input directly shapes what we build next.")}
+    ${divider()}
+    ${paragraph('Thanks for helping us improve BeeActive!')}
+  `;
+
+  return baseLayout(
+    content,
+    'Thanks for your feedback!',
+    "You're receiving this because you submitted feedback on BeeActive.",
+  );
 }
 
 export function sessionReminderTemplate(

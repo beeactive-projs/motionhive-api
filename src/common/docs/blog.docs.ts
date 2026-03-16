@@ -44,9 +44,25 @@ export const BlogDocs = {
     ],
   } as ApiEndpointOptions,
 
+  getCategories: {
+    summary: 'List blog categories',
+    description:
+      'Returns distinct categories from published blog posts, sorted alphabetically. ' +
+      'No authentication required.',
+    auth: false,
+    responses: [
+      {
+        status: 200,
+        description: 'Categories retrieved',
+        example: ['Coaching', 'Fitness', 'Nutrition', 'Tips', 'Wellness'],
+      },
+    ],
+  } as ApiEndpointOptions,
+
   getBySlug: {
     summary: 'Get blog post by slug',
-    description: 'Returns a single published blog post by its URL slug. No authentication required.',
+    description:
+      'Returns a single published blog post by its URL slug. No authentication required.',
     auth: false,
     responses: [
       {
@@ -91,7 +107,8 @@ export const BlogDocs = {
 
   update: {
     summary: 'Update a blog post',
-    description: 'Update an existing blog post. Requires ADMIN or SUPER_ADMIN role.',
+    description:
+      'Update an existing blog post. Requires ADMIN or SUPER_ADMIN role.',
     auth: true,
     responses: [
       {

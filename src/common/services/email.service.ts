@@ -11,6 +11,8 @@ import {
   sessionCancelledTemplate,
   invitationAcceptedTemplate,
   participantStatusTemplate,
+  waitlistConfirmationTemplate,
+  feedbackConfirmationTemplate,
 } from './email-templates';
 
 /**
@@ -224,7 +226,11 @@ export class EmailService {
     groupName: string,
   ): Promise<void> {
     const subject = `${accepterName} accepted your invitation to ${groupName}`;
-    const html = invitationAcceptedTemplate(inviterName, accepterName, groupName);
+    const html = invitationAcceptedTemplate(
+      inviterName,
+      accepterName,
+      groupName,
+    );
 
     await this.send(email, subject, html);
   }
@@ -255,6 +261,35 @@ export class EmailService {
       newStatus,
       formattedDate,
     );
+
+    await this.send(email, subject, html);
+  }
+
+  // =====================================================
+  // WAITLIST & FEEDBACK EMAILS
+  // =====================================================
+
+  /**
+   * Send waitlist confirmation email
+   */
+  async sendWaitlistConfirmation(email: string, name?: string): Promise<void> {
+    const subject = "You're on the BeeActive waitlist!";
+    const html = waitlistConfirmationTemplate(name);
+
+    await this.send(email, subject, html);
+  }
+
+  /**
+   * Send feedback confirmation email
+   */
+  async sendFeedbackConfirmation(
+    email: string,
+    type: string,
+    title: string,
+    name?: string,
+  ): Promise<void> {
+    const subject = 'Thanks for your feedback!';
+    const html = feedbackConfirmationTemplate(type, title, name);
 
     await this.send(email, subject, html);
   }

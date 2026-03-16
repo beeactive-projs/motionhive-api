@@ -28,6 +28,7 @@ import { RolesGuard } from '../../common/guards/roles.guard';
  *
  * Public:
  * - GET    /blog              → List published posts (paginated)
+ * - GET    /blog/categories   → List distinct published categories
  * - GET    /blog/:slug        → Get single post by slug
  *
  * Admin (SUPER_ADMIN, ADMIN):
@@ -49,6 +50,12 @@ export class BlogController {
   @ApiEndpoint(BlogDocs.listPublished)
   async listPublished(@Query() query: BlogQueryDto) {
     return this.blogService.findAllPublished(query);
+  }
+
+  @Get('categories')
+  @ApiEndpoint(BlogDocs.getCategories)
+  async getCategories() {
+    return this.blogService.getCategories();
   }
 
   @Get(':slug')

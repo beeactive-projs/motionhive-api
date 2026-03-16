@@ -1,6 +1,6 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { InjectModel } from '@nestjs/sequelize';
-import { Op } from 'sequelize';
+import { Op, fn, col } from 'sequelize';
 import { BlogPost } from './entities/blog-post.entity';
 import { CreateBlogPostDto } from './dto/create-blog-post.dto';
 import { UpdateBlogPostDto } from './dto/update-blog-post.dto';
@@ -50,6 +50,17 @@ export class BlogService {
     });
 
     return buildPaginatedResponse(rows, count, page, limit);
+  }
+
+  async getCategories(): Promise<string[]> {
+    const results = await this.blogPostModel.findAll({
+      attributes: [[fn('DISTINCT', col('category')), 'category']],
+      where: { isPublished: true },
+      order: [['category', 'ASC']],
+      raw: true,
+    });
+
+    return results.map((r) => r.category);
   }
 
   async findBySlug(slug: string): Promise<BlogPost> {
