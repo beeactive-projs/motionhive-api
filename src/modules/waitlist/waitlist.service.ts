@@ -1,4 +1,4 @@
-import { ConflictException, Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable } from '@nestjs/common';
 import type { LoggerService } from '@nestjs/common';
 import { InjectModel } from '@nestjs/sequelize';
 import { WINSTON_MODULE_NEST_PROVIDER } from 'nest-winston';
@@ -23,7 +23,23 @@ export class WaitlistService {
       entry = await this.waitlistModel.create({ ...dto });
     } catch (error) {
       if (error instanceof UniqueConstraintError) {
-        throw new ConflictException('This email is already on the waitlist');
+        // Already on the waitlist — return existing entry silently
+        const existing = await this.waitlistModel.findOne({
+          where: { email: dto.email },
+        });
+
+        // Re-send confirmation email
+        const name = dto.name || existing?.name || undefined;
+        this.emailService
+          .sendWaitlistConfirmation(dto.email, name)
+          .catch((err: Error) =>
+            this.logger.error(
+              `Failed to send waitlist confirmation to ${dto.email}: ${err.message}`,
+              'WaitlistService',
+            ),
+          );
+
+        return existing!;
       }
       throw error;
     }
@@ -31,7 +47,7 @@ export class WaitlistService {
     // Send confirmation email (fire-and-forget)
     this.emailService
       .sendWaitlistConfirmation(dto.email, dto.name)
-      .catch((err) =>
+      .catch((err: Error) =>
         this.logger.error(
           `Failed to send waitlist confirmation to ${dto.email}: ${err.message}`,
           'WaitlistService',
