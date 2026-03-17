@@ -170,7 +170,7 @@ export class ProfileService {
 
     if (!profile) {
       throw new NotFoundException(
-        'Instructor profile not found. Activate it first via POST /profile/instructor',
+        'Instructor profile not found. Activate it first via PATCH /profile/me (with { instructor: {...} }) or POST /profile/instructor',
       );
     }
 
@@ -203,14 +203,46 @@ export class ProfileService {
       );
     }
 
-    // Update instructor profile (only if it exists)
+    // Update instructor profile
+    // If instructor profile doesn't exist yet, treat this as "become an instructor"
     if (dto.instructor && Object.keys(dto.instructor).length > 0) {
       const instProfile = await this.getInstructorProfile(userId);
-      if (instProfile) {
-        results.instructor = await this.updateInstructorProfile(
-          userId,
-          dto.instructor,
-        );
+      if (!instProfile) {
+        const transaction = await this.sequelize.transaction();
+        try {
+          const created = await this.instructorProfileModel.create(
+            {
+              userId: userId,
+              displayName: dto.instructor.displayName || null,
+            },
+            { transaction },
+          );
+
+          await this.roleService.assignRoleToUserByName(
+            userId,
+            'INSTRUCTOR',
+            undefined,
+            undefined,
+            transaction,
+          );
+
+          // Apply the instructor fields in the same transaction
+          await created.update(dto.instructor, { transaction });
+
+          await transaction.commit();
+
+          this.logger.log(
+            `User ${userId} activated instructor profile via PATCH /profile/me`,
+            'ProfileService',
+          );
+
+          results.instructor = created;
+        } catch (error) {
+          await transaction.rollback();
+          throw error;
+        }
+      } else {
+        results.instructor = await this.updateInstructorProfile(userId, dto.instructor);
       }
     }
 
