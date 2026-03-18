@@ -9,10 +9,10 @@ export const SessionDocs = {
   create: {
     summary: 'Create a new session',
     description:
-      'Create a training session. Requires INSTRUCTOR role. If groupId is provided, you must be a member. ' +
+      'Create a training session. Requires INSTRUCTOR role. If groupId is provided, you must be a member of that group. ' +
       'For recurring sessions: set isRecurring to true and provide recurringRule (frequency, interval, daysOfWeek for WEEKLY, optional endDate or endAfterOccurrences). ' +
-      'The created session is the first occurrence; use GET /sessions/:id/recurrence-preview to show dates and POST /sessions/:id/generate-instances to create future session rows. ' +
-      'See USER-FLOWS.md § Flow 10 (Recurring sessions) for full rule format and examples.',
+      'The created session is the first occurrence; use GET /sessions/:id/recurrence-preview to show dates and POST /sessions/:id/generate-instances to create future rows. ' +
+      'If a scheduling conflict is detected (same time slot), the session is still created but the response includes warning and conflictingSessionIds.',
     auth: true,
     responses: [
       {
@@ -20,12 +20,26 @@ export const SessionDocs = {
         description: 'Session created successfully',
         example: {
           id: '550e8400-e29b-41d4-a716-446655440000',
+          groupId: 'group-uuid-or-null',
+          instructorId: 'user-uuid',
           title: 'Morning Yoga Flow',
+          description: 'A relaxing yoga flow for all levels',
           sessionType: 'GROUP',
           visibility: 'GROUP',
           scheduledAt: '2026-02-15T09:00:00.000Z',
           durationMinutes: 60,
+          location: 'Bucharest, Parcul Herăstrău',
+          maxParticipants: 12,
+          price: 50,
+          currency: 'RON',
           status: 'SCHEDULED',
+          isRecurring: false,
+          recurringRule: null,
+          createdAt: '2026-03-18T10:00:00.000Z',
+          updatedAt: '2026-03-18T10:00:00.000Z',
+          // Only present when a scheduling conflict was detected:
+          warning: 'Schedule conflict with 1 existing session(s)',
+          conflictingSessionIds: ['other-session-uuid'],
         },
       },
       ApiStandardResponses.BadRequest,
@@ -37,12 +51,36 @@ export const SessionDocs = {
   getMySessions: {
     summary: 'List my visible sessions (paginated)',
     description:
-      'Returns paginated sessions visible to you. Includes: your own sessions, org GROUP sessions, PUBLIC sessions, and sessions you joined.',
+      'Returns paginated sessions visible to you. Includes: your own sessions, group sessions you belong to, PUBLIC sessions, and sessions you joined as participant. ' +
+      'Query params: ?page=1&limit=20.',
     auth: true,
     responses: [
       {
         status: 200,
         description: 'Sessions listed',
+        example: {
+          items: [
+            {
+              id: 'session-uuid',
+              groupId: 'group-uuid-or-null',
+              instructorId: 'user-uuid',
+              title: 'Morning Yoga Flow',
+              sessionType: 'GROUP',
+              visibility: 'GROUP',
+              scheduledAt: '2026-02-15T09:00:00.000Z',
+              durationMinutes: 60,
+              location: 'Bucharest',
+              maxParticipants: 12,
+              price: 50,
+              currency: 'RON',
+              status: 'SCHEDULED',
+              isRecurring: false,
+            },
+          ],
+          total: 1,
+          page: 1,
+          pageSize: 20,
+        },
       },
       ApiStandardResponses.Unauthorized,
     ],
@@ -51,12 +89,35 @@ export const SessionDocs = {
   discoverSessions: {
     summary: 'Discover public sessions',
     description:
-      'Browse upcoming public sessions. Supports search by title, description, or location. Query params: ?search=yoga&page=1&limit=20.',
+      'Browse upcoming PUBLIC sessions. Supports search by title, description, or location. ' +
+      'Query params: ?search=yoga&page=1&limit=20&sessionType=GROUP&dateFrom=2026-01-01&dateTo=2026-12-31.',
     auth: true,
     responses: [
       {
         status: 200,
         description: 'Public sessions listed',
+        example: {
+          items: [
+            {
+              id: 'session-uuid',
+              groupId: 'group-uuid-or-null',
+              instructorId: 'user-uuid',
+              title: 'Morning Yoga Flow',
+              sessionType: 'GROUP',
+              visibility: 'PUBLIC',
+              scheduledAt: '2026-02-15T09:00:00.000Z',
+              durationMinutes: 60,
+              location: 'Bucharest',
+              maxParticipants: 12,
+              price: 50,
+              currency: 'RON',
+              status: 'SCHEDULED',
+            },
+          ],
+          total: 1,
+          page: 1,
+          pageSize: 20,
+        },
       },
       ApiStandardResponses.Unauthorized,
     ],

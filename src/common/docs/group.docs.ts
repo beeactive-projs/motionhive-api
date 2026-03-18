@@ -13,7 +13,7 @@ export const GroupDocs = {
     summary: 'Discover public groups',
     description:
       'Browse and search public groups. No authentication required. ' +
-      'Supports filtering by tags, city, country, and free-text search on name/description. ' +
+      'Supports filtering by tags (?tags=hiit,yoga), city, country, and free-text search on name/description (?search=yoga). ' +
       'Results sorted by member count (most popular first).',
     auth: false,
     responses: [
@@ -21,12 +21,13 @@ export const GroupDocs = {
         status: 200,
         description: 'Groups found',
         example: {
-          data: [
+          items: [
             {
               id: '550e8400-e29b-41d4-a716-446655440000',
               name: 'Morning HIIT Crew',
               slug: 'morning-hiit-crew',
               description: 'High-intensity interval training every weekday morning',
+              logoUrl: 'https://res.cloudinary.com/...',
               tags: ['fitness', 'hiit', 'morning'],
               joinPolicy: 'OPEN',
               city: 'Bucharest',
@@ -34,14 +35,9 @@ export const GroupDocs = {
               memberCount: 42,
             },
           ],
-          meta: {
-            page: 1,
-            limit: 20,
-            totalItems: 1,
-            totalPages: 1,
-            hasNextPage: false,
-            hasPreviousPage: false,
-          },
+          total: 1,
+          page: 1,
+          pageSize: 20,
         },
       },
     ],
@@ -213,26 +209,22 @@ export const GroupDocs = {
         status: 200,
         description: 'Members listed',
         example: {
-          data: [
+          items: [
             {
               id: 'member-uuid',
               userId: 'user-uuid',
               firstName: 'Jane',
               lastName: 'Doe',
+              avatarId: 'cloudinary-asset-id-or-null',
               isOwner: false,
               sharedHealthInfo: true,
               isClient: true,
               joinedAt: '2026-01-15T10:00:00.000Z',
             },
           ],
-          meta: {
-            page: 1,
-            limit: 20,
-            totalItems: 1,
-            totalPages: 1,
-            hasNextPage: false,
-            hasPreviousPage: false,
-          },
+          total: 1,
+          page: 1,
+          pageSize: 20,
         },
       },
       ApiStandardResponses.Unauthorized,

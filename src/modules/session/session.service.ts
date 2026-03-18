@@ -15,6 +15,7 @@ import { SessionParticipant } from './entities/session-participant.entity';
 import { CreateSessionDto } from './dto/create-session.dto';
 import { UpdateSessionDto } from './dto/update-session.dto';
 import { buildPaginatedResponse } from '../../common/dto/pagination.dto';
+import { buildSearchTerm } from '../../common/utils/search.utils';
 
 /** Shape of recurringRule JSON stored on Session (for recurring sessions). */
 interface RecurringRule {
@@ -239,10 +240,11 @@ export class SessionService {
     };
 
     if (filters?.search) {
+      const term = buildSearchTerm(filters.search);
       where[Op.or] = [
-        { title: { [Op.iLike]: `%${filters.search}%` } },
-        { description: { [Op.iLike]: `%${filters.search}%` } },
-        { location: { [Op.iLike]: `%${filters.search}%` } },
+        { title: { [Op.iLike]: term } },
+        { description: { [Op.iLike]: term } },
+        { location: { [Op.iLike]: term } },
       ];
     }
 

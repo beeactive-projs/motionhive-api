@@ -7,7 +7,7 @@ import {
 import type { LoggerService } from '@nestjs/common';
 import { InjectModel } from '@nestjs/sequelize';
 import { Sequelize } from 'sequelize-typescript';
-import { Op, Transaction } from 'sequelize';
+import { Op, Transaction, literal } from 'sequelize';
 import { WINSTON_MODULE_NEST_PROVIDER } from 'nest-winston';
 import { UserProfile } from './entities/user-profile.entity';
 import { InstructorProfile } from './entities/instructor-profile.entity';
@@ -20,6 +20,7 @@ import { RoleService } from '../role/role.service';
 import { UserService } from '../user/user.service';
 import { User } from '../user/entities/user.entity';
 import { buildPaginatedResponse } from '../../common/dto/pagination.dto';
+import { buildSearchTerm } from '../../common/utils/search.utils';
 
 /**
  * Profile Service
@@ -99,6 +100,55 @@ export class ProfileService {
   // =====================================================
 
   /**
+   * Create an instructor profile within an existing transaction.
+   *
+   * Used during registration when isInstructor=true, so the entire
+   * registration (user + user profile + instructor profile + roles) is
+   * atomic. The caller owns the transaction commit/rollback.
+   *
+   * @param userId - The newly created user's UUID
+   * @param firstName - Used as displayName fallback
+   * @param lastName - Used as displayName fallback
+   * @param transaction - The outer transaction to join
+   */
+  async createInstructorProfileInTransaction(
+    userId: string,
+    firstName: string,
+    lastName: string,
+    transaction: Transaction,
+  ): Promise<InstructorProfile> {
+    const profile = await this.instructorProfileModel.create(
+      {
+        userId,
+        displayName: `${firstName} ${lastName}`,
+        bio: null,
+        specializations: [],
+        certifications: [],
+        yearsOfExperience: null,
+        isAcceptingClients: true,
+        isPublic: false,
+        socialLinks: {},
+        showSocialLinks: true,
+        showEmail: true,
+        showPhone: false,
+        locationCity: null,
+        locationCountry: null,
+      },
+      { transaction },
+    );
+
+    await this.roleService.assignRoleToUserByName(
+      userId,
+      'INSTRUCTOR',
+      undefined,
+      undefined,
+      transaction,
+    );
+
+    return profile;
+  }
+
+  /**
    * Create instructor profile and assign INSTRUCTOR role
    *
    * This is the "I want to instruct activities" action.
@@ -121,7 +171,22 @@ export class ProfileService {
     const transaction = await this.sequelize.transaction();
     try {
       const profile = await this.instructorProfileModel.create(
-        { userId: userId, displayName: dto.displayName || null },
+        {
+          userId: userId,
+          displayName: dto.displayName || null,
+          bio: dto.bio ?? null,
+          specializations: dto.specializations ?? [],
+          certifications: dto.certifications ?? [],
+          yearsOfExperience: dto.yearsOfExperience ?? null,
+          isAcceptingClients: dto.isAcceptingClients ?? true,
+          isPublic: dto.isPublic ?? false,
+          socialLinks: dto.socialLinks ?? {},
+          showSocialLinks: dto.showSocialLinks ?? true,
+          showEmail: dto.showEmail ?? true,
+          showPhone: dto.showPhone ?? false,
+          locationCity: dto.locationCity ?? null,
+          locationCountry: dto.locationCountry ?? null,
+        },
         { transaction },
       );
 
@@ -266,61 +331,58 @@ export class ProfileService {
    * Sorted by years of experience (most experienced first).
    */
   async discoverInstructors(dto: DiscoverInstructorsDto) {
-    const page = dto.page || 1;
-    const limit = dto.limit || 20;
-    const offset = (page - 1) * limit;
-
     const where: any = {
       isPublic: true,
     };
 
     if (dto.city) {
-      where.locationCity = { [Op.iLike]: `%${dto.city}%` };
+      where.locationCity = { [Op.iLike]: buildSearchTerm(dto.city) };
     }
 
     if (dto.country) {
       where.locationCountry = dto.country;
     }
 
-    // Search across displayName, bio, firstName, lastName using cross-table OR
+    // Search across name, profile, specializations and location
     if (dto.search) {
+      const term = buildSearchTerm(dto.search);
       where[Op.or] = [
-        { displayName: { [Op.iLike]: `%${dto.search}%` } },
-        { bio: { [Op.iLike]: `%${dto.search}%` } },
-        { '$user.first_name$': { [Op.iLike]: `%${dto.search}%` } },
-        { '$user.last_name$': { [Op.iLike]: `%${dto.search}%` } },
+        { displayName: { [Op.iLike]: term } },
+        { bio: { [Op.iLike]: term } },
+        { locationCity: { [Op.iLike]: term } },
+        { '$user.first_name$': { [Op.iLike]: term } },
+        { '$user.last_name$': { [Op.iLike]: term } },
+        literal(`CAST("InstructorProfile"."specializations" AS TEXT) ILIKE ${this.sequelize.escape(term)}`),
       ];
     }
 
-    const { rows: profiles, count: totalItems } =
-      await this.instructorProfileModel.findAndCountAll({
-        where,
-        include: [
-          {
-            model: User,
-            attributes: ['id', 'firstName', 'lastName', 'avatarId'],
-          },
-        ],
-        subQuery: false,
-        attributes: [
-          'id',
-          'userId',
-          'displayName',
-          'bio',
-          'specializations',
-          'yearsOfExperience',
-          'isAcceptingClients',
-          'locationCity',
-          'locationCountry',
-          'socialLinks',
-          'showSocialLinks',
-        ],
-        order: [['yearsOfExperience', 'DESC']],
-        limit,
-        offset,
-      });
+    const profiles = await this.instructorProfileModel.findAll({
+      where,
+      include: [
+        {
+          model: User,
+          attributes: ['id', 'firstName', 'lastName', 'avatarId'],
+        },
+      ],
+      subQuery: false,
+      attributes: [
+        'id',
+        'userId',
+        'displayName',
+        'bio',
+        'specializations',
+        'yearsOfExperience',
+        'isAcceptingClients',
+        'locationCity',
+        'locationCountry',
+        'socialLinks',
+        'showSocialLinks',
+      ],
+      order: [['yearsOfExperience', 'DESC']],
+      limit: 30,
+    });
 
-    const data = profiles.map((profile) => ({
+    return profiles.map((profile) => ({
       id: profile.id,
       userId: profile.userId,
       firstName: profile.user?.firstName,
@@ -335,8 +397,6 @@ export class ProfileService {
       country: profile.locationCountry,
       socialLinks: profile.showSocialLinks ? profile.socialLinks : null,
     }));
-
-    return buildPaginatedResponse(data, totalItems, page, limit);
   }
 
   /**

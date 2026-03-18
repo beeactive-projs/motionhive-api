@@ -3,9 +3,11 @@ import {
   IsNotEmpty,
   IsString,
   IsOptional,
+  IsBoolean,
 } from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { IsStrongPassword } from '../../../common/validators/strong-password.validator';
+import { Match } from '../../../common/validators/match.validator';
 
 /**
  * Register DTO
@@ -30,8 +32,17 @@ export class RegisterDto {
   })
   @IsString()
   @IsNotEmpty()
-  @IsStrongPassword() // ✅ Now enforces strong password requirements
+  @IsStrongPassword()
   password: string;
+
+  @ApiProperty({
+    example: 'SecureP@ssw0rd!',
+    description: 'Must match the password field exactly',
+  })
+  @IsString()
+  @IsNotEmpty()
+  @Match('password', { message: 'Passwords do not match' })
+  confirmPassword: string;
 
   @ApiProperty({
     example: 'John',
@@ -56,4 +67,14 @@ export class RegisterDto {
   @IsString()
   @IsOptional()
   phone?: string;
+
+  @ApiPropertyOptional({
+    example: false,
+    description:
+      'Set to true to register as an instructor. Creates an instructor profile and assigns the INSTRUCTOR role.',
+    default: false,
+  })
+  @IsBoolean()
+  @IsOptional()
+  isInstructor?: boolean;
 }

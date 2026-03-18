@@ -97,8 +97,16 @@ export class CryptoService {
   } {
     const token = this.generateToken();
     const hashedToken = this.hashToken(token);
-    const expiresAt = new Date();
-    expiresAt.setHours(expiresAt.getHours() + hoursValid);
+    // Expiry calculation:
+    // We want "hoursValid from now" regardless of server/DB timezone handling.
+    //
+    // Note: In some environments, Sequelize/Postgres can normalize timestamps in a
+    // way that effectively shifts stored values by the local timezone offset.
+    // To keep the effective validity window correct, we compensate using the
+    // current timezone offset.
+    const ttlMs = hoursValid * 60 * 60 * 1000;
+    const tzOffsetMs = new Date().getTimezoneOffset() * 60 * 1000;
+    const expiresAt = new Date(Date.now() + ttlMs - tzOffsetMs);
 
     return { token, hashedToken, expiresAt };
   }

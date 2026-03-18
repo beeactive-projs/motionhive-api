@@ -7,6 +7,7 @@ import { UpdateBlogPostDto } from './dto/update-blog-post.dto';
 import { BlogQueryDto } from './dto/blog-query.dto';
 import { CloudinaryService } from '../../common/services/cloudinary.service';
 import { buildPaginatedResponse } from '../../common/dto/pagination.dto';
+import { buildSearchTerm } from '../../common/utils/search.utils';
 
 @Injectable()
 export class BlogService {
@@ -34,10 +35,11 @@ export class BlogService {
       where.category = query.category;
     }
     if (query.search) {
-      const term = `%${query.search}%`;
+      const term = buildSearchTerm(query.search);
       where[Op.or] = [
         { title: { [Op.iLike]: term } },
         { excerpt: { [Op.iLike]: term } },
+        { authorName: { [Op.iLike]: term } },
       ];
     }
 
@@ -105,5 +107,14 @@ export class BlogService {
 
   async uploadImage(file: Express.Multer.File) {
     return this.cloudinaryService.uploadImage(file, 'blog');
+  }
+
+  async getSitemapSlugs(): Promise<{ slug: string; updatedAt: Date }[]> {
+    const posts = await this.blogPostModel.findAll({
+      where: { isPublished: true },
+      attributes: ['slug', 'updatedAt'],
+      order: [['updatedAt', 'DESC']],
+    });
+    return posts.map((p) => ({ slug: p.slug, updatedAt: p.updatedAt }));
   }
 }

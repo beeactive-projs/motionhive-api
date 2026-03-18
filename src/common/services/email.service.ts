@@ -114,7 +114,10 @@ export class EmailService {
     email: string,
     resetToken: string,
   ): Promise<void> {
-    const resetLink = `${this.frontendUrl}/reset-password?token=${resetToken}`;
+    // Frontend flow:
+    // - /auth/reset-password -> requests a reset email
+    // - /auth/new-password?token=... -> sets the new password
+    const resetLink = `${this.frontendUrl}/auth/new-password?token=${resetToken}`;
 
     const subject = 'Reset your BeeActive password';
     const html = passwordResetTemplate(resetLink);

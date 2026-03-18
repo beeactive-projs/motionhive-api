@@ -43,7 +43,7 @@ export const InvitationDocs = {
         status: 200,
         description: 'Pending invitations listed',
         example: {
-          data: [
+          items: [
             {
               id: 'invitation-uuid',
               inviter: { firstName: 'Sarah', lastName: 'Johnson' },
@@ -53,14 +53,9 @@ export const InvitationDocs = {
               expiresAt: '2026-02-22T00:00:00.000Z',
             },
           ],
-          meta: {
-            page: 1,
-            limit: 20,
-            totalItems: 1,
-            totalPages: 1,
-            hasNextPage: false,
-            hasPreviousPage: false,
-          },
+          total: 1,
+          page: 1,
+          pageSize: 20,
         },
       },
       ApiStandardResponses.Unauthorized,
@@ -152,7 +147,7 @@ export const InvitationDocs = {
         status: 200,
         description: 'Group invitations listed',
         example: {
-          data: [
+          items: [
             {
               id: 'invitation-uuid',
               email: 'user@example.com',
@@ -162,14 +157,9 @@ export const InvitationDocs = {
               declinedAt: null,
             },
           ],
-          meta: {
-            page: 1,
-            limit: 20,
-            totalItems: 1,
-            totalPages: 1,
-            hasNextPage: false,
-            hasPreviousPage: false,
-          },
+          total: 1,
+          page: 1,
+          pageSize: 20,
         },
       },
       ApiStandardResponses.Unauthorized,

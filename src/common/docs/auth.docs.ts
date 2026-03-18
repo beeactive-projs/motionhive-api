@@ -10,7 +10,11 @@ export const AuthDocs = {
   register: {
     summary: 'Register a new user',
     description:
-      'Create a new user account with email and password. Automatically assigns USER role.',
+      'Create a new user account with email and password. ' +
+      'Always assigns the USER role. ' +
+      'If isInstructor=true, also creates a minimal instructor profile (displayName set to firstName + lastName) and assigns the INSTRUCTOR role. ' +
+      'Password and confirmPassword must match. ' +
+      'A verification email is sent after registration.',
     responses: [
       {
         status: 201,
@@ -23,7 +27,9 @@ export const AuthDocs = {
             email: 'user@example.com',
             firstName: 'John',
             lastName: 'Doe',
+            isEmailVerified: false,
             roles: ['USER'],
+            // roles: ['USER', 'INSTRUCTOR'] when isInstructor=true
           },
         },
       },
@@ -49,6 +55,7 @@ export const AuthDocs = {
             email: 'user@example.com',
             firstName: 'John',
             lastName: 'Doe',
+            isEmailVerified: true,
             roles: ['USER', 'INSTRUCTOR'],
           },
         },
@@ -62,13 +69,15 @@ export const AuthDocs = {
   refreshToken: {
     summary: 'Refresh access token',
     description:
-      'Generate new access token using refresh token. Refresh token must be valid and not expired.',
+      'Generate a new token pair using a valid refresh token (token rotation). ' +
+      'The old refresh token is revoked. Both new tokens must be stored by the client.',
     responses: [
       {
         status: 200,
-        description: 'New access token generated',
+        description: 'New token pair issued (both access and refresh tokens are rotated)',
         example: {
           accessToken: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...',
+          refreshToken: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...',
         },
       },
       ApiStandardResponses.Unauthorized,

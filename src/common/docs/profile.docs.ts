@@ -11,36 +11,35 @@ export const ProfileDocs = {
     summary: 'Discover instructors',
     description:
       'Browse and search public instructor profiles. No authentication required. ' +
-      'Supports search by name/bio/specialization and filtering by city and country. ' +
-      'Results sorted by years of experience (most experienced first).',
+      'Supports search by name, display name, first/last name, bio, specializations, and city. ' +
+      'Filter by city or country using separate query params. ' +
+      'Returns up to 30 results sorted by years of experience (most experienced first). ' +
+      'Query params: search (string), city (string), country (ISO 3166-1 alpha-2 e.g. "RO").',
     auth: false,
     responses: [
       {
         status: 200,
-        description: 'Instructors found',
-        example: {
-          data: [
-            {
-              id: 'profile-uuid',
-              userId: 'user-uuid',
-              firstName: 'John',
-              lastName: 'Doe',
-              displayName: 'Coach John',
-              bio: 'Certified HIIT and strength trainer with 8 years experience',
-              specializations: ['hiit', 'strength', 'weight_loss'],
-              yearsOfExperience: 8,
-              isAcceptingClients: true,
-              city: 'Bucharest',
-              country: 'RO',
+        description: 'List of matching public instructor profiles (plain array, max 30)',
+        example: [
+          {
+            id: 'profile-uuid',
+            userId: 'user-uuid',
+            firstName: 'John',
+            lastName: 'Doe',
+            avatarId: 'cloudinary-asset-id-or-null',
+            displayName: 'Coach John',
+            bio: 'Certified HIIT and strength trainer with 8 years experience',
+            specializations: ['hiit', 'strength', 'weight_loss'],
+            yearsOfExperience: 8,
+            isAcceptingClients: true,
+            city: 'Bucharest',
+            country: 'RO',
+            socialLinks: {
+              instagram: 'https://instagram.com/coachjohn',
+              website: 'https://coachjohn.com',
             },
-          ],
-          meta: {
-            page: 1,
-            limit: 20,
-            totalItems: 1,
-            totalPages: 1,
           },
-        },
+        ],
       },
     ],
   } as ApiEndpointOptions,
@@ -48,9 +47,10 @@ export const ProfileDocs = {
   getInstructorPublicProfile: {
     summary: 'Get public instructor profile',
     description:
-      'Returns a specific instructor\'s public profile by user ID. ' +
+      "Returns a specific instructor's public profile by user ID. " +
       'Only returns data if the instructor has set isPublic to true. ' +
-      'No authentication required.',
+      'No authentication required. ' +
+      'socialLinks is null when the instructor has showSocialLinks=false.',
     auth: false,
     responses: [
       {
@@ -61,13 +61,23 @@ export const ProfileDocs = {
           userId: 'user-uuid',
           firstName: 'John',
           lastName: 'Doe',
+          avatarId: 'cloudinary-asset-id-or-null',
           displayName: 'Coach John',
           bio: 'Certified HIIT and strength trainer',
           specializations: ['hiit', 'strength'],
+          certifications: [
+            { name: 'ACE Personal Trainer', year: 2018 },
+          ],
           yearsOfExperience: 8,
           isAcceptingClients: true,
           city: 'Bucharest',
           country: 'RO',
+          socialLinks: {
+            instagram: 'https://instagram.com/coachjohn',
+            website: 'https://coachjohn.com',
+          },
+          showEmail: true,
+          showPhone: false,
         },
       },
       ApiStandardResponses.NotFound,

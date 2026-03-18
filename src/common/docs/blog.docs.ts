@@ -8,14 +8,15 @@ export const BlogDocs = {
     summary: 'List published blog posts',
     description:
       'Returns paginated published blog posts. No authentication required. ' +
-      'Supports filtering by category. Ordered by publishedAt descending.',
+      'Supports filtering by category (?category=Tips) and search by title, excerpt, or author name (?search=yoga). ' +
+      'Ordered by publishedAt descending. Note: content field is excluded from list — use getBySlug for full content.',
     auth: false,
     responses: [
       {
         status: 200,
         description: 'Blog posts retrieved',
         example: {
-          data: [
+          items: [
             {
               id: '550e8400-e29b-41d4-a716-446655440000',
               slug: '5-daily-habits-fitness-routine',
@@ -31,14 +32,9 @@ export const BlogDocs = {
               publishedAt: '2026-02-15T10:00:00.000Z',
             },
           ],
-          meta: {
-            page: 1,
-            limit: 10,
-            totalItems: 6,
-            totalPages: 1,
-            hasNextPage: false,
-            hasPreviousPage: false,
-          },
+          total: 6,
+          page: 1,
+          pageSize: 10,
         },
       },
     ],

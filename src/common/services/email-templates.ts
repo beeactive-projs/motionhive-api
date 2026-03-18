@@ -23,6 +23,7 @@ const COLORS = {
   bgOuter: '#f4f4f5', // Light outer background
   bgCard: '#1e293b', // Card background
   accent: '#f59e0b', // Orange/amber accent
+  navyDefault: '#1E3A5F',
   accentHover: '#d97706', // Darker amber
   accentLight: '#fef3c7', // Light amber
   highlightBg: '#fefce8', // Warm yellow highlight
@@ -113,8 +114,8 @@ function baseLayout(
                   <td style="font-size:0;">
                     <table role="presentation" cellspacing="0" cellpadding="0" border="0">
                       <tr>
-                        <td style="width:36px;height:36px;">
-                          <img src="${LOGO_URL}" alt="BeeActive" width="36" height="36" style="display:block;width:36px;height:36px;border-radius:6px;" />
+                        <td style="width:50px;">
+                          <img src="${LOGO_URL}" alt="BeeActive" width="50" style="display:block;width:50px;border-radius:6px;" />
                         </td>
                         <td style="padding-left:10px;font-size:18px;font-weight:700;color:${COLORS.textWhite};font-family:${FONT};letter-spacing:-0.3px;">
                           Bee<span style="color:${COLORS.accent};">Active</span>
@@ -174,7 +175,7 @@ function primaryButton(text: string, href: string): string {
     <table role="presentation" cellpadding="0" cellspacing="0" style="margin:28px auto;">
       <tr>
         <td style="background-color:${COLORS.accent};border-radius:8px;">
-          <a href="${href}" target="_blank" style="display:inline-block;padding:14px 32px;font-size:16px;font-weight:600;color:${COLORS.textWhite};text-decoration:none;border-radius:8px;background-color:${COLORS.accent};">
+          <a href="${href}" target="_blank" style="display:inline-block;padding:14px 32px;font-size:16px;font-weight:600;color:${COLORS.navyDefault};text-decoration:none;border-radius:8px;background-color:${COLORS.accent};">
             ${text}
           </a>
         </td>
@@ -233,10 +234,10 @@ function featureItem(icon: string, text: string): string {
 
 export function emailVerificationTemplate(verifyLink: string): string {
   const content = `
-    ${heading('Verify Your Email')}
+    ${heading('Verify your email')}
     ${subheading('One quick step to get started')}
     ${paragraph('Thanks for signing up for BeeActive! Please verify your email address to unlock all features and start your fitness journey.')}
-    ${primaryButton('Verify Email Address', verifyLink)}
+    ${primaryButton('&#9989; Verify email address', verifyLink)}
     ${expiryNote('This verification link expires in <strong>24 hours</strong>.')}
     ${securityNote("If you didn't create a BeeActive account, you can safely ignore this email.")}
   `;
@@ -259,7 +260,7 @@ export function welcomeTemplate(
       ${featureItem('&#127942;', '<strong>Organize your own events and sessions</strong> — Create sessions and build your community')}
     </table>
 
-    ${primaryButton('Get Started', frontendUrl)}
+    ${primaryButton('&#127775; Get started', frontendUrl)}
     ${divider()}
     ${paragraph("Need help? Just reply to this email — we're happy to assist.")}
   `;
@@ -269,10 +270,10 @@ export function welcomeTemplate(
 
 export function passwordResetTemplate(resetLink: string): string {
   const content = `
-    ${heading('Reset Your Password')}
+    ${heading('Reset your password')}
     ${subheading('We received a password reset request')}
     ${paragraph("Click the button below to choose a new password. If you didn't make this request, you can safely ignore this email — your password won't change.")}
-    ${primaryButton('Reset Password', resetLink)}
+    ${primaryButton('&#128273; Reset password', resetLink)}
     ${expiryNote('This reset link expires in <strong>1 hour</strong> and can only be used once.')}
     ${securityNote("If you didn't request a password reset, someone may have entered your email by mistake. No changes have been made to your account.")}
   `;
@@ -299,11 +300,11 @@ export function invitationTemplate(
     : '';
 
   const content = `
-    ${heading("You're Invited!")}
+    ${heading("You're invited!")}
     ${subheading(`${inviterName} wants you to join their team`)}
     ${paragraph(`<strong>${inviterName}</strong> has invited you to join <strong>${groupName}</strong> on BeeActive — a fitness platform for instructors and clients.`)}
     ${messageBlock}
-    ${primaryButton('Accept Invitation', acceptLink)}
+    ${primaryButton('&#129309; Accept invitation', acceptLink)}
     ${divider()}
     <p style="margin:0 0 16px;font-size:14px;color:${COLORS.textBody};line-height:1.5;">
       By accepting, you'll be added as a member of <strong>${groupName}</strong> and can start joining training sessions.
@@ -322,7 +323,7 @@ export function sessionCancelledTemplate(
   scheduledAt: string,
 ): string {
   const content = `
-    ${heading('Session Cancelled')}
+    ${heading('Session cancelled')}
     ${subheading(`A session you were registered for has been cancelled`)}
 
     <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:0 0 24px;">
@@ -349,7 +350,7 @@ export function invitationAcceptedTemplate(
   groupName: string,
 ): string {
   const content = `
-    ${heading('Invitation Accepted!')}
+    ${heading('Invitation accepted!')}
     ${subheading(`Great news — someone joined your group`)}
     ${paragraph(`Hi ${inviterName}, <strong>${accepterName}</strong> has accepted your invitation and joined <strong>${groupName}</strong>.`)}
     ${divider()}
@@ -377,7 +378,7 @@ export function participantStatusTemplate(
   const statusLabel = statusLabels[newStatus] || newStatus.toLowerCase();
 
   const content = `
-    ${heading('Session Status Update')}
+    ${heading('Session status update')}
     ${subheading(`Your registration status has changed`)}
 
     <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:0 0 24px;">
@@ -435,7 +436,7 @@ export function feedbackConfirmationTemplate(
   const typeLabel = type.charAt(0).toUpperCase() + type.slice(1);
 
   const content = `
-    ${heading('Feedback Received &#9989;')}
+    ${heading('Feedback received &#9989;')}
     ${subheading('We appreciate you taking the time to write to us')}
     ${paragraph(`${greeting} thank you for your ${type}. Every piece of feedback helps us build a better platform.`)}
 
@@ -469,7 +470,7 @@ export function sessionReminderTemplate(
 ): string {
   // TODO: [JOB SYSTEM] This template is ready — wire it up when the reminder job system is built
   const content = `
-    ${heading('Session Reminder')}
+    ${heading('Session reminder')}
     ${subheading("Don't forget — your session is coming up!")}
 
     <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:0 0 24px;">

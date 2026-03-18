@@ -22,6 +22,7 @@ import { InstructorClient } from '../client/entities/instructor-client.entity';
 import { EmailService } from '../../common/services/email.service';
 import { CryptoService } from '../../common/services/crypto.service';
 import { buildPaginatedResponse } from '../../common/dto/pagination.dto';
+import { buildSearchTerm } from '../../common/utils/search.utils';
 
 /**
  * Group Service
@@ -499,9 +500,10 @@ export class GroupService {
     }
 
     if (dto.search) {
+      const term = buildSearchTerm(dto.search);
       where[Op.or] = [
-        { name: { [Op.iLike]: `%${dto.search}%` } },
-        { description: { [Op.iLike]: `%${dto.search}%` } },
+        { name: { [Op.iLike]: term } },
+        { description: { [Op.iLike]: term } },
       ];
     }
 

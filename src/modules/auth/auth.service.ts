@@ -95,6 +95,15 @@ export class AuthService {
 
       await this.profileService.createUserProfile(user.id, transaction);
 
+      if (registerDto.isInstructor) {
+        await this.profileService.createInstructorProfileInTransaction(
+          user.id,
+          registerDto.firstName,
+          registerDto.lastName,
+          transaction,
+        );
+      }
+
       const verificationToken =
         await this.userService.generateEmailVerificationToken(
           user,
@@ -477,7 +486,7 @@ export class AuthService {
       if (this.configService.get('NODE_ENV') !== 'production') {
         const frontendUrl =
           this.configService.get('FRONTEND_URL') || 'http://localhost:4200';
-        const resetLink = `${frontendUrl}/reset-password?token=${resetToken}`;
+        const resetLink = `${frontendUrl}/auth/new-password?token=${resetToken}`;
         return {
           message:
             'If your email is registered, you will receive a password reset link.',

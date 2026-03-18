@@ -10,26 +10,33 @@ export const ClientDocs = {
   getMyClients: {
     summary: 'List my clients',
     description:
-      'List the authenticated instructor\'s clients with pagination and optional status filter. ' +
-      'Returns client info with group memberships.',
+      "List the authenticated instructor's clients with pagination and optional status filter. " +
+      'Returns client info with group memberships. Query params: ?page=1&limit=20&status=ACTIVE.',
     auth: true,
     responses: [
       {
         status: 200,
         description: 'Clients listed',
         example: {
-          data: [
+          items: [
             {
               id: 'client-relationship-uuid',
               clientId: 'user-uuid',
+              instructorId: 'instructor-uuid',
               firstName: 'Jane',
               lastName: 'Doe',
+              avatarId: 'cloudinary-asset-id-or-null',
               status: 'ACTIVE',
               startedAt: '2026-01-15T10:00:00.000Z',
               notes: 'Working on weight loss goals',
+              groupMemberships: [
+                { groupId: 'group-uuid', groupName: 'Morning HIIT Crew' },
+              ],
             },
           ],
-          meta: { page: 1, limit: 20, totalItems: 1, totalPages: 1 },
+          total: 1,
+          page: 1,
+          pageSize: 20,
         },
       },
       ApiStandardResponses.Unauthorized,
@@ -39,12 +46,36 @@ export const ClientDocs = {
 
   getMyInstructors: {
     summary: 'List my instructors',
-    description: 'List all instructors the authenticated user is a client of.',
+    description: 'List all instructors the authenticated user is an ACTIVE client of. Includes instructor profile info.',
     auth: true,
     responses: [
       {
         status: 200,
         description: 'Instructors listed',
+        example: [
+          {
+            id: 'client-relationship-uuid',
+            instructorId: 'user-uuid',
+            clientId: 'user-uuid',
+            status: 'ACTIVE',
+            startedAt: '2026-01-15T10:00:00.000Z',
+            instructor: {
+              id: 'user-uuid',
+              firstName: 'John',
+              lastName: 'Doe',
+              email: 'john@example.com',
+              avatarId: 'cloudinary-asset-id-or-null',
+            },
+            instructorProfile: {
+              userId: 'user-uuid',
+              displayName: 'Coach John',
+              specializations: ['hiit', 'strength'],
+              bio: 'Certified trainer with 8 years experience',
+              locationCity: 'Bucharest',
+              locationCountry: 'RO',
+            },
+          },
+        ],
       },
       ApiStandardResponses.Unauthorized,
     ],
@@ -52,12 +83,31 @@ export const ClientDocs = {
 
   getPendingRequests: {
     summary: 'List pending requests',
-    description: 'List pending incoming client requests for the authenticated user.',
+    description: 'List pending incoming client requests for the authenticated user. Excludes expired requests.',
     auth: true,
     responses: [
       {
         status: 200,
         description: 'Pending requests listed',
+        example: [
+          {
+            id: 'request-uuid',
+            fromUserId: 'instructor-uuid',
+            toUserId: 'user-uuid',
+            type: 'INSTRUCTOR_TO_CLIENT',
+            status: 'PENDING',
+            message: 'Hi, I would love to train you!',
+            expiresAt: '2026-04-17T10:00:00.000Z',
+            createdAt: '2026-03-18T10:00:00.000Z',
+            fromUser: {
+              id: 'instructor-uuid',
+              firstName: 'John',
+              lastName: 'Doe',
+              email: 'john@example.com',
+              avatarId: 'cloudinary-asset-id-or-null',
+            },
+          },
+        ],
       },
       ApiStandardResponses.Unauthorized,
     ],
@@ -66,15 +116,27 @@ export const ClientDocs = {
   sendInvitation: {
     summary: 'Send client invitation',
     description:
-      'Instructor sends an invitation to a user to become their client. Creates a pending relationship.',
+      'Instructor sends an invitation to a user by email to become their client. ' +
+      'If the email belongs to an existing user, creates a pending client request. ' +
+      'If not, sends an email invitation (the request is linked when they register).',
     auth: true,
     responses: [
       {
         status: 201,
         description: 'Client invitation sent',
         example: {
-          message: 'Client invitation sent successfully',
-          request: { id: 'request-uuid', status: 'PENDING' },
+          message: 'Invitation sent to existing user',
+          request: {
+            id: 'request-uuid',
+            fromUserId: 'instructor-uuid',
+            toUserId: 'user-uuid',
+            invitedEmail: null,
+            type: 'INSTRUCTOR_TO_CLIENT',
+            status: 'PENDING',
+            message: 'Hi, join my training program!',
+            expiresAt: '2026-04-17T10:00:00.000Z',
+            createdAt: '2026-03-18T10:00:00.000Z',
+          },
         },
       },
       { status: 400, description: 'Relationship already exists or pending request' },
@@ -86,15 +148,24 @@ export const ClientDocs = {
   requestToBeClient: {
     summary: 'Request to become a client',
     description:
-      'User requests to become a client of the specified instructor. Instructor must be accepting clients.',
+      'User requests to become a client of the specified instructor. ' +
+      'The instructor must have isAcceptingClients=true on their profile. ' +
+      'Returns the created ClientRequest entity directly (not wrapped).',
     auth: true,
     responses: [
       {
         status: 201,
-        description: 'Client request sent',
+        description: 'Client request sent — returns the ClientRequest entity',
         example: {
-          message: 'Request sent successfully',
-          request: { id: 'request-uuid', status: 'PENDING' },
+          id: 'request-uuid',
+          fromUserId: 'user-uuid',
+          toUserId: 'instructor-uuid',
+          invitedEmail: null,
+          type: 'CLIENT_TO_INSTRUCTOR',
+          status: 'PENDING',
+          message: 'Hi, I would love to train with you!',
+          expiresAt: '2026-04-17T10:00:00.000Z',
+          createdAt: '2026-03-18T10:00:00.000Z',
         },
       },
       { status: 400, description: 'Instructor not accepting clients or relationship exists' },
