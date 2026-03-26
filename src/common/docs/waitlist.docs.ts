@@ -6,7 +6,7 @@ export const WaitlistDocs = {
   create: {
     summary: 'Join the waitlist',
     description:
-      `Add an email to the BeeActive waitlist. No authentication required. ` +
+      `Add an email to the MotionHive waitlist. No authentication required. ` +
       `Optionally include name, role (${Object.values(WaitlistRole).join('/')}), and signup source.`,
     auth: false,
     responses: [

@@ -67,10 +67,10 @@ async function bootstrap() {
 
   // Swagger Configuration
   const config = new DocumentBuilder()
-    .setTitle('BeeActive API')
+    .setTitle('MotionHive API')
     .setDescription(
       `
-# BeeActive Fitness Platform API
+# MotionHive Fitness Platform API
 
 A comprehensive REST API for managing fitness training sessions, trainers, and clients.
 
@@ -153,7 +153,10 @@ A comprehensive REST API for managing fitness training sessions, trainers, and c
       },
       'JWT-auth',
     )
-    .addTag('Authentication', 'User registration, login, and password management')
+    .addTag(
+      'Authentication',
+      'User registration, login, and password management',
+    )
     .addTag('Users', 'User account management')
     .addTag('Profiles', 'User & instructor profiles')
     .addTag('Groups', 'Group management and membership')
@@ -163,12 +166,12 @@ A comprehensive REST API for managing fitness training sessions, trainers, and c
     .addTag('Analytics', 'Analytics and reporting')
     .addTag('Health', 'Application health checks')
     .addServer('http://localhost:3000', 'Local development')
-    .addServer('https://beeactive-api-production.up.railway.app', 'Production')
+    .addServer('https://motionhive-api-production.up.railway.app', 'Production')
     .build();
 
   const document = SwaggerModule.createDocument(app, config);
   SwaggerModule.setup('api/docs', app, document, {
-    customSiteTitle: 'BeeActive API Documentation',
+    customSiteTitle: 'MotionHive API Documentation',
     customfavIcon: 'https://nestjs.com/img/logo-small.svg',
     customCss: `
       .swagger-ui .topbar { display: none }
@@ -188,10 +191,11 @@ A comprehensive REST API for managing fitness training sessions, trainers, and c
   // In production: allow FRONTEND_URL + Railway/Vercel preview domains + DEV_ORIGINS
   const productionOrigins = [
     process.env.FRONTEND_URL,
-    'https://beeactive.fit',
-    'https://www.beeactive.fit',
-    'https://beeactive-dev.fit',
-    'https://www.beeactive-dev.fit',
+    'https://motionhive.fit',
+    'https://www.motionhive.fit',
+    'https://app.motionhive.fit',
+    'https://dev.motionhive.fit',
+    'https://app-dev.motionhive.fit',
     /\.vercel\.app$/,
     /\.railway\.app$/,
     /\.netlify\.app$/,

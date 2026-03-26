@@ -30,7 +30,7 @@ export class CloudinaryService {
       cloudinary.uploader
         .upload_stream(
           {
-            folder: `beeactive/${folder}`,
+            folder: `motionhive/${folder}`,
             resource_type: 'image',
             transformation: [{ quality: 'auto', fetch_format: 'auto' }],
           },

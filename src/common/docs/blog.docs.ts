@@ -146,7 +146,7 @@ export const BlogDocs = {
         description: 'Image uploaded',
         example: {
           url: 'https://res.cloudinary.com/dom4dfr1q/image/upload/...',
-          publicId: 'beeactive/blog/abc123',
+          publicId: 'motionhive/blog/abc123',
         },
       },
       ApiStandardResponses.BadRequest,

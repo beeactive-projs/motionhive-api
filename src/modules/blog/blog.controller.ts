@@ -55,7 +55,7 @@ export class BlogController {
   @Get('sitemap.xml')
   async sitemap(@Res() res: Response) {
     const posts = await this.blogService.getSitemapSlugs();
-    const BASE = this.configService.get<string>('FRONTEND_URL', 'https://beeactive-dev.fit');
+    const BASE = this.configService.get<string>('FRONTEND_URL', 'https://motionhive.fit');
 
     const staticUrls = [
       { loc: `${BASE}/`, priority: '1.0', changefreq: 'weekly' },

@@ -1,21 +1,21 @@
 /**
- * BeeActive Email Templates
+ * MotionHive Email Templates
  *
  * Branded email templates matching the app's design:
  * - Dark navy (#0f172a) header/footer
  * - Orange/amber (#f59e0b) accent color
  * - Clean white content area
- * - Cloudinary-hosted bee logo
+ * - Cloudinary-hosted logo
  *
  * All templates use the base layout for consistent branding.
  */
 
 // =====================================================
-// BRAND COLORS (from BeeActive UI)
+// BRAND COLORS (from MotionHive UI)
 // =====================================================
 
 const LOGO_URL =
-  'https://res.cloudinary.com/dom4dfr1q/image/upload/v1773687604/beeactive-logo-navy-p_nga9sa.png';
+  'https://res.cloudinary.com/dom4dfr1q/image/upload/v1773687604/motionhive-logo.png';
 
 const COLORS = {
   bgDark: '#0f172a', // Dark navy background
@@ -74,7 +74,7 @@ function baseLayout(
   <meta http-equiv="X-UA-Compatible" content="IE=edge">
   <meta name="color-scheme" content="light">
   <meta name="supported-color-schemes" content="light">
-  <title>BeeActive</title>
+  <title>MotionHive</title>
   <!--[if mso]>
   <noscript>
     <xml>
@@ -115,10 +115,10 @@ function baseLayout(
                     <table role="presentation" cellspacing="0" cellpadding="0" border="0">
                       <tr>
                         <td style="width:50px;">
-                          <img src="${LOGO_URL}" alt="BeeActive" width="50" style="display:block;width:50px;border-radius:6px;" />
+                          <img src="${LOGO_URL}" alt="MotionHive" width="50" style="display:block;width:50px;border-radius:6px;" />
                         </td>
                         <td style="padding-left:10px;font-size:18px;font-weight:700;color:${COLORS.textWhite};font-family:${FONT};letter-spacing:-0.3px;">
-                          Bee<span style="color:${COLORS.accent};">Active</span>
+                          Motion<span style="color:${COLORS.accent};">Hive</span>
                         </td>
                       </tr>
                     </table>
@@ -146,12 +146,12 @@ function baseLayout(
               <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%">
                 <tr>
                   <td style="font-size:12px;line-height:1.5;color:${COLORS.textMutedFooter};font-family:${FONT};">
-                    <a href="https://beeactive.fit" style="color:${COLORS.accent};text-decoration:none;font-weight:600;">beeactive.fit</a>
+                    <a href="https://motionhive.fit" style="color:${COLORS.accent};text-decoration:none;font-weight:600;">motionhive.fit</a>
                   </td>
                 </tr>
                 <tr>
                   <td style="font-size:11px;line-height:1.5;color:#475569;font-family:${FONT};padding-top:8px;">
-                    ${footerNote || `&copy; ${new Date().getFullYear()} BeeActive. All rights reserved.`}
+                    ${footerNote || `&copy; ${new Date().getFullYear()} MotionHive. All rights reserved.`}
                   </td>
                 </tr>
               </table>
@@ -236,13 +236,16 @@ export function emailVerificationTemplate(verifyLink: string): string {
   const content = `
     ${heading('Verify your email')}
     ${subheading('One quick step to get started')}
-    ${paragraph('Thanks for signing up for BeeActive! Please verify your email address to unlock all features and start your fitness journey.')}
+    ${paragraph('Thanks for signing up for MotionHive! Please verify your email address to unlock all features and start your fitness journey.')}
     ${primaryButton('&#9989; Verify email address', verifyLink)}
     ${expiryNote('This verification link expires in <strong>24 hours</strong>.')}
-    ${securityNote("If you didn't create a BeeActive account, you can safely ignore this email.")}
+    ${securityNote("If you didn't create a MotionHive account, you can safely ignore this email.")}
   `;
 
-  return baseLayout(content, 'Verify your email to get started with BeeActive');
+  return baseLayout(
+    content,
+    'Verify your email to get started with MotionHive',
+  );
 }
 
 export function welcomeTemplate(
@@ -252,7 +255,7 @@ export function welcomeTemplate(
   const content = `
     ${heading(`Welcome, ${firstName}! &#9889;`)}
     ${subheading("You're all set to start your journey towards a healthier and more active lifestyle")}
-    ${paragraph("Your beeactive account is ready. Here's what you can do:")}
+    ${paragraph("Your MotionHive account is ready. Here's what you can do:")}
 
     <table role="presentation" cellpadding="0" cellspacing="0" style="margin:0 0 24px;">
       ${featureItem('&#127947;', '<strong>Join sessions</strong> — Find and participate in sessions that match your goals and preferences')}
@@ -265,7 +268,7 @@ export function welcomeTemplate(
     ${paragraph("Need help? Just reply to this email — we're happy to assist.")}
   `;
 
-  return baseLayout(content, `Welcome to BeeActive, ${firstName}!`);
+  return baseLayout(content, `Welcome to MotionHive, ${firstName}!`);
 }
 
 export function passwordResetTemplate(resetLink: string): string {
@@ -278,7 +281,7 @@ export function passwordResetTemplate(resetLink: string): string {
     ${securityNote("If you didn't request a password reset, someone may have entered your email by mistake. No changes have been made to your account.")}
   `;
 
-  return baseLayout(content, 'Reset your BeeActive password');
+  return baseLayout(content, 'Reset your MotionHive password');
 }
 
 export function invitationTemplate(
@@ -302,7 +305,7 @@ export function invitationTemplate(
   const content = `
     ${heading("You're invited!")}
     ${subheading(`${inviterName} wants you to join their team`)}
-    ${paragraph(`<strong>${inviterName}</strong> has invited you to join <strong>${groupName}</strong> on BeeActive — a fitness platform for instructors and clients.`)}
+    ${paragraph(`<strong>${inviterName}</strong> has invited you to join <strong>${groupName}</strong> on MotionHive — a fitness platform for instructors and clients.`)}
     ${messageBlock}
     ${primaryButton('&#129309; Accept invitation', acceptLink)}
     ${divider()}
@@ -354,7 +357,7 @@ export function invitationAcceptedTemplate(
     ${subheading(`Great news — someone joined your group`)}
     ${paragraph(`Hi ${inviterName}, <strong>${accepterName}</strong> has accepted your invitation and joined <strong>${groupName}</strong>.`)}
     ${divider()}
-    ${paragraph('You can view your group members in the BeeActive app.')}
+    ${paragraph('You can view your group members in the MotionHive app.')}
   `;
 
   return baseLayout(
@@ -402,8 +405,8 @@ export function waitlistConfirmationTemplate(name?: string): string {
 
   const content = `
     ${heading("You're on the list! &#127881;")}
-    ${subheading('Thanks for your interest in BeeActive')}
-    ${paragraph(`${greeting} we're thrilled that you want to be part of the BeeActive community.`)}
+    ${subheading('Thanks for your interest in MotionHive')}
+    ${paragraph(`${greeting} we're thrilled that you want to be part of the MotionHive community.`)}
     ${paragraph("We're working hard to build a platform that makes fitness more accessible, social, and fun. You'll be among the <strong>first to know</strong> when we launch.")}
 
     <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:24px 0;">
@@ -422,8 +425,8 @@ export function waitlistConfirmationTemplate(name?: string): string {
 
   return baseLayout(
     content,
-    "You're on the BeeActive waitlist!",
-    "You're receiving this because you signed up for the BeeActive waitlist.",
+    "You're on the MotionHive waitlist!",
+    "You're receiving this because you signed up for the MotionHive waitlist.",
   );
 }
 
@@ -451,13 +454,13 @@ export function feedbackConfirmationTemplate(
 
     ${paragraph("Our team reviews every submission. While we can't respond to each one individually, your input directly shapes what we build next.")}
     ${divider()}
-    ${paragraph('Thanks for helping us improve BeeActive!')}
+    ${paragraph('Thanks for helping us improve MotionHive!')}
   `;
 
   return baseLayout(
     content,
     'Thanks for your feedback!',
-    "You're receiving this because you submitted feedback on BeeActive.",
+    "You're receiving this because you submitted feedback on MotionHive.",
   );
 }
 
