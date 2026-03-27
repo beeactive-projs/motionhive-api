@@ -1,11 +1,19 @@
-import { IsString, IsNotEmpty, MinLength, MaxLength, IsOptional, IsEmail, IsIn } from 'class-validator';
+import {
+  IsString,
+  IsNotEmpty,
+  MinLength,
+  MaxLength,
+  IsOptional,
+  IsEmail,
+  IsIn,
+} from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
 export class CreateFeedbackDto {
-  @ApiProperty({ example: 'bug', enum: ['bug', 'suggestion', 'other'] })
+  @ApiProperty({ example: 'BUG', enum: ['BUG', 'SUGGESTION', 'OTHER'] })
   @IsString()
   @IsNotEmpty()
-  @IsIn(['bug', 'suggestion', 'other'])
+  @IsIn(['BUG', 'SUGGESTION', 'OTHER'])
   type: string;
 
   @ApiProperty({ example: 'Login button not working' })
@@ -15,7 +23,9 @@ export class CreateFeedbackDto {
   @MaxLength(255)
   title: string;
 
-  @ApiProperty({ example: 'When I click the login button on mobile, nothing happens.' })
+  @ApiProperty({
+    example: 'When I click the login button on mobile, nothing happens.',
+  })
   @IsString()
   @IsNotEmpty()
   @MinLength(10)
