@@ -15,7 +15,7 @@
 // =====================================================
 
 const LOGO_URL =
-  'https://res.cloudinary.com/dom4dfr1q/image/upload/v1773687604/motionhive-logo.png';
+  'https://res.cloudinary.com/dom4dfr1q/image/upload/v1774535916/motionhive-logo_jxsxic.png';
 
 const COLORS = {
   bgDark: '#0f172a', // Dark navy background
