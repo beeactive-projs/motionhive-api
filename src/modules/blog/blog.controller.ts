@@ -111,8 +111,8 @@ ${blogXml}
 
   @Get(':slug')
   @ApiEndpoint(BlogDocs.getBySlug)
-  async getBySlug(@Param('slug') slug: string) {
-    return this.blogService.findBySlug(slug);
+  async getBySlug(@Param('slug') slug: string, @Query('locale') locale = 'en') {
+    return this.blogService.findBySlug(slug, locale);
   }
 
   // =====================================================

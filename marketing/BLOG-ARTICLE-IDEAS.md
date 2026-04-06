@@ -168,7 +168,7 @@
 
 ## Article 11: How to Keep Your Fitness Community Engaged Between Sessions
 - **Category**: Guide
-- **Excerpt**: Your members show up for the workout. But what happens between sessions determines whether they stay. Here's how to keep the energy going 24/7.
+- **Excerpt**: Your members show up for the workout. But what happens between sessions determines whether they stay. Here's how to Track attendance & activity 24/7.
 - **Target Keywords**: how to keep clients motivated fitness, instructor-led group workouts
 - **Read Time**: 7 min
 - **Cover Image**: Unsplash search: "group chat fitness community"

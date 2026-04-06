@@ -91,6 +91,13 @@ export class BlogPost extends Model {
   declare tags: string[] | null;
 
   @Column({
+    type: DataType.CHAR(2),
+    allowNull: false,
+    defaultValue: 'en',
+  })
+  declare language: string;
+
+  @Column({
     type: DataType.BOOLEAN,
     allowNull: false,
     defaultValue: false,

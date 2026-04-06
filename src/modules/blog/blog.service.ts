@@ -31,6 +31,9 @@ export class BlogService {
     const offset = (page - 1) * limit;
 
     const where: any = { isPublished: true };
+    if (query.locale) {
+      where.language = query.locale;
+    }
     if (query.category) {
       where.category = query.category;
     }
@@ -65,9 +68,9 @@ export class BlogService {
     return results.map((r) => r.category);
   }
 
-  async findBySlug(slug: string): Promise<BlogPost> {
+  async findBySlug(slug: string, language = 'en'): Promise<BlogPost> {
     const post = await this.blogPostModel.findOne({
-      where: { slug, isPublished: true },
+      where: { slug, language, isPublished: true },
       attributes: { exclude: ['deletedAt'] },
     });
 

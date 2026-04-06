@@ -32,4 +32,9 @@ export class BlogQueryDto {
   @IsString()
   @IsOptional()
   search?: string;
+
+  @ApiPropertyOptional({ example: 'en', description: 'Filter by language (en, ro)' })
+  @IsString()
+  @IsOptional()
+  locale?: string;
 }
