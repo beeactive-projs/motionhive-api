@@ -5,6 +5,7 @@ import {
   IsBoolean,
   IsNumber,
   IsArray,
+  IsIn,
   MaxLength,
   Min,
 } from 'class-validator';
@@ -87,9 +88,10 @@ export class CreateBlogPostDto {
 
   @ApiPropertyOptional({
     example: 'en',
-    description: 'Language of the post (en, ro)',
+    description: 'Language of the post. Supported values: en, ro',
+    enum: ['en', 'ro'],
   })
-  @IsString()
+  @IsIn(['en', 'ro'], { message: 'language must be one of: en, ro' })
   @IsOptional()
   language?: string;
 

@@ -34,7 +34,7 @@ import { RolesGuard } from '../../common/guards/roles.guard';
  * - GET    /blog/categories   → List distinct published categories
  * - GET    /blog/:slug        → Get single post by slug
  *
- * Admin (SUPER_ADMIN, ADMIN):
+ * Admin (SUPER_ADMIN, ADMIN, WRITER):
  * - POST   /blog              → Create post
  * - PATCH  /blog/:id          → Update post
  * - DELETE /blog/:id          → Soft delete post
@@ -132,7 +132,7 @@ ${blogXml}
 
   @Post()
   @UseGuards(AuthGuard('jwt'), RolesGuard)
-  @Roles('ADMIN', 'SUPER_ADMIN')
+  @Roles('ADMIN', 'SUPER_ADMIN', 'WRITER')
   @ApiEndpoint({ ...BlogDocs.create, body: CreateBlogPostDto })
   async create(@Body() dto: CreateBlogPostDto) {
     return this.blogService.create(dto);
@@ -140,7 +140,7 @@ ${blogXml}
 
   @Patch(':id')
   @UseGuards(AuthGuard('jwt'), RolesGuard)
-  @Roles('ADMIN', 'SUPER_ADMIN')
+  @Roles('ADMIN', 'SUPER_ADMIN', 'WRITER')
   @ApiEndpoint({ ...BlogDocs.update, body: UpdateBlogPostDto })
   async update(@Param('id') id: string, @Body() dto: UpdateBlogPostDto) {
     return this.blogService.update(id, dto);
@@ -148,7 +148,7 @@ ${blogXml}
 
   @Delete(':id')
   @UseGuards(AuthGuard('jwt'), RolesGuard)
-  @Roles('ADMIN', 'SUPER_ADMIN')
+  @Roles('ADMIN', 'SUPER_ADMIN', 'WRITER')
   @ApiEndpoint(BlogDocs.delete)
   async delete(@Param('id') id: string) {
     await this.blogService.delete(id);
@@ -157,7 +157,7 @@ ${blogXml}
 
   @Post('upload-image')
   @UseGuards(AuthGuard('jwt'), RolesGuard)
-  @Roles('ADMIN', 'SUPER_ADMIN')
+  @Roles('ADMIN', 'SUPER_ADMIN', 'WRITER')
   @UseInterceptors(FileInterceptor('file'))
   @ApiConsumes('multipart/form-data')
   @ApiEndpoint(BlogDocs.uploadImage)
