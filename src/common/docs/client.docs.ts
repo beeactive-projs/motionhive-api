@@ -253,4 +253,74 @@ export const ClientDocs = {
       ApiStandardResponses.NotFound,
     ],
   } as ApiEndpointOptions,
+
+  getPendingEmailInvites: {
+    summary: 'List pending email invitations',
+    description:
+      'Instructor-only. Returns email-only invitations (toUserId IS NULL) — ' +
+      'people who were invited but have not registered yet. ' +
+      'Add ?includeExpired=true to also see expired/cancelled invitations.',
+    auth: true,
+    responses: [
+      {
+        status: 200,
+        description: 'Pending email invitations',
+        example: [
+          {
+            id: 'request-uuid',
+            invitedEmail: 'client@example.com',
+            message: 'Join my training program!',
+            status: 'PENDING',
+            token: 'abc123',
+            createdAt: '2026-03-18T10:00:00.000Z',
+            expiresAt: '2026-04-17T10:00:00.000Z',
+          },
+        ],
+      },
+      ApiStandardResponses.Unauthorized,
+      ApiStandardResponses.Forbidden,
+    ],
+  } as ApiEndpointOptions,
+
+  getInviteByToken: {
+    summary: 'Get invite details by token',
+    description:
+      'Public endpoint. Returns invitation details for the given token so the signup page ' +
+      'can pre-fill the invited email and show the instructor name. ' +
+      'Returns 404 if the token is unknown, 410 if expired or already used.',
+    auth: false,
+    responses: [
+      {
+        status: 200,
+        description: 'Invite details',
+        example: {
+          token: 'abc123',
+          invitedEmail: 'client@example.com',
+          instructor: { firstName: 'John', lastName: 'Doe' },
+          expiresAt: '2026-04-17T10:00:00.000Z',
+        },
+      },
+      { status: 404, description: 'Token not found' },
+      { status: 410, description: 'Token expired or already used' },
+    ],
+  } as ApiEndpointOptions,
+
+  acceptByToken: {
+    summary: 'Accept invitation by referral token',
+    description:
+      'Called immediately after a new user registers via a referral link. ' +
+      'Links the newly created account to the pending ClientRequest and marks it as ACCEPTED. ' +
+      'Requires the JWT issued at registration in the Authorization header.',
+    auth: true,
+    responses: [
+      {
+        status: 201,
+        description: 'Invitation accepted',
+        example: { message: 'Invitation accepted successfully.' },
+      },
+      { status: 400, description: 'Token expired, already accepted, declined, or cancelled' },
+      ApiStandardResponses.Unauthorized,
+      ApiStandardResponses.NotFound,
+    ],
+  } as ApiEndpointOptions,
 };

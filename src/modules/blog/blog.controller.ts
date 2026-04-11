@@ -55,14 +55,25 @@ export class BlogController {
   @Get('sitemap.xml')
   async sitemap(@Res() res: Response) {
     const posts = await this.blogService.getSitemapSlugs();
-    const BASE = this.configService.get<string>('FRONTEND_URL', 'https://motionhive.fit');
+    const BASE = this.configService.get<string>(
+      'FRONTEND_URL',
+      'https://motionhive.fit',
+    );
 
     const staticUrls = [
       { loc: `${BASE}/`, priority: '1.0', changefreq: 'weekly' },
       { loc: `${BASE}/about`, priority: '0.7', changefreq: 'monthly' },
       { loc: `${BASE}/blog`, priority: '0.9', changefreq: 'daily' },
-      { loc: `${BASE}/legal/terms-of-service`, priority: '0.3', changefreq: 'yearly' },
-      { loc: `${BASE}/legal/privacy-policy`, priority: '0.3', changefreq: 'yearly' },
+      {
+        loc: `${BASE}/legal/terms-of-service`,
+        priority: '0.3',
+        changefreq: 'yearly',
+      },
+      {
+        loc: `${BASE}/legal/privacy-policy`,
+        priority: '0.3',
+        changefreq: 'yearly',
+      },
     ];
 
     const staticXml = staticUrls

@@ -26,20 +26,22 @@ import { RolesGuard } from '../../common/guards/roles.guard';
  * Client Controller
  *
  * Manages instructor-client relationships:
- * - GET    /clients                             → List my clients (INSTRUCTOR)
- * - GET    /clients/my-instructors              → List instructors I'm a client of
- * - GET    /clients/requests/pending            → List my pending incoming requests
- * - POST   /clients/invite                      → Send client invitation (INSTRUCTOR)
- * - POST   /clients/request/:instructorId       → Request to become a client
- * - POST   /clients/requests/:requestId/accept  → Accept a request
- * - POST   /clients/requests/:requestId/decline → Decline a request
- * - POST   /clients/requests/:requestId/cancel  → Cancel own request
- * - PATCH  /clients/:clientId                   → Update client notes/status (INSTRUCTOR)
- * - DELETE /clients/:clientId                   → Archive client relationship (INSTRUCTOR)
+ * - GET    /clients                                  → List my clients (INSTRUCTOR)
+ * - GET    /clients/my-instructors                   → List instructors I'm a client of
+ * - GET    /clients/requests/pending                 → List my pending incoming requests
+ * - GET    /clients/invites                          → List pending email-only invitations (INSTRUCTOR)
+ * - GET    /clients/invite/:token                    → Get invite details by token (PUBLIC)
+ * - POST   /clients/invite                           → Send client invitation (INSTRUCTOR)
+ * - POST   /clients/request/:instructorId            → Request to become a client
+ * - POST   /clients/requests/:requestId/accept       → Accept a request
+ * - POST   /clients/requests/:requestId/decline      → Decline a request
+ * - POST   /clients/requests/:requestId/cancel       → Cancel own request
+ * - POST   /clients/requests/accept-by-token         → Accept invite via referral token (new user)
+ * - PATCH  /clients/:clientId                        → Update client notes/status (INSTRUCTOR)
+ * - DELETE /clients/:clientId                        → Archive client relationship (INSTRUCTOR)
  */
 @ApiTags('Clients')
 @Controller('clients')
-@UseGuards(AuthGuard('jwt'))
 export class ClientController {
   constructor(private readonly clientService: ClientService) {}
 
@@ -48,7 +50,7 @@ export class ClientController {
    * List the authenticated instructor's clients with pagination and optional status filter.
    */
   @Get()
-  @UseGuards(RolesGuard)
+  @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('INSTRUCTOR', 'ADMIN', 'SUPER_ADMIN')
   @ApiEndpoint(ClientDocs.getMyClients)
   async getMyClients(@Request() req, @Query() query: ListClientsDto) {
@@ -64,6 +66,7 @@ export class ClientController {
    * List all instructors the authenticated user is a client of.
    */
   @Get('my-instructors')
+  @UseGuards(AuthGuard('jwt'))
   @ApiEndpoint(ClientDocs.getMyInstructors)
   async getMyInstructors(@Request() req) {
     return this.clientService.getMyInstructors(req.user.id);
@@ -74,9 +77,42 @@ export class ClientController {
    * List pending incoming requests for the authenticated user.
    */
   @Get('requests/pending')
+  @UseGuards(AuthGuard('jwt'))
   @ApiEndpoint(ClientDocs.getPendingRequests)
   async getPendingRequests(@Request() req) {
     return this.clientService.getPendingRequests(req.user.id);
+  }
+
+  /**
+   * GET /clients/invites
+   * List pending email-only invitations sent by this instructor.
+   * These are people who were invited but haven't registered yet.
+   * Add ?includeExpired=true to also see expired/cancelled invitations.
+   */
+  @Get('invites')
+  @UseGuards(AuthGuard('jwt'), RolesGuard)
+  @Roles('INSTRUCTOR', 'ADMIN', 'SUPER_ADMIN')
+  @ApiEndpoint(ClientDocs.getPendingEmailInvites)
+  async getPendingEmailInvites(
+    @Request() req,
+    @Query('includeExpired') includeExpired?: string,
+  ) {
+    return this.clientService.getPendingEmailInvites(
+      req.user.id,
+      includeExpired === 'true',
+    );
+  }
+
+  /**
+   * GET /clients/invite/:token
+   * Public endpoint — returns invite details so the signup page can pre-fill
+   * the invited email and show the instructor's name.
+   */
+  @Get('invite/:token')
+  @Throttle({ default: { limit: 20, ttl: 60000 } })
+  @ApiEndpoint(ClientDocs.getInviteByToken)
+  async getInviteByToken(@Param('token') token: string) {
+    return this.clientService.getInviteByToken(token);
   }
 
   /**
@@ -85,7 +121,7 @@ export class ClientController {
    */
   @Post('invite')
   @Throttle({ default: { limit: 10, ttl: 3600000 } })
-  @UseGuards(RolesGuard)
+  @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('INSTRUCTOR', 'ADMIN', 'SUPER_ADMIN')
   @ApiEndpoint({ ...ClientDocs.sendInvitation, body: CreateClientRequestDto })
   async sendInvitation(@Request() req, @Body() dto: CreateClientRequestDto) {
@@ -102,6 +138,7 @@ export class ClientController {
    */
   @Post('request/:instructorId')
   @Throttle({ default: { limit: 5, ttl: 3600000 } })
+  @UseGuards(AuthGuard('jwt'))
   @ApiEndpoint(ClientDocs.requestToBeClient)
   async requestToBeClient(
     @Request() req,
@@ -116,10 +153,23 @@ export class ClientController {
   }
 
   /**
+   * POST /clients/requests/accept-by-token
+   * Called immediately after signup via a referral link.
+   * Links the newly created account to the pending ClientRequest and marks it ACCEPTED.
+   */
+  @Post('requests/accept-by-token')
+  @UseGuards(AuthGuard('jwt'))
+  @ApiEndpoint(ClientDocs.acceptByToken)
+  async acceptByToken(@Request() req, @Body() dto: { token: string }) {
+    return this.clientService.acceptByToken(dto.token, req.user.id);
+  }
+
+  /**
    * POST /clients/requests/:requestId/accept
    * Accept a pending client request.
    */
   @Post('requests/:requestId/accept')
+  @UseGuards(AuthGuard('jwt'))
   @ApiEndpoint(ClientDocs.acceptRequest)
   async acceptRequest(@Param('requestId') requestId: string, @Request() req) {
     return this.clientService.acceptRequest(requestId, req.user.id);
@@ -130,6 +180,7 @@ export class ClientController {
    * Decline a pending client request.
    */
   @Post('requests/:requestId/decline')
+  @UseGuards(AuthGuard('jwt'))
   @ApiEndpoint(ClientDocs.declineRequest)
   async declineRequest(@Param('requestId') requestId: string, @Request() req) {
     return this.clientService.declineRequest(requestId, req.user.id);
@@ -140,6 +191,7 @@ export class ClientController {
    * Cancel a request that the authenticated user sent.
    */
   @Post('requests/:requestId/cancel')
+  @UseGuards(AuthGuard('jwt'))
   @ApiEndpoint(ClientDocs.cancelRequest)
   async cancelRequest(@Param('requestId') requestId: string, @Request() req) {
     return this.clientService.cancelRequest(requestId, req.user.id);
@@ -150,7 +202,7 @@ export class ClientController {
    * Update notes or status for a client relationship (INSTRUCTOR only).
    */
   @Patch(':clientId')
-  @UseGuards(RolesGuard)
+  @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('INSTRUCTOR', 'ADMIN', 'SUPER_ADMIN')
   @ApiEndpoint({ ...ClientDocs.updateClient, body: UpdateClientDto })
   async updateClient(
@@ -167,7 +219,7 @@ export class ClientController {
    * This is equivalent to setting status to ARCHIVED.
    */
   @Delete(':clientId')
-  @UseGuards(RolesGuard)
+  @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('INSTRUCTOR', 'ADMIN', 'SUPER_ADMIN')
   @ApiEndpoint(ClientDocs.archiveClient)
   async archiveClient(@Request() req, @Param('clientId') clientId: string) {

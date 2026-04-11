@@ -85,7 +85,10 @@ export class CreateBlogPostDto {
   @IsOptional()
   tags?: string[];
 
-  @ApiPropertyOptional({ example: 'en', description: 'Language of the post (en, ro)' })
+  @ApiPropertyOptional({
+    example: 'en',
+    description: 'Language of the post (en, ro)',
+  })
   @IsString()
   @IsOptional()
   language?: string;

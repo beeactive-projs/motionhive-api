@@ -4,6 +4,7 @@ import {
   ForbiddenException,
   BadRequestException,
   ConflictException,
+  GoneException,
   Inject,
 } from '@nestjs/common';
 import type { LoggerService } from '@nestjs/common';
@@ -769,6 +770,179 @@ export class ClientService {
       ],
       order: [['createdAt', 'DESC']],
     });
+  }
+
+  // =====================================================
+  // TOKEN-BASED INVITE ENDPOINTS
+  // =====================================================
+
+  /**
+   * Get pending email-only invitations sent by an instructor
+   *
+   * Returns ClientRequest rows where toUserId IS NULL (person hasn't registered yet).
+   * By default only returns non-expired PENDING invites.
+   * Pass includeExpired=true to also see expired/cancelled ones.
+   */
+  async getPendingEmailInvites(
+    instructorId: string,
+    includeExpired = false,
+  ): Promise<ClientRequest[]> {
+    const where: any = {
+      fromUserId: instructorId,
+      toUserId: null,
+    };
+
+    if (!includeExpired) {
+      where.status = ClientRequestStatus.PENDING;
+      where.expiresAt = { [Op.gt]: new Date() };
+    }
+
+    return this.clientRequestModel.findAll({
+      where,
+      attributes: [
+        'id',
+        'invitedEmail',
+        'message',
+        'status',
+        'token',
+        'createdAt',
+        'expiresAt',
+      ],
+      order: [['createdAt', 'DESC']],
+    });
+  }
+
+  /**
+   * Look up a pending invitation by its referral token
+   *
+   * Used by the signup page to pre-fill the invited email and show the
+   * instructor's name before the user registers.
+   *
+   * Returns 404 if the token doesn't match any ClientRequest.
+   * Returns 410 Gone if the token is expired or already used.
+   */
+  async getInviteByToken(token: string): Promise<{
+    token: string;
+    invitedEmail: string;
+    instructor: { firstName: string; lastName: string };
+    expiresAt: Date;
+  }> {
+    const request = await this.clientRequestModel.findOne({
+      where: { token },
+      include: [
+        {
+          model: User,
+          as: 'fromUser',
+          attributes: ['firstName', 'lastName'],
+        },
+      ],
+    });
+
+    if (!request) {
+      throw new NotFoundException('Invitation not found');
+    }
+
+    if (request.status !== ClientRequestStatus.PENDING) {
+      throw new GoneException('This invitation has already been used');
+    }
+
+    if (request.expiresAt < new Date()) {
+      throw new GoneException('This invitation has expired');
+    }
+
+    const instructor = request.fromUser;
+
+    return {
+      token: request.token as string,
+      invitedEmail: request.invitedEmail as string,
+      instructor: {
+        firstName: instructor.firstName,
+        lastName: instructor.lastName,
+      },
+      expiresAt: request.expiresAt,
+    };
+  }
+
+  /**
+   * Accept an invitation by token (post-registration flow)
+   *
+   * Called immediately after a new user registers via a referral link.
+   * Links the newly created account to the ClientRequest and activates
+   * the instructor-client relationship.
+   *
+   * Returns 404 if the token doesn't match any ClientRequest.
+   * Returns 400 if the token is expired, already accepted, declined, or cancelled.
+   */
+  async acceptByToken(
+    token: string,
+    userId: string,
+  ): Promise<{ message: string }> {
+    const request = await this.clientRequestModel.findOne({
+      where: { token },
+    });
+
+    if (!request) {
+      throw new NotFoundException('Invitation not found');
+    }
+
+    if (request.status !== ClientRequestStatus.PENDING) {
+      throw new BadRequestException(
+        `This invitation has already been ${request.status.toLowerCase()}`,
+      );
+    }
+
+    if (request.expiresAt < new Date()) {
+      throw new BadRequestException('This invitation has expired');
+    }
+
+    const instructorId = request.fromUserId;
+    const clientId = userId;
+
+    await this.sequelize.transaction(async (transaction) => {
+      // Bind the newly registered user to the email-only invitation
+      await request.update(
+        {
+          toUserId: userId,
+          status: ClientRequestStatus.ACCEPTED,
+          respondedAt: new Date(),
+        },
+        { transaction },
+      );
+
+      // Create or activate the instructor_client relationship
+      const existingRelationship = await this.instructorClientModel.findOne({
+        where: { instructorId, clientId },
+        transaction,
+      });
+
+      if (existingRelationship) {
+        await existingRelationship.update(
+          {
+            status: InstructorClientStatus.ACTIVE,
+            startedAt: new Date(),
+          },
+          { transaction },
+        );
+      } else {
+        await this.instructorClientModel.create(
+          {
+            instructorId,
+            clientId,
+            status: InstructorClientStatus.ACTIVE,
+            initiatedBy: InitiatedBy.INSTRUCTOR,
+            startedAt: new Date(),
+          },
+          { transaction },
+        );
+      }
+    });
+
+    this.logger.log(
+      `User ${userId} accepted invitation via token (instructor: ${instructorId})`,
+      'ClientService',
+    );
+
+    return { message: 'Invitation accepted successfully.' };
   }
 
   // =====================================================
