@@ -102,16 +102,14 @@ INSERT INTO user_role (id, user_id, role_id, group_id, assigned_at, expires_at) 
 -- (required by instructor-specific endpoints)
 -- --------------------------------------------------------
 INSERT INTO instructor_profile (
-  id, user_id, bio, specialties, certifications,
-  experience_years, rating, total_reviews,
-  is_discoverable, created_at, updated_at
+  id, user_id, bio, specializations, certifications,
+  years_of_experience, is_public, created_at, updated_at
 ) VALUES (
   gen_random_uuid()::TEXT,
   'test0004-0000-0000-0000-000000000001',
   'Test instructor account for endpoint testing.',
   '[]', '[]',
-  0, 0, 0,
-  FALSE, NOW(), NOW()
+  0, FALSE, NOW(), NOW()
 );
 
 -- =========================================================
