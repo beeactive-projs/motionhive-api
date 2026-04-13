@@ -21,6 +21,19 @@ export enum NotificationType {
   GROUP_INVITATION_ACCEPTED = 'GROUP_INVITATION_ACCEPTED',
   GROUP_MEMBER_JOINED = 'GROUP_MEMBER_JOINED',
   GROUP_MEMBER_LEFT = 'GROUP_MEMBER_LEFT',
+  // ── Payments & Invoicing ─────────────────────────────────
+  INVOICE_CREATED = 'INVOICE_CREATED',
+  INVOICE_DUE_SOON = 'INVOICE_DUE_SOON',
+  INVOICE_OVERDUE = 'INVOICE_OVERDUE',
+  INVOICE_PAID = 'INVOICE_PAID',
+  PAYMENT_FAILED = 'PAYMENT_FAILED',
+  SUBSCRIPTION_CREATED = 'SUBSCRIPTION_CREATED',
+  SUBSCRIPTION_CANCELED = 'SUBSCRIPTION_CANCELED',
+  PAYOUT_SENT = 'PAYOUT_SENT',
+  STRIPE_ACCOUNT_READY = 'STRIPE_ACCOUNT_READY',
+  STRIPE_ACCOUNT_RESTRICTED = 'STRIPE_ACCOUNT_RESTRICTED',
+  DISPUTE_OPENED = 'DISPUTE_OPENED',
+  REFUND_ISSUED = 'REFUND_ISSUED',
 }
 
 export interface NotifyParams {
@@ -65,20 +78,21 @@ export class NotificationService {
    * Send a notification to a single user.
    * Phase 1: Logs only. Phase 2+: stores in DB, checks preferences, delivers.
    */
-  async notify(params: NotifyParams): Promise<void> {
+  notify(params: NotifyParams): Promise<void> {
     this.logger.log(
       `[NOTIFICATION] ${params.type} → user:${params.userId} | ${params.title}`,
       'NotificationService',
     );
     // TODO: Phase 2 — Store in notification table
     // TODO: Phase 2 — Check preferences and deliver via email/push
+    return Promise.resolve();
   }
 
   /**
    * Send a notification to multiple users (e.g., all session participants).
    * Phase 1: Logs only.
    */
-  async notifyMany(
+  notifyMany(
     userIds: string[],
     params: Omit<NotifyParams, 'userId'>,
   ): Promise<void> {
@@ -87,5 +101,6 @@ export class NotificationService {
       'NotificationService',
     );
     // TODO: Phase 2 — Batch insert notifications + batch deliver
+    return Promise.resolve();
   }
 }

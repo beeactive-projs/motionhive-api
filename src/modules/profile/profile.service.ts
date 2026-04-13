@@ -19,7 +19,6 @@ import { DiscoverInstructorsDto } from './dto/discover-instructors.dto';
 import { RoleService } from '../role/role.service';
 import { UserService } from '../user/user.service';
 import { User } from '../user/entities/user.entity';
-import { buildPaginatedResponse } from '../../common/dto/pagination.dto';
 import { buildSearchTerm } from '../../common/utils/search.utils';
 
 /**
@@ -57,18 +56,13 @@ export class ProfileService {
     userId: string,
     transaction?: Transaction,
   ): Promise<UserProfile> {
-    return this.userProfileModel.create(
-      { userId: userId },
-      { transaction },
-    );
+    return this.userProfileModel.create({ userId: userId }, { transaction });
   }
 
   /**
    * Get user profile for the authenticated user
    */
-  async getUserProfile(
-    userId: string,
-  ): Promise<UserProfile | null> {
+  async getUserProfile(userId: string): Promise<UserProfile | null> {
     return this.userProfileModel.findOne({
       where: { userId: userId },
     });
@@ -216,7 +210,9 @@ export class ProfileService {
   /**
    * Get instructor profile for the authenticated user
    */
-  async getInstructorProfile(userId: string): Promise<InstructorProfile | null> {
+  async getInstructorProfile(
+    userId: string,
+  ): Promise<InstructorProfile | null> {
     return this.instructorProfileModel.findOne({
       where: { userId: userId },
     });
@@ -253,18 +249,22 @@ export class ProfileService {
    * Only provided sections are updated. If a section is omitted, it's skipped.
    */
   async updateFullProfile(userId: string, dto: UpdateFullProfileDto) {
-    const results: any = {};
+    const results: {
+      account?: User;
+      fitnessProfile?: UserProfile;
+      instructor?: InstructorProfile;
+    } = {};
 
     // Update core user fields
-    if (dto.user && Object.keys(dto.user).length > 0) {
-      results.user = await this.userService.updateUser(userId, dto.user);
+    if (dto.account && Object.keys(dto.account).length > 0) {
+      results.account = await this.userService.updateUser(userId, dto.account);
     }
 
     // Update user profile
-    if (dto.userProfile && Object.keys(dto.userProfile).length > 0) {
-      results.userProfile = await this.updateUserProfile(
+    if (dto.fitnessProfile && Object.keys(dto.fitnessProfile).length > 0) {
+      results.fitnessProfile = await this.updateUserProfile(
         userId,
-        dto.userProfile,
+        dto.fitnessProfile,
       );
     }
 
@@ -307,7 +307,10 @@ export class ProfileService {
           throw error;
         }
       } else {
-        results.instructor = await this.updateInstructorProfile(userId, dto.instructor);
+        results.instructor = await this.updateInstructorProfile(
+          userId,
+          dto.instructor,
+        );
       }
     }
 
@@ -331,7 +334,7 @@ export class ProfileService {
    * Sorted by years of experience (most experienced first).
    */
   async discoverInstructors(dto: DiscoverInstructorsDto) {
-    const where: any = {
+    const where: Record<string | symbol, unknown> = {
       isPublic: true,
     };
 
@@ -352,7 +355,9 @@ export class ProfileService {
         { locationCity: { [Op.iLike]: term } },
         { '$user.first_name$': { [Op.iLike]: term } },
         { '$user.last_name$': { [Op.iLike]: term } },
-        literal(`CAST("InstructorProfile"."specializations" AS TEXT) ILIKE ${this.sequelize.escape(term)}`),
+        literal(
+          `CAST("InstructorProfile"."specializations" AS TEXT) ILIKE ${this.sequelize.escape(term)}`,
+        ),
       ];
     }
 
@@ -460,7 +465,7 @@ export class ProfileService {
     ]);
 
     return {
-      user: {
+      account: {
         id: user.id,
         email: user.email,
         firstName: user.firstName,
@@ -474,15 +479,15 @@ export class ProfileService {
       },
       roles: roles.map((r) => r.name),
       hasInstructorProfile: !!instructorProfile,
-      userProfile: userProfile
+      fitnessProfile: userProfile
         ? {
             dateOfBirth: userProfile.dateOfBirth,
             gender: userProfile.gender,
             heightCm: userProfile.heightCm,
             weightKg: userProfile.weightKg,
             fitnessLevel: userProfile.fitnessLevel,
-            goals: userProfile.goals,
-            medicalConditions: userProfile.medicalConditions,
+            goals: userProfile.goals ?? [],
+            medicalConditions: userProfile.medicalConditions ?? [],
             emergencyContactName: userProfile.emergencyContactName,
             emergencyContactPhone: userProfile.emergencyContactPhone,
             notes: userProfile.notes,

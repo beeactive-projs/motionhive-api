@@ -19,7 +19,7 @@ export class UpdateFullProfileDto {
   @ValidateNested()
   @Type(() => UpdateUserDto)
   @IsOptional()
-  user?: UpdateUserDto;
+  account?: UpdateUserDto;
 
   @ApiPropertyOptional({
     description: 'User profile fields (health, fitness data)',
@@ -28,7 +28,7 @@ export class UpdateFullProfileDto {
   @ValidateNested()
   @Type(() => UpdateUserProfileDto)
   @IsOptional()
-  userProfile?: UpdateUserProfileDto;
+  fitnessProfile?: UpdateUserProfileDto;
 
   @ApiPropertyOptional({
     description: 'Instructor profile fields (bio, specializations, etc.)',

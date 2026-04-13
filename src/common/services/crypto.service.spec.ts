@@ -1,0 +1,26 @@
+import { CryptoService } from './crypto.service';
+
+describe('CryptoService', () => {
+  const service = new CryptoService();
+
+  it('generateToken returns a hex string of 2x the requested byte length', () => {
+    const token16 = service.generateToken(16);
+    const token32 = service.generateToken(32);
+
+    expect(token16).toMatch(/^[0-9a-f]{32}$/);
+    expect(token32).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it('hashToken is deterministic for the same input', () => {
+    const a = service.hashToken('correct horse battery staple');
+    const b = service.hashToken('correct horse battery staple');
+    expect(a).toBe(b);
+    expect(a).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it('different inputs produce different hashes', () => {
+    const a = service.hashToken('one');
+    const b = service.hashToken('two');
+    expect(a).not.toBe(b);
+  });
+});

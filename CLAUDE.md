@@ -12,6 +12,7 @@ Fitness platform REST API built with NestJS. Manages instructors, clients, group
 - **Images**: Cloudinary
 - **Docs**: Swagger/OpenAPI at `/api/docs`
 - **Logging**: Winston
+- **Payments**: Stripe Connect Express (invoices, subscriptions, refunds, earnings)
 - **Security**: Helmet, Throttler (rate limiting), CORS
 
 ## Commands
@@ -55,6 +56,7 @@ src/
     ├── blog/                  # Blog posts, Cloudinary image upload
     ├── analytics/             # Instructor summary, user activity, platform stats
     ├── notification/          # Notification system (Phase 1 — dummy/logger, @Global)
+    ├── payment/               # Stripe Connect payments, invoices, subscriptions, refunds, earnings
     └── health/                # Terminus health checks, app config
 ```
 
@@ -67,9 +69,10 @@ Each module follows: `module.ts` + `controller.ts` + `service.ts` + `entities/` 
 - **DTOs**: class-validator for input validation, PaginationDto for lists
 - **Entities**: Sequelize models with CHAR(36) UUID PKs, `underscored: true`
 - **Soft deletes**: paranoid mode on user, group, session, blog_post
-- **Transactions**: Sequelize transactions for multi-table operations
+- **Transactions**: Sequelize transactions for multi-table operations. Webhook handlers receive `tx` from the caller — every ORM call inside MUST pass `{ transaction: tx }`. Controller-level services that call Stripe before saving locally are acceptable (Stripe is source of truth; webhooks reconcile drift).
 - **Pagination**: PrimeNG-compatible format via `buildPaginatedResponse(data, totalItems, page, limit)` → returns `{ items, total, page, pageSize }`
 - **Notifications**: Use `NotificationService.notify()` / `notifyMany()` for all notifications (currently logs, will deliver in Phase 2+)
+- **Stripe patterns**: `StripeService.buildFeeParams()` for application_fee_amount (OMIT when 0, never pass explicit 0). `StripeService.buildIdempotencyKey()` for all write operations. Webhook raw body preserved via `express.raw()` middleware scoped to `/webhooks/stripe` in `main.ts`.
 
 ### RBAC
 Roles: `SUPER_ADMIN`, `ADMIN`, `SUPPORT`, `INSTRUCTOR`, `USER`
@@ -90,6 +93,7 @@ Two tables: `instructor_client` (active relationships) + `client_request` (invit
 ### Environment Variables
 Required: `JWT_SECRET`, `JWT_REFRESH_SECRET`
 Recommended: `DATABASE_URL`, `PORT`, `FRONTEND_URL` (prod), `RESEND_API_KEY`
+Stripe: `STRIPE_SECRET_KEY`, `STRIPE_PUBLISHABLE_KEY`, `STRIPE_WEBHOOK_SECRET` (required for payments); `STRIPE_API_VERSION` (default '2026-03-25.dahlia'), `DEFAULT_PLATFORM_FEE_BPS` (default 0)
 Optional: `REDIS_HOST`, `REDIS_PORT`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `FACEBOOK_APP_ID`, `FACEBOOK_APP_SECRET`, `CLOUDINARY_*`, `BCRYPT_ROUNDS`, `JWT_EXPIRES_IN`, `JWT_REFRESH_EXPIRES_IN`, `EMAIL_FROM`, `EMAIL_FROM_NAME`
 
 ## Known Issues & Technical Debt
@@ -99,7 +103,7 @@ Optional: `REDIS_HOST`, `REDIS_PORT`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`
 ### Remaining Issues
 - **OAuth account linking**: Partially fixed — rejects unverified email/password accounts, but still auto-links OAuth to verified accounts without explicit user consent
 - **Cascade deletes**: No cascade logic when user is soft-deleted (orphaned groups, sessions, relationships)
-- **Job system**: Bull/Redis imported but no processors exist. No session reminders, no auto status transitions, no recurring session generation, no expiry cleanup
+- **Job system**: Bull/Redis imported but no processors exist. No session reminders, no auto status transitions, no recurring session generation, no expiry cleanup. Payment features also need jobs for: orphaned webhook reconciliation, invoice due-soon reminders, dunning, earnings summaries (see `project_jobs_module_pending.md` in memory)
 - **Notification system**: Phase 1 dummy module created (logs only). See `NOTIFICATION_SYSTEM_PLAN.md` for full plan
 - **APPROVAL join policy**: Exists in enum but not implemented (dead code path)
 - **Waitlist**: Sessions return "full" with no waitlist option

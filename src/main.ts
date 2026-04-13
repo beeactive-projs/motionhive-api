@@ -1,9 +1,10 @@
 import { NestFactory } from '@nestjs/core';
-import { ValidationPipe, Logger } from '@nestjs/common';
+import { ValidationPipe, Logger, LoggerService } from '@nestjs/common';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { WINSTON_MODULE_NEST_PROVIDER } from 'nest-winston';
 import { AppModule } from './app.module';
 import helmet from 'helmet';
+import * as express from 'express';
 import { HttpExceptionFilter } from './common/filters/http-exception.filter';
 
 /**
@@ -26,12 +27,31 @@ async function bootstrap() {
   });
 
   // Replace default logger with Winston
-  const logger = app.get(WINSTON_MODULE_NEST_PROVIDER);
+  const logger = app.get<LoggerService>(WINSTON_MODULE_NEST_PROVIDER);
   app.useLogger(logger);
 
   // ✅ SECURITY: Apply global exception filter
   // Catches all errors and formats them consistently
   app.useGlobalFilters(new HttpExceptionFilter(logger));
+
+  // ===================================================================
+  // ✅ STRIPE WEBHOOKS: Raw body middleware (MUST run before ValidationPipe)
+  // ===================================================================
+  // Stripe signs the RAW request bytes. If we let NestJS parse JSON first,
+  // the body gets re-serialized and the signature no longer matches.
+  //
+  // We scope express.raw() to ONLY the /webhooks/stripe route so every
+  // other endpoint keeps the normal JSON body parser behavior.
+  //
+  // The webhook controller reads `req.body` — which here will be a Buffer
+  // containing the untouched request body — and passes it to
+  // stripe.webhooks.constructEvent(rawBody, signatureHeader, secret).
+  //
+  // Order matters: this MUST be registered before app.useGlobalPipes().
+  app.use(
+    '/webhooks/stripe',
+    express.raw({ type: 'application/json', limit: '1mb' }),
+  );
 
   // ✅ SECURITY: Enable Helmet for HTTP security headers
   // Sets headers like:
@@ -164,6 +184,18 @@ A comprehensive REST API for managing fitness training sessions, trainers, and c
     .addTag('Sessions', 'Training session management')
     .addTag('Invitations', 'Invitation management')
     .addTag('Analytics', 'Analytics and reporting')
+    .addTag(
+      'Payments',
+      'Stripe Connect onboarding, products, invoices, subscriptions, refunds',
+    )
+    .addTag(
+      'Payments (Client)',
+      'Client-side billing: saved cards, invoices, subscriptions',
+    )
+    .addTag(
+      'Payments (Webhooks)',
+      'Stripe webhook receiver — public, signature-verified',
+    )
     .addTag('Health', 'Application health checks')
     .addServer('http://localhost:3000', 'Local development')
     .addServer('https://motionhive-api-production.up.railway.app', 'Production')
@@ -266,8 +298,12 @@ A comprehensive REST API for managing fitness training sessions, trainers, and c
   };
 
   // Listen for termination signals
-  process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
-  process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+  process.on('SIGTERM', () => {
+    void gracefulShutdown('SIGTERM');
+  });
+  process.on('SIGINT', () => {
+    void gracefulShutdown('SIGINT');
+  });
 
   // Handle uncaught errors (last resort)
   process.on('uncaughtException', (error) => {
@@ -281,4 +317,4 @@ A comprehensive REST API for managing fitness training sessions, trainers, and c
   });
 }
 
-bootstrap();
+void bootstrap();

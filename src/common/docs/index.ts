@@ -23,3 +23,4 @@ export * from './group.docs';
 export * from './session.docs';
 export * from './invitation.docs';
 export * from './user.docs';
+export * from './payment.docs';

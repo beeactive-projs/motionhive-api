@@ -70,4 +70,26 @@ export const envValidationSchema = Joi.object({
   CLOUDINARY_CLOUD_NAME: Joi.string().optional(),
   CLOUDINARY_API_KEY: Joi.string().optional(),
   CLOUDINARY_API_SECRET: Joi.string().optional(),
+
+  // ===================================================================
+  // Stripe Configuration (Payments & Invoicing)
+  // ===================================================================
+  // All Stripe vars are optional in dev/test so the app can boot without
+  // them, but PaymentModule will refuse to process real requests unless
+  // STRIPE_SECRET_KEY is present. In production they become effectively
+  // required via a runtime assertion in StripeService.
+  //
+  // Keys:
+  //   STRIPE_SECRET_KEY     server-side only, NEVER ship to client (sk_...)
+  //   STRIPE_PUBLISHABLE_KEY safe to expose to frontend (pk_...)
+  //   STRIPE_WEBHOOK_SECRET verifies webhook signatures (whsec_...)
+  //   STRIPE_CONNECT_CLIENT_ID Connect platform client id (ca_...)
+  //   STRIPE_API_VERSION    pinned API version — never rely on SDK default
+  //   DEFAULT_PLATFORM_FEE_BPS basis points (0 = 0%, 100 = 1%) applied by default
+  STRIPE_SECRET_KEY: Joi.string().min(20).optional(),
+  STRIPE_PUBLISHABLE_KEY: Joi.string().min(20).optional(),
+  STRIPE_WEBHOOK_SECRET: Joi.string().min(20).optional(),
+  STRIPE_CONNECT_CLIENT_ID: Joi.string().optional(),
+  STRIPE_API_VERSION: Joi.string().default('2026-03-25.dahlia'),
+  DEFAULT_PLATFORM_FEE_BPS: Joi.number().min(0).max(10000).default(0),
 });

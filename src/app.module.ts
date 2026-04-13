@@ -25,6 +25,7 @@ import { NotificationModule } from './modules/notification/notification.module';
 import { AnalyticsModule } from './modules/analytics/analytics.module';
 import { FeedbackModule } from './modules/feedback/feedback.module';
 import { WaitlistModule } from './modules/waitlist/waitlist.module';
+import { PaymentModule } from './modules/payment/payment.module';
 import { CamelCaseInterceptor } from './common/interceptors/camel-case.interceptor';
 
 /**
@@ -114,6 +115,7 @@ import { CamelCaseInterceptor } from './common/interceptors/camel-case.intercept
     AnalyticsModule, // Analytics & reporting
     FeedbackModule, // User feedback (bugs, suggestions)
     WaitlistModule, // Pre-launch waitlist signups
+    PaymentModule, // Stripe Connect: onboarding, invoices, subscriptions, webhooks
   ],
 
   controllers: [],
