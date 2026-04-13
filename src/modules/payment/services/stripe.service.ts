@@ -97,10 +97,24 @@ export class StripeService implements OnModuleInit {
     }
 
     // Production must use live keys, non-prod must use test keys.
+    // Escape hatch: STRIPE_ALLOW_TEST_KEY_IN_PROD=true lets a prod-like env
+    // (e.g. a staging deploy still pointed at Stripe test mode) boot with
+    // an sk_test_ key. Loud warning so nobody forgets to flip it off.
+    const allowTestKeyInProd =
+      this.configService.get<string>('STRIPE_ALLOW_TEST_KEY_IN_PROD') ===
+      'true';
     if (nodeEnv === 'production' && !secretKey.startsWith('sk_live_')) {
-      throw new Error(
-        'STRIPE_SECRET_KEY must be a live key (sk_live_...) in production. ' +
-          'Refusing to boot with a test key.',
+      if (!allowTestKeyInProd) {
+        throw new Error(
+          'STRIPE_SECRET_KEY must be a live key (sk_live_...) in production. ' +
+            'Refusing to boot with a test key. ' +
+            'Set STRIPE_ALLOW_TEST_KEY_IN_PROD=true to override (staging use only).',
+        );
+      }
+      this.logger.warn(
+        'STRIPE_ALLOW_TEST_KEY_IN_PROD=true — booting production with a Stripe TEST key. ' +
+          'No real charges will be processed. Disable this flag before going live.',
+        'StripeService',
       );
     }
     if (nodeEnv !== 'production' && secretKey.startsWith('sk_live_')) {

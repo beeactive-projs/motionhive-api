@@ -7,6 +7,7 @@ import { Sequelize } from 'sequelize-typescript';
 
 import { Invoice, InvoiceStatus } from '../entities/invoice.entity';
 import { Payment, PaymentStatus } from '../entities/payment.entity';
+import { StripeAccount } from '../entities/stripe-account.entity';
 import {
   buildPaginatedResponse,
   getOffset,
@@ -28,6 +29,8 @@ export class EarningsService {
     private readonly invoiceModel: typeof Invoice,
     @InjectModel(Payment)
     private readonly paymentModel: typeof Payment,
+    @InjectModel(StripeAccount)
+    private readonly stripeAccountModel: typeof StripeAccount,
     private readonly sequelize: Sequelize,
     @Inject(WINSTON_MODULE_NEST_PROVIDER)
     private readonly logger: LoggerService,
@@ -87,12 +90,18 @@ export class EarningsService {
       0,
     );
 
+    const account = await this.stripeAccountModel.findOne({
+      where: { userId: instructorId },
+      attributes: ['defaultCurrency'],
+    });
+    const currency = (account?.defaultCurrency ?? 'ron').toUpperCase();
+
     return {
       totalEarnedCents: Number(totalResult?.total ?? 0),
       monthToDateCents: Number(mtdResult?.total ?? 0),
       outstandingInvoiceCents: outstandingCents,
       outstandingInvoiceCount: outstandingInvoices.count,
-      currency: 'RON',
+      currency,
     };
   }
 

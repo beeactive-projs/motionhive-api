@@ -91,5 +91,8 @@ export const envValidationSchema = Joi.object({
   STRIPE_WEBHOOK_SECRET: Joi.string().min(20).optional(),
   STRIPE_CONNECT_CLIENT_ID: Joi.string().optional(),
   STRIPE_API_VERSION: Joi.string().default('2026-03-25.dahlia'),
+  STRIPE_ALLOW_TEST_KEY_IN_PROD: Joi.string()
+    .valid('true', 'false')
+    .default('false'),
   DEFAULT_PLATFORM_FEE_BPS: Joi.number().min(0).max(10000).default(0),
 });

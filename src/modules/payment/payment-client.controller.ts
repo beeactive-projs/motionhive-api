@@ -71,11 +71,18 @@ export class PaymentClientController {
     @Param('id', new ParseUUIDPipe()) id: string,
     @Body() dto: CreateCheckoutDto,
   ) {
+    const headers = req.headers as Record<
+      string,
+      string | string[] | undefined
+    >;
+    const uaHeader = headers['user-agent'];
+    const userAgent = Array.isArray(uaHeader) ? uaHeader[0] : uaHeader;
+    const ip: string | undefined = req.ip;
     return this.checkoutService.createInvoiceCheckoutSession(
       id,
       req.user.id,
       dto,
-      { ip: req.ip, userAgent: req.headers?.['user-agent'] },
+      { ip, userAgent },
     );
   }
 

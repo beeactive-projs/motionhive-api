@@ -70,6 +70,21 @@ export class InvoiceService {
     instructorId: string,
     dto: CreateInvoiceDto,
   ): Promise<Invoice> {
+    // Bill-to must be EXACTLY one of clientUserId or guestEmail.
+    // The DTO's ValidateIf enforces "at least one" but not "not both".
+    const hasClient = !!dto.clientUserId;
+    const hasGuest = !!dto.guestEmail;
+    if (hasClient === hasGuest) {
+      throw new BadRequestException(
+        'Provide exactly one of clientUserId or guestEmail.',
+      );
+    }
+    if (hasGuest && !dto.guestName) {
+      throw new BadRequestException(
+        'guestName is required when guestEmail is set.',
+      );
+    }
+
     const account = await this.stripeAccountModel.findOne({
       where: { userId: instructorId },
     });
@@ -84,33 +99,71 @@ export class InvoiceService {
       );
     }
 
-    const tx = await this.sequelize.transaction();
+    const currency = (dto.currency ?? 'RON').toLowerCase();
+    const totalCents = dto.lineItems.reduce(
+      (sum, line) => sum + line.amountCents * (line.quantity ?? 1),
+      0,
+    );
+    const feeBps = account.platformFeeBps ?? 0;
+    const feeParams = this.stripeService.buildFeeParams(totalCents, feeBps);
+
+    // Step 1: resolve customer + insert local row in a short transaction,
+    // so Stripe calls below run OUTSIDE any open DB transaction (API
+    // latency must not hold a DB connection open) and so we have a
+    // stable local id to use as the Stripe idempotency key.
+    const { row, stripeCustomerId } = await this.sequelize.transaction(
+      async (tx) => {
+        const customer = dto.clientUserId
+          ? await this.customerService.getOrCreateForUser(dto.clientUserId, tx)
+          : await this.customerService.getOrCreateGuest(
+              dto.guestEmail as string,
+              dto.guestName as string,
+              tx,
+            );
+        const created = await this.invoiceModel.create(
+          {
+            instructorId,
+            clientId: dto.clientUserId ?? null,
+            stripeCustomerId: customer.stripeCustomerId,
+            // Temporarily empty — updated after the Stripe call below.
+            stripeInvoiceId: '',
+            subscriptionId: null,
+            number: null,
+            status: InvoiceStatus.DRAFT,
+            amountDueCents: totalCents,
+            amountPaidCents: 0,
+            amountRemainingCents: totalCents,
+            currency: currency.toUpperCase(),
+            applicationFeeCents: feeParams.application_fee_amount ?? 0,
+            dueDate: dto.dueDate ? new Date(dto.dueDate) : null,
+            finalizedAt: null,
+            paidAt: null,
+            voidedAt: null,
+            hostedInvoiceUrl: null,
+            invoicePdf: null,
+            paidOutOfBand: false,
+            description: dto.description ?? null,
+            metadata: null,
+            requiresImmediateAccessWaiver:
+              dto.requiresImmediateAccessWaiver ?? false,
+            waiverAcceptedAt: null,
+          },
+          { transaction: tx },
+        );
+        return {
+          row: created,
+          stripeCustomerId: customer.stripeCustomerId,
+        };
+      },
+    );
+
+    // Step 2: Stripe calls — idempotency keys derived from the stable
+    // local row id so any retry (ours or SDK network retry) resolves to
+    // the same Stripe invoice + line items.
     try {
-      // Resolve customer (registered user OR guest by email).
-      const customer = dto.clientUserId
-        ? await this.customerService.getOrCreateForUser(dto.clientUserId, tx)
-        : await this.customerService.getOrCreateGuest(
-            dto.guestEmail!,
-            dto.guestName!,
-            tx,
-          );
-
-      const currency = (dto.currency ?? 'RON').toLowerCase();
-      const totalCents = dto.lineItems.reduce(
-        (sum, line) => sum + line.amountCents * (line.quantity ?? 1),
-        0,
-      );
-
-      // Stripe wants ON_BEHALF_OF + transfer_data to route money to the
-      // connected account. application_fee_amount is built via the helper
-      // so a 0 fee is OMITTED entirely (Stripe rejects explicit 0).
-      const feeBps = account.platformFeeBps ?? 0;
-      const feeParams = this.stripeService.buildFeeParams(totalCents, feeBps);
-
-      // 1. Create the Stripe Invoice draft.
       const stripeInvoice = await this.stripeService.stripe.invoices.create(
         {
-          customer: customer.stripeCustomerId,
+          customer: stripeCustomerId,
           collection_method: 'send_invoice',
           days_until_due: dto.dueDate ? undefined : 7,
           due_date: dto.dueDate
@@ -121,6 +174,7 @@ export class InvoiceService {
           transfer_data: { destination: account.stripeAccountId },
           ...feeParams,
           metadata: {
+            beeactive_invoice_id: row.id,
             beeactive_instructor_id: instructorId,
             ...(dto.clientUserId && {
               beeactive_client_id: dto.clientUserId,
@@ -130,56 +184,34 @@ export class InvoiceService {
         {
           idempotencyKey: this.stripeService.buildIdempotencyKey(
             'invoice',
-            `${instructorId}:${Date.now()}`,
+            row.id,
             'create',
           ),
         },
       );
 
-      // 2. Add line items.
-      for (const line of dto.lineItems) {
-        await this.stripeService.stripe.invoiceItems.create({
-          customer: customer.stripeCustomerId,
-          invoice: stripeInvoice.id,
-          amount: line.amountCents * (line.quantity ?? 1),
-          currency,
-          description: line.description,
-        });
+      for (let i = 0; i < dto.lineItems.length; i++) {
+        const line = dto.lineItems[i];
+        await this.stripeService.stripe.invoiceItems.create(
+          {
+            customer: stripeCustomerId,
+            invoice: stripeInvoice.id,
+            amount: line.amountCents * (line.quantity ?? 1),
+            currency,
+            description: line.description,
+          },
+          {
+            idempotencyKey: this.stripeService.buildIdempotencyKey(
+              'invoice_item',
+              row.id,
+              `line_${i}`,
+            ),
+          },
+        );
       }
 
-      // 3. Insert local mirror row BEFORE returning — webhooks may arrive
-      //    immediately after the create call below.
-      const row = await this.invoiceModel.create(
-        {
-          instructorId,
-          clientId: dto.clientUserId ?? null,
-          stripeCustomerId: customer.stripeCustomerId,
-          stripeInvoiceId: stripeInvoice.id,
-          subscriptionId: null,
-          number: null,
-          status: InvoiceStatus.DRAFT,
-          amountDueCents: totalCents,
-          amountPaidCents: 0,
-          amountRemainingCents: totalCents,
-          currency: currency.toUpperCase(),
-          applicationFeeCents: feeParams.application_fee_amount ?? 0,
-          dueDate: dto.dueDate ? new Date(dto.dueDate) : null,
-          finalizedAt: null,
-          paidAt: null,
-          voidedAt: null,
-          hostedInvoiceUrl: null,
-          invoicePdf: null,
-          paidOutOfBand: false,
-          description: dto.description ?? null,
-          metadata: null,
-          requiresImmediateAccessWaiver:
-            dto.requiresImmediateAccessWaiver ?? false,
-          waiverAcceptedAt: null,
-        },
-        { transaction: tx },
-      );
-
-      await tx.commit();
+      row.stripeInvoiceId = stripeInvoice.id!;
+      await row.save();
       this.logger.log(
         `Invoice ${row.id} (stripe ${stripeInvoice.id}) created for instructor ${instructorId}`,
         'InvoiceService',
@@ -190,11 +222,22 @@ export class InvoiceService {
       }
       return row;
     } catch (err) {
-      try {
-        await tx.rollback();
-      } catch {
-        // ignore
-      }
+      // Stripe failed — mark the local row VOID so dashboards filter it
+      // out. We do NOT delete the row: keep an audit trail of failed
+      // attempts. The reconciliation sweep can identify it by the empty
+      // stripeInvoiceId.
+      this.logger.error(
+        `Stripe invoice creation failed for local invoice ${row.id}: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+        err instanceof Error ? err.stack : undefined,
+        'InvoiceService',
+      );
+      row.status = InvoiceStatus.VOID;
+      row.voidedAt = new Date();
+      await row.save().catch(() => {
+        // swallow — the original error is what we re-throw
+      });
       throw err;
     }
   }
@@ -261,6 +304,14 @@ export class InvoiceService {
       const finalized =
         await this.stripeService.stripe.invoices.finalizeInvoice(
           invoice.stripeInvoiceId,
+          undefined,
+          {
+            idempotencyKey: this.stripeService.buildIdempotencyKey(
+              'invoice',
+              invoice.id,
+              'finalize',
+            ),
+          },
         );
       invoice.status = InvoiceStatus.OPEN;
       invoice.finalizedAt = new Date();
@@ -270,6 +321,14 @@ export class InvoiceService {
     }
     await this.stripeService.stripe.invoices.sendInvoice(
       invoice.stripeInvoiceId,
+      undefined,
+      {
+        idempotencyKey: this.stripeService.buildIdempotencyKey(
+          'invoice',
+          invoice.id,
+          'send',
+        ),
+      },
     );
     await invoice.save();
     return invoice;
@@ -286,6 +345,14 @@ export class InvoiceService {
 
     await this.stripeService.stripe.invoices.voidInvoice(
       invoice.stripeInvoiceId,
+      undefined,
+      {
+        idempotencyKey: this.stripeService.buildIdempotencyKey(
+          'invoice',
+          invoice.id,
+          'void',
+        ),
+      },
     );
     invoice.status = InvoiceStatus.VOID;
     invoice.voidedAt = new Date();
@@ -318,11 +385,27 @@ export class InvoiceService {
     if (invoice.status === InvoiceStatus.DRAFT) {
       await this.stripeService.stripe.invoices.finalizeInvoice(
         invoice.stripeInvoiceId,
+        undefined,
+        {
+          idempotencyKey: this.stripeService.buildIdempotencyKey(
+            'invoice',
+            invoice.id,
+            'finalize',
+          ),
+        },
       );
     }
-    await this.stripeService.stripe.invoices.pay(invoice.stripeInvoiceId, {
-      paid_out_of_band: true,
-    });
+    await this.stripeService.stripe.invoices.pay(
+      invoice.stripeInvoiceId,
+      { paid_out_of_band: true },
+      {
+        idempotencyKey: this.stripeService.buildIdempotencyKey(
+          'invoice',
+          invoice.id,
+          'pay_oob',
+        ),
+      },
+    );
 
     invoice.status = InvoiceStatus.PAID;
     invoice.paidOutOfBand = true;
@@ -365,7 +448,10 @@ export class InvoiceService {
 
     const wasPaid = local.status === InvoiceStatus.PAID;
 
-    local.status = (stripeInvoice.status as InvoiceStatus) ?? local.status;
+    local.status = this.mapStripeInvoiceStatus(
+      stripeInvoice.status,
+      local.status,
+    );
     local.amountDueCents = stripeInvoice.amount_due ?? local.amountDueCents;
     local.amountPaidCents = stripeInvoice.amount_paid ?? local.amountPaidCents;
     local.amountRemainingCents =
@@ -420,7 +506,10 @@ export class InvoiceService {
     if (!local) return;
 
     // Sync fields from the failed invoice payload.
-    local.status = (stripeInvoice.status as InvoiceStatus) ?? local.status;
+    local.status = this.mapStripeInvoiceStatus(
+      stripeInvoice.status,
+      local.status,
+    );
     local.amountDueCents = stripeInvoice.amount_due ?? local.amountDueCents;
     local.amountPaidCents = stripeInvoice.amount_paid ?? local.amountPaidCents;
     local.amountRemainingCents =
@@ -440,6 +529,28 @@ export class InvoiceService {
   // =====================================================================
   // HELPERS
   // =====================================================================
+
+  /**
+   * Map a Stripe invoice status string onto our local enum. Stripe's
+   * documented values (`draft|open|paid|void|uncollectible`) match our
+   * enum 1:1, but we guard against nulls and unknown future values
+   * rather than blind-casting into a Sequelize `isIn`-validated column.
+   */
+  private mapStripeInvoiceStatus(
+    stripeStatus: string | null | undefined,
+    current: InvoiceStatus,
+  ): InvoiceStatus {
+    if (!stripeStatus) return current;
+    const valid = Object.values(InvoiceStatus) as string[];
+    if (valid.includes(stripeStatus)) {
+      return stripeStatus as InvoiceStatus;
+    }
+    this.logger.warn(
+      `Unknown Stripe invoice status "${stripeStatus}" — keeping local status "${current}"`,
+      'InvoiceService',
+    );
+    return current;
+  }
 
   private async requireOwnedInvoice(
     instructorId: string,

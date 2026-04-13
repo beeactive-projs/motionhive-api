@@ -112,11 +112,20 @@ export class CustomerService {
     });
     if (existingGuest) return existingGuest;
 
-    const stripeCustomer = await this.stripeService.stripe.customers.create({
-      email: normalized,
-      name,
-      metadata: { beeactive_user_id: 'guest' },
-    });
+    const stripeCustomer = await this.stripeService.stripe.customers.create(
+      {
+        email: normalized,
+        name,
+        metadata: { beeactive_user_id: 'guest' },
+      },
+      {
+        idempotencyKey: this.stripeService.buildIdempotencyKey(
+          'customer_guest',
+          normalized,
+          'create',
+        ),
+      },
+    );
 
     return this.stripeCustomerModel.create(
       {
