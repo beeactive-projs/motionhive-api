@@ -1,4 +1,4 @@
-import { IsOptional, IsString, IsNumber, Min } from 'class-validator';
+import { IsOptional, IsString, IsNumber, Min, Max } from 'class-validator';
 import { Type } from 'class-transformer';
 import { ApiPropertyOptional } from '@nestjs/swagger';
 
@@ -14,6 +14,7 @@ export class BlogQueryDto {
   @Type(() => Number)
   @IsNumber()
   @Min(1)
+  @Max(100)
   @IsOptional()
   limit?: number = 10;
 
@@ -33,7 +34,10 @@ export class BlogQueryDto {
   @IsOptional()
   search?: string;
 
-  @ApiPropertyOptional({ example: 'en', description: 'Filter by language (en, ro)' })
+  @ApiPropertyOptional({
+    example: 'en',
+    description: 'Filter by language (en, ro)',
+  })
   @IsString()
   @IsOptional()
   locale?: string;

@@ -11,6 +11,7 @@ import type { LoggerService } from '@nestjs/common';
 import { InjectModel } from '@nestjs/sequelize';
 import { Sequelize } from 'sequelize-typescript';
 import { Op } from 'sequelize';
+import { randomBytes } from 'crypto';
 import { WINSTON_MODULE_NEST_PROVIDER } from 'nest-winston';
 import {
   InstructorClient,
@@ -76,14 +77,16 @@ export class ClientService {
     const limit = filters.limit || 20;
     const offset = (page - 1) * limit;
 
-    // Build where clause
-    const where: any = { instructorId };
-    if (filters.status) {
-      where.status = filters.status;
-    } else {
-      // Default to showing only ACTIVE clients
-      where.status = InstructorClientStatus.ACTIVE;
+    const requestedStatus = filters.status || InstructorClientStatus.ACTIVE;
+
+    // PENDING: query client_request table — that's where all pending
+    // items live (email invites, registered-user invites, user requests).
+    if (requestedStatus === InstructorClientStatus.PENDING) {
+      return this.getMyPendingClients(instructorId, page, limit, offset);
     }
+
+    // ACTIVE / ARCHIVED: query instructor_client as before
+    const where: any = { instructorId, status: requestedStatus };
 
     const { rows, count: totalItems } =
       await this.instructorClientModel.findAndCountAll({
@@ -101,9 +104,110 @@ export class ClientService {
         distinct: true,
       });
 
-    // Fetch group memberships for these clients (only groups owned by this instructor)
-    const clientIds = rows.map((r) => r.clientId);
+    const data = await this.enrichWithGroupMemberships(
+      instructorId,
+      rows.map((row) => ({ ...row.toJSON(), clientId: row.clientId })),
+    );
 
+    return buildPaginatedResponse(data, totalItems, page, limit);
+  }
+
+  /**
+   * Returns all pending items for this instructor from client_request:
+   * - Invitations the instructor sent (to registered or unregistered users)
+   * - Requests from users wanting to become clients
+   * Normalised into the same shape the frontend expects.
+   */
+  private async getMyPendingClients(
+    instructorId: string,
+    page: number,
+    limit: number,
+    offset: number,
+  ): Promise<PaginatedResponse<any>> {
+    const where = {
+      [Op.or]: [
+        // Invitations the instructor sent (both email-only and to registered users)
+        {
+          fromUserId: instructorId,
+          type: ClientRequestType.INSTRUCTOR_TO_CLIENT,
+        },
+        // Requests from users wanting to be this instructor's client
+        {
+          toUserId: instructorId,
+          type: ClientRequestType.CLIENT_TO_INSTRUCTOR,
+        },
+      ],
+      status: ClientRequestStatus.PENDING,
+      expiresAt: { [Op.gt]: new Date() },
+    };
+
+    const { rows, count: totalItems } =
+      await this.clientRequestModel.findAndCountAll({
+        where,
+        include: [
+          {
+            model: User,
+            as: 'fromUser',
+            attributes: ['id', 'firstName', 'lastName', 'email', 'avatarId'],
+          },
+          {
+            model: User,
+            as: 'toUser',
+            attributes: ['id', 'firstName', 'lastName', 'email', 'avatarId'],
+          },
+        ],
+        order: [['createdAt', 'DESC']],
+        limit,
+        offset,
+      });
+
+    // Normalise into the same shape as instructor_client rows so the
+    // frontend table can render them identically.
+    const data = rows.map((row) => {
+      const isInstructorInvite =
+        row.type === ClientRequestType.INSTRUCTOR_TO_CLIENT;
+      const clientUser = isInstructorInvite ? row.toUser : row.fromUser;
+
+      return {
+        id: row.id,
+        instructorId,
+        clientId: clientUser?.id || null,
+        status: InstructorClientStatus.PENDING,
+        initiatedBy: isInstructorInvite
+          ? InitiatedBy.INSTRUCTOR
+          : InitiatedBy.CLIENT,
+        notes: row.message,
+        startedAt: null,
+        createdAt: row.createdAt,
+        updatedAt: row.createdAt,
+        invitedEmail: row.invitedEmail,
+        requestType: row.type,
+        expiresAt: row.expiresAt,
+        client: clientUser
+          ? {
+              id: clientUser.id,
+              firstName: clientUser.firstName,
+              lastName: clientUser.lastName,
+              email: clientUser.email,
+              avatarId: (clientUser as any).avatarId,
+            }
+          : null,
+        groupMemberships: [],
+      };
+    });
+
+    return buildPaginatedResponse(data, totalItems, page, limit);
+  }
+
+  /**
+   * Enrich client rows with group membership data for groups
+   * owned by this instructor.
+   */
+  private async enrichWithGroupMemberships(
+    instructorId: string,
+    rows: Array<{ clientId: string; [key: string]: any }>,
+  ): Promise<any[]> {
+    const clientIds = rows.map((r) => r.clientId).filter(Boolean);
     const groupMembershipsMap: Record<string, any[]> = {};
 
     if (clientIds.length > 0) {
@@ -122,7 +226,6 @@ export class ClientService {
           attributes: ['userId'],
         });
 
-        // Group memberships by client ID
         for (const membership of groupMemberships) {
           const userId = membership.getDataValue('userId');
           if (!groupMembershipsMap[userId]) {
@@ -134,7 +237,6 @@ export class ClientService {
           });
         }
       } catch {
-        // Group module may not exist yet — gracefully degrade
         this.logger.warn(
           'Could not fetch group memberships — group module may not be available',
           'ClientService',
@@ -142,16 +244,10 @@ export class ClientService {
       }
     }
 
-    // Merge group memberships into client records
-    const data = rows.map((row) => {
-      const plain = row.toJSON();
-      return {
-        ...plain,
-        groupMemberships: groupMembershipsMap[row.clientId] || [],
-      };
-    });
-
-    return buildPaginatedResponse(data, totalItems, page, limit);
+    return rows.map((row) => ({
+      ...row,
+      groupMemberships: groupMembershipsMap[row.clientId] || [],
+    }));
   }
 
   /**
@@ -279,6 +375,8 @@ export class ClientService {
     const expiresAt = new Date();
     expiresAt.setDate(expiresAt.getDate() + 30);
 
+    const inviteToken = randomBytes(32).toString('hex');
+
     const request = await this.clientRequestModel.create({
       fromUserId: instructorId,
       toUserId: null,
@@ -286,6 +384,7 @@ export class ClientService {
       type: ClientRequestType.INSTRUCTOR_TO_CLIENT,
       message: message || null,
       status: ClientRequestStatus.PENDING,
+      token: inviteToken,
       createdAt: new Date(),
       expiresAt,
     });
@@ -296,7 +395,12 @@ export class ClientService {
       : 'An instructor';
 
     this.emailService
-      .sendClientInvitationEmail(normalizedEmail, instructorName, message)
+      .sendClientInvitationEmail(
+        normalizedEmail,
+        instructorName,
+        message,
+        inviteToken,
+      )
       .catch((err: Error) =>
         this.logger.error(
           `Failed to send client invitation email to ${normalizedEmail}: ${err.message}`,

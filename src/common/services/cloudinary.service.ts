@@ -1,9 +1,17 @@
-import { Injectable, BadRequestException } from '@nestjs/common';
+import {
+  Injectable,
+  BadRequestException,
+  InternalServerErrorException,
+  Logger,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { v2 as cloudinary, UploadApiResponse } from 'cloudinary';
 
 @Injectable()
 export class CloudinaryService {
+  private readonly logger = new Logger(CloudinaryService.name);
+  private configured = false;
+
   constructor(private configService: ConfigService) {
     const cloudName = this.configService.get<string>('CLOUDINARY_CLOUD_NAME');
     const apiKey = this.configService.get<string>('CLOUDINARY_API_KEY');
@@ -15,6 +23,7 @@ export class CloudinaryService {
         api_key: apiKey,
         api_secret: apiSecret,
       });
+      this.configured = true;
     }
   }
 
@@ -26,21 +35,35 @@ export class CloudinaryService {
       throw new BadRequestException('No file provided');
     }
 
-    const result: UploadApiResponse = await new Promise((resolve, reject) => {
-      cloudinary.uploader
-        .upload_stream(
-          {
-            folder: `motionhive/${folder}`,
-            resource_type: 'image',
-            transformation: [{ quality: 'auto', fetch_format: 'auto' }],
-          },
-          (error, result) => {
-            if (error) return reject(error);
-            resolve(result!);
-          },
-        )
-        .end(file.buffer);
-    });
+    if (!this.configured) {
+      throw new InternalServerErrorException(
+        'Cloudinary is not configured. Check CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, and CLOUDINARY_API_SECRET.',
+      );
+    }
+
+    let result: UploadApiResponse;
+    try {
+      result = await new Promise((resolve, reject) => {
+        cloudinary.uploader
+          .upload_stream(
+            {
+              folder: `motionhive/${folder}`,
+              resource_type: 'image',
+              transformation: [{ quality: 'auto', fetch_format: 'auto' }],
+            },
+            (error, uploadResult) => {
+              if (error) return reject(error);
+              resolve(uploadResult!);
+            },
+          )
+          .end(file.buffer);
+      });
+    } catch (error: unknown) {
+      const message =
+        error instanceof Error ? error.message : 'Unknown Cloudinary error';
+      this.logger.error(`Cloudinary upload failed: ${message}`);
+      throw new InternalServerErrorException(`Image upload failed: ${message}`);
+    }
 
     return {
       url: result.secure_url,

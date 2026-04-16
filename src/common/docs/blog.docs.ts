@@ -84,11 +84,47 @@ export const BlogDocs = {
     ],
   } as ApiEndpointOptions,
 
-  // -- Admin --
+  // -- Authoring (ADMIN, SUPER_ADMIN, WRITER) --
+
+  listForAdmin: {
+    summary: 'List posts for authoring (drafts + published)',
+    description:
+      'Returns posts including drafts. WRITER sees only their own posts; ' +
+      'ADMIN and SUPER_ADMIN see every post. Requires WRITER, ADMIN, or SUPER_ADMIN.',
+    auth: true,
+    responses: [
+      {
+        status: 200,
+        description: 'Posts retrieved',
+      },
+      ApiStandardResponses.Unauthorized,
+      ApiStandardResponses.Forbidden,
+    ],
+  } as ApiEndpointOptions,
+
+  getForEdit: {
+    summary: 'Get a post for editing (any status)',
+    description:
+      'Returns a post by id regardless of published state. Only the author ' +
+      'of the post or an ADMIN/SUPER_ADMIN may load it. Used by the writer UI ' +
+      'to reopen drafts. Requires WRITER, ADMIN, or SUPER_ADMIN.',
+    auth: true,
+    responses: [
+      {
+        status: 200,
+        description: 'Post retrieved',
+      },
+      ApiStandardResponses.Unauthorized,
+      ApiStandardResponses.Forbidden,
+      ApiStandardResponses.NotFound,
+    ],
+  } as ApiEndpointOptions,
 
   create: {
     summary: 'Create a blog post',
-    description: 'Create a new blog post. Requires ADMIN or SUPER_ADMIN role.',
+    description:
+      'Create a new blog post. The author is automatically set to the ' +
+      'authenticated user. Requires WRITER, ADMIN, or SUPER_ADMIN.',
     auth: true,
     responses: [
       {
@@ -104,7 +140,9 @@ export const BlogDocs = {
   update: {
     summary: 'Update a blog post',
     description:
-      'Update an existing blog post. Requires ADMIN or SUPER_ADMIN role.',
+      'Update an existing blog post. A WRITER can only update their own posts; ' +
+      'ADMIN and SUPER_ADMIN can update any post. Legacy posts without an ' +
+      'author are editable only by ADMIN/SUPER_ADMIN.',
     auth: true,
     responses: [
       {
@@ -120,7 +158,9 @@ export const BlogDocs = {
 
   delete: {
     summary: 'Delete a blog post',
-    description: 'Soft-delete a blog post. Requires ADMIN or SUPER_ADMIN role.',
+    description:
+      'Soft-delete a blog post. A WRITER can only delete their own posts; ' +
+      'ADMIN and SUPER_ADMIN can delete any post.',
     auth: true,
     responses: [
       {
@@ -138,7 +178,7 @@ export const BlogDocs = {
     summary: 'Upload an image to Cloudinary',
     description:
       'Upload an image for use in blog posts (cover image or inline). ' +
-      'Returns the Cloudinary URL. Requires ADMIN or SUPER_ADMIN role.',
+      'Returns the Cloudinary URL. Requires WRITER, ADMIN, or SUPER_ADMIN.',
     auth: true,
     responses: [
       {

@@ -334,9 +334,7 @@ export class ProfileService {
    * Sorted by years of experience (most experienced first).
    */
   async discoverInstructors(dto: DiscoverInstructorsDto) {
-    const where: Record<string | symbol, unknown> = {
-      isPublic: true,
-    };
+    const where: Record<string | symbol, unknown> = {};
 
     if (dto.city) {
       where.locationCity = { [Op.iLike]: buildSearchTerm(dto.city) };
@@ -412,7 +410,7 @@ export class ProfileService {
    */
   async getInstructorPublicProfile(instructorUserId: string) {
     const profile = await this.instructorProfileModel.findOne({
-      where: { userId: instructorUserId, isPublic: true },
+      where: { userId: instructorUserId },
       include: [
         {
           model: User,

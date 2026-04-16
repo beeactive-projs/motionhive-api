@@ -62,6 +62,16 @@ export class PaymentClientController {
     return this.invoiceService.getOneForUser(id, req.user.id);
   }
 
+  @Get('invoices/:id/line-items')
+  @UseGuards(RolesGuard)
+  @Roles('USER')
+  async getMyInvoiceLineItems(
+    @Request() req: AuthenticatedRequest,
+    @Param('id', new ParseUUIDPipe()) id: string,
+  ) {
+    return this.invoiceService.getLineItemsForUser(id, req.user.id);
+  }
+
   @Post('invoices/:id/pay')
   @UseGuards(RolesGuard)
   @Roles('USER')

@@ -17,6 +17,8 @@ import type { Stripe } from 'stripe-types';
 import { Invoice, InvoiceStatus } from '../entities/invoice.entity';
 import { Payment, PaymentStatus } from '../entities/payment.entity';
 import { StripeAccount } from '../entities/stripe-account.entity';
+import { StripeCustomer } from '../entities/stripe-customer.entity';
+import { User } from '../../user/entities/user.entity';
 import { StripeService } from './stripe.service';
 import { CustomerService } from './customer.service';
 import {
@@ -45,6 +47,17 @@ import { CreateInvoiceDto } from '../dto/create-invoice.dto';
  *   - Cannot mark-paid an already-paid invoice → 409
  *   - applicationFeeAmount=0 is OMITTED from the API call (StripeService.buildFeeParams)
  */
+export interface InvoiceResponse {
+  [key: string]: unknown;
+  clientEmail: string | null;
+  client: {
+    id: string | null;
+    email: string;
+    firstName: string | null;
+    lastName: string | null;
+  } | null;
+}
+
 @Injectable()
 export class InvoiceService {
   constructor(
@@ -54,6 +67,8 @@ export class InvoiceService {
     private readonly paymentModel: typeof Payment,
     @InjectModel(StripeAccount)
     private readonly stripeAccountModel: typeof StripeAccount,
+    @InjectModel(StripeCustomer)
+    private readonly stripeCustomerModel: typeof StripeCustomer,
     private readonly sequelize: Sequelize,
     private readonly stripeService: StripeService,
     private readonly customerService: CustomerService,
@@ -62,6 +77,76 @@ export class InvoiceService {
     private readonly logger: LoggerService,
   ) {}
 
+  /**
+   * Build a response object for a single invoice with `clientEmail` and a
+   * `client` summary — works for both registered users (via User relation)
+   * and guests (via stripe_customer row).
+   */
+  private async enrich(invoice: Invoice): Promise<InvoiceResponse> {
+    return (await this.enrichMany([invoice]))[0];
+  }
+
+  /**
+   * Batch enrichment — one query for all Users, one for all StripeCustomers.
+   */
+  private async enrichMany(invoices: Invoice[]): Promise<InvoiceResponse[]> {
+    if (invoices.length === 0) return [];
+
+    const userIds = Array.from(
+      new Set(invoices.map((i) => i.clientId).filter((x): x is string => !!x)),
+    );
+    const stripeCustomerIds = Array.from(
+      new Set(invoices.map((i) => i.stripeCustomerId).filter((x) => !!x)),
+    );
+
+    const [users, stripeCustomers] = await Promise.all([
+      userIds.length
+        ? this.sequelize.models.User.findAll({
+            where: { id: { [Op.in]: userIds } },
+          })
+        : Promise.resolve([]),
+      stripeCustomerIds.length
+        ? this.stripeCustomerModel.findAll({
+            where: { stripeCustomerId: { [Op.in]: stripeCustomerIds } },
+          })
+        : Promise.resolve([]),
+    ]);
+
+    const userById = new Map<string, User>(
+      (users as User[]).map((u) => [u.id, u]),
+    );
+    const scById = new Map<string, StripeCustomer>(
+      stripeCustomers.map((sc) => [sc.stripeCustomerId, sc]),
+    );
+
+    return invoices.map((inv) => {
+      const json = inv.toJSON();
+      const user = inv.clientId ? userById.get(inv.clientId) : undefined;
+      const sc = scById.get(inv.stripeCustomerId);
+
+      const email = user?.email ?? sc?.email ?? null;
+      const firstName = user?.firstName ?? null;
+      const lastName = user?.lastName ?? null;
+      const guestName = sc?.name ?? null;
+
+      json['clientEmail'] = email;
+      json['client'] = email
+        ? {
+            id: user?.id ?? null,
+            email,
+            firstName:
+              firstName ?? (guestName ? guestName.split(' ')[0] : null),
+            lastName:
+              lastName ??
+              (guestName && guestName.includes(' ')
+                ? guestName.split(' ').slice(1).join(' ')
+                : null),
+          }
+        : null;
+      return json as unknown as InvoiceResponse;
+    });
+  }
+
   // =====================================================================
   // INSTRUCTOR FLOWS
   // =====================================================================
@@ -69,7 +154,7 @@ export class InvoiceService {
   async createOneOff(
     instructorId: string,
     dto: CreateInvoiceDto,
-  ): Promise<Invoice> {
+  ): Promise<InvoiceResponse> {
     // Bill-to must be EXACTLY one of clientUserId or guestEmail.
     // The DTO's ValidateIf enforces "at least one" but not "not both".
     const hasClient = !!dto.clientUserId;
@@ -220,7 +305,7 @@ export class InvoiceService {
       if (dto.sendImmediately) {
         return this.sendInvoice(instructorId, row.id);
       }
-      return row;
+      return this.enrich(row);
     } catch (err) {
       // Stripe failed — mark the local row VOID so dashboards filter it
       // out. We do NOT delete the row: keep an audit trail of failed
@@ -247,7 +332,7 @@ export class InvoiceService {
     page: number,
     limit: number,
     status?: InvoiceStatus,
-  ): Promise<PaginatedResponse<Invoice>> {
+  ): Promise<PaginatedResponse<InvoiceResponse>> {
     const where: Record<string, unknown> = { instructorId };
     if (status) where.status = status;
     const { rows, count } = await this.invoiceModel.findAndCountAll({
@@ -256,14 +341,15 @@ export class InvoiceService {
       limit,
       offset: getOffset(page, limit),
     });
-    return buildPaginatedResponse(rows, count, page, limit);
+    const enriched = await this.enrichMany(rows);
+    return buildPaginatedResponse(enriched, count, page, limit);
   }
 
   async listForClient(
     clientId: string,
     page: number,
     limit: number,
-  ): Promise<PaginatedResponse<Invoice>> {
+  ): Promise<PaginatedResponse<InvoiceResponse>> {
     const { rows, count } = await this.invoiceModel.findAndCountAll({
       where: {
         clientId,
@@ -273,23 +359,87 @@ export class InvoiceService {
       limit,
       offset: getOffset(page, limit),
     });
-    return buildPaginatedResponse(rows, count, page, limit);
+    const enriched = await this.enrichMany(rows);
+    return buildPaginatedResponse(enriched, count, page, limit);
   }
 
-  async getOneForUser(invoiceId: string, userId: string): Promise<Invoice> {
+  async getOneForUser(
+    invoiceId: string,
+    userId: string,
+  ): Promise<InvoiceResponse> {
     const invoice = await this.invoiceModel.findByPk(invoiceId);
     if (!invoice) throw new NotFoundException('Invoice not found.');
     if (invoice.instructorId !== userId && invoice.clientId !== userId) {
       throw new ForbiddenException('You cannot access this invoice.');
     }
-    return invoice;
+    return this.enrich(invoice);
+  }
+
+  /**
+   * Fetch line items from Stripe on demand. We do not mirror line items
+   * locally today — Stripe is source of truth and one extra API call per
+   * detail view is acceptable. If we later mirror them in a dedicated
+   * table, this method can read locally and fall back to Stripe.
+   */
+  async getLineItemsForUser(
+    invoiceId: string,
+    userId: string,
+  ): Promise<
+    Array<{
+      id: string;
+      description: string | null;
+      quantity: number;
+      unitAmountCents: number;
+      amountCents: number;
+      currency: string;
+    }>
+  > {
+    const invoice = await this.invoiceModel.findByPk(invoiceId);
+    if (!invoice) throw new NotFoundException('Invoice not found.');
+    if (invoice.instructorId !== userId && invoice.clientId !== userId) {
+      throw new ForbiddenException('You cannot access this invoice.');
+    }
+    if (!invoice.stripeInvoiceId) return [];
+
+    try {
+      const result = await this.stripeService.stripe.invoices.listLineItems(
+        invoice.stripeInvoiceId,
+        { limit: 100 },
+      );
+      return result.data.map((li) => {
+        const raw = li as unknown as Record<string, unknown>;
+        const unitAmount =
+          (raw['price'] as { unit_amount?: number } | null)?.unit_amount ??
+          Math.round(li.amount / (li.quantity || 1));
+        return {
+          id: li.id,
+          description: li.description ?? null,
+          quantity: li.quantity ?? 1,
+          unitAmountCents: unitAmount,
+          amountCents: li.amount,
+          currency: (li.currency ?? invoice.currency).toUpperCase(),
+        };
+      });
+    } catch (err) {
+      this.logger.error(
+        `Failed to list line items for invoice ${invoiceId}: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+        err instanceof Error ? err.stack : undefined,
+        'InvoiceService',
+      );
+      return [];
+    }
   }
 
   /**
    * Finalize a draft invoice → status OPEN, Stripe emails the client.
    * Idempotent: calling on an already-open invoice is a no-op.
    */
-  async sendInvoice(instructorId: string, invoiceId: string): Promise<Invoice> {
+  async sendInvoice(
+    instructorId: string,
+    invoiceId: string,
+  ): Promise<InvoiceResponse> {
     const invoice = await this.requireOwnedInvoice(instructorId, invoiceId);
     if (
       invoice.status !== InvoiceStatus.DRAFT &&
@@ -331,17 +481,20 @@ export class InvoiceService {
       },
     );
     await invoice.save();
-    return invoice;
+    return this.enrich(invoice);
   }
 
-  async voidInvoice(instructorId: string, invoiceId: string): Promise<Invoice> {
+  async voidInvoice(
+    instructorId: string,
+    invoiceId: string,
+  ): Promise<InvoiceResponse> {
     const invoice = await this.requireOwnedInvoice(instructorId, invoiceId);
     if (invoice.status === InvoiceStatus.PAID) {
       throw new BadRequestException(
         'Cannot void a paid invoice. Issue a refund instead.',
       );
     }
-    if (invoice.status === InvoiceStatus.VOID) return invoice;
+    if (invoice.status === InvoiceStatus.VOID) return this.enrich(invoice);
 
     await this.stripeService.stripe.invoices.voidInvoice(
       invoice.stripeInvoiceId,
@@ -357,7 +510,7 @@ export class InvoiceService {
     invoice.status = InvoiceStatus.VOID;
     invoice.voidedAt = new Date();
     await invoice.save();
-    return invoice;
+    return this.enrich(invoice);
   }
 
   /**
@@ -367,7 +520,7 @@ export class InvoiceService {
   async markPaidOutOfBand(
     instructorId: string,
     invoiceId: string,
-  ): Promise<Invoice> {
+  ): Promise<InvoiceResponse> {
     const invoice = await this.requireOwnedInvoice(instructorId, invoiceId);
     if (invoice.status === InvoiceStatus.PAID) {
       throw new ConflictException('Invoice already marked as paid.');
@@ -421,7 +574,7 @@ export class InvoiceService {
       body: `Invoice ${invoice.number ?? invoice.id} marked as paid out of band.`,
       data: { screen: 'instructor-invoices', entityId: invoice.id },
     });
-    return invoice;
+    return this.enrich(invoice);
   }
 
   // =====================================================================

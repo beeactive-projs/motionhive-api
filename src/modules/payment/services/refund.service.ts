@@ -75,6 +75,7 @@ export class RefundService {
       metadata: {
         beeactive_reason: dto.reason ?? 'instructor_initiated',
         beeactive_payment_id: payment.id,
+        ...(dto.notes && { beeactive_notes: dto.notes }),
       },
     };
     if (payment.stripeChargeId) {

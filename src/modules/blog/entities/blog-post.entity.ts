@@ -6,7 +6,10 @@ import {
   CreatedAt,
   UpdatedAt,
   DeletedAt,
+  ForeignKey,
+  BelongsTo,
 } from 'sequelize-typescript';
+import { User } from '../../user/entities/user.entity';
 
 @Table({
   tableName: 'blog_post',
@@ -109,6 +112,17 @@ export class BlogPost extends Model {
     allowNull: true,
   })
   declare publishedAt: Date | null;
+
+  @ForeignKey(() => User)
+  @Column({
+    type: DataType.CHAR(36),
+    allowNull: true,
+    field: 'author_user_id',
+  })
+  declare authorUserId: string | null;
+
+  @BelongsTo(() => User, { foreignKey: 'authorUserId', onDelete: 'SET NULL' })
+  declare author?: User;
 
   @CreatedAt
   declare createdAt: Date;

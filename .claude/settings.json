@@ -1,0 +1,33 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//Users/ionutbutnaru/.claude/projects/**)",
+      "Read(//Users/ionutbutnaru/.claude/**)",
+      "Read(//Users/ionutbutnaru/Documents/**)",
+      "Read(//Users/ionutbutnaru/Documents/mystuff/**)",
+      "Bash(ls /Users/ionutbutnaru/Documents/mystuff/beeactive-api/migrations/017* /Users/ionutbutnaru/Documents/mystuff/beeactive-api/migrations/018*)",
+      "Bash(echo \"---EXIT: $?---\")",
+      "Bash(curl -s 'http://localhost:3800/blog?locale=en')",
+      "Bash(curl -s 'http://localhost:4200' -o /dev/null -w \"%{http_code}\")",
+      "Bash(curl -s 'http://localhost:4200/main.js')",
+      "Bash(curl -s 'http://localhost:4200/blog')",
+      "Bash(curl -s 'http://localhost:4200/')",
+      "Bash(curl -s 'http://localhost:4200/@fs/Users/ionutbutnaru/Documents/mystuff/beeactive-ui/projects/core/src/environments/environment.development.ts')",
+      "Bash(curl -s 'http://localhost:4200/@fs/Users/ionutbutnaru/Documents/mystuff/beeactive-ui/projects/core/src/environments/environment.ts')",
+      "Bash(ls /Users/ionutbutnaru/Documents/mystuff/beeactive-ui/.angular/cache/21.2.6/website/vite/deps_temp_*/)",
+      "Bash(curl -s 'http://localhost:4200/chunk-BRAFF7UP.js')",
+      "Bash(curl -s http://localhost:4200/__TRACKED_VAR__)",
+      "Bash(curl -s 'http://localhost:4200/chunk-ZK6R5M4B.js')",
+      "Bash(grep -oE '.{0,50}\\(railway|localhost:3800\\).{0,50}')",
+      "Bash(curl -s 'http://localhost:3800/auth/login' -H 'Content-Type: application/json' -d '{\"email\":\"writer@test.com\",\"password\":\"Test1234!\"}')",
+      "Bash(curl -s 'http://localhost:3800/clients/requests/pending' -H \"Authorization: Bearer $\\(curl -s 'http://localhost:3800/auth/login' -H 'Content-Type: application/json' -d '{\"email\":\"writer@test.com\",\"password\":\"Test1234!\"}')",
+      "Bash(python3 -m json.tool)",
+      "Bash(curl -s 'http://localhost:3800/auth/login' -H 'Content-Type: application/json' -d '{\"email\":\"instructor@test.com\",\"password\":\"Test1234!\"}')",
+      "Bash(curl -s 'http://localhost:3800/clients/invites' -H \"Authorization: Bearer $\\(curl -s 'http://localhost:3800/auth/login' -H 'Content-Type: application/json' -d '{\"email\":\"instructor@test.com\",\"password\":\"Test1234!\"}')",
+      "Bash(curl -s 'http://localhost:3800/clients/invites' -H \"Authorization: Bearer $\\(curl -s 'http://localhost:3800/auth/login' -H 'Content-Type: application/json' -d '{\"email\":\"writer@test.com\",\"password\":\"Test1234!\"}')"
+    ],
+    "additionalDirectories": [
+      "/Users/ionutbutnaru/Documents/mystuff/beeactive-api"
+    ]
+  }
+}

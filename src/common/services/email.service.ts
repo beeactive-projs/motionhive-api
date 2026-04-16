@@ -48,7 +48,7 @@ export class EmailService {
     this.isProduction = this.configService.get('NODE_ENV') === 'production';
 
     // In dev, email links point to the API for direct verification
-    const port = this.configService.get('PORT') || 3000;
+    const port = this.configService.get<number>('PORT') || 3000;
     this.apiUrl = `http://localhost:${port}`;
 
     // Initialize Resend if API key is available
@@ -163,8 +163,11 @@ export class EmailService {
     email: string,
     instructorName: string,
     message?: string,
+    token?: string,
   ): Promise<void> {
-    const signUpLink = `${this.frontendUrl}/auth/signup?ref=client-invite`;
+    const signUpLink = token
+      ? `${this.frontendUrl}/auth/signup?token=${token}`
+      : `${this.frontendUrl}/auth/signup?ref=client-invite`;
 
     const subject = `${instructorName} invited you to MotionHive`;
     const html = `
