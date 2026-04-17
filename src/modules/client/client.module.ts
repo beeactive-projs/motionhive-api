@@ -21,7 +21,11 @@ import { EmailService } from '../../common/services/email.service';
  */
 @Module({
   imports: [
-    SequelizeModule.forFeature([InstructorClient, ClientRequest, InstructorProfile]),
+    SequelizeModule.forFeature([
+      InstructorClient,
+      ClientRequest,
+      InstructorProfile,
+    ]),
     RoleModule,
   ],
   controllers: [ClientController],

@@ -158,6 +158,7 @@ Full schema in `src/config/env.validation.ts` (Joi, `abortEarly: false`).
 - **Use `Op.iLike`** (not `Op.like`) for search on PostgreSQL
 - **Use PostgreSQL JSON operators** (`@>`, `?`, `->`) — never MySQL functions (`JSON_CONTAINS`)
 - **Pagination limits**: `@Min(1)` and `@Max(100)` on every limit param
+- **Never use `any`** — always use strict types; prefer `unknown` + narrowing, or define an explicit interface/type
 - **Never commit `console.log`** — use Winston logger
 - **Rate limit** sensitive endpoints with `@Throttle()`
 - **Webhook handlers**: pass `{ transaction: tx }` to every ORM call inside the handler

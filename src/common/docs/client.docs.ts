@@ -11,7 +11,9 @@ export const ClientDocs = {
     summary: 'List my clients',
     description:
       "List the authenticated instructor's clients with pagination and optional status filter. " +
-      'Returns client info with group memberships. Query params: ?page=1&limit=20&status=ACTIVE.',
+      'Returns client info with group memberships. Query params: ?page=1&limit=20&status=ACTIVE|PENDING|ARCHIVED. ' +
+      'When status is omitted, returns all statuses (ACTIVE + ARCHIVED rows from instructor_client merged with PENDING rows from client_request). ' +
+      'PENDING rows include extra fields: invitedEmail (email-only invites), requestType, and expiresAt.',
     auth: true,
     responses: [
       {
@@ -21,20 +23,43 @@ export const ClientDocs = {
           items: [
             {
               id: 'client-relationship-uuid',
-              clientId: 'user-uuid',
               instructorId: 'instructor-uuid',
-              firstName: 'Jane',
-              lastName: 'Doe',
-              avatarId: 'cloudinary-asset-id-or-null',
+              clientId: 'user-uuid',
               status: 'ACTIVE',
-              startedAt: '2026-01-15T10:00:00.000Z',
+              initiatedBy: 'INSTRUCTOR',
               notes: 'Working on weight loss goals',
+              startedAt: '2026-01-15T10:00:00.000Z',
+              createdAt: '2026-01-01T10:00:00.000Z',
+              updatedAt: '2026-01-15T10:00:00.000Z',
+              client: {
+                id: 'user-uuid',
+                firstName: 'Jane',
+                lastName: 'Doe',
+                email: 'jane@example.com',
+                avatarId: null,
+              },
               groupMemberships: [
                 { groupId: 'group-uuid', groupName: 'Morning HIIT Crew' },
               ],
             },
+            {
+              id: 'request-uuid',
+              instructorId: 'instructor-uuid',
+              clientId: null,
+              status: 'PENDING',
+              initiatedBy: 'INSTRUCTOR',
+              notes: null,
+              startedAt: null,
+              createdAt: '2026-03-18T10:00:00.000Z',
+              updatedAt: '2026-03-18T10:00:00.000Z',
+              invitedEmail: 'newuser@example.com',
+              requestType: 'INSTRUCTOR_TO_CLIENT',
+              expiresAt: '2026-04-17T10:00:00.000Z',
+              client: null,
+              groupMemberships: [],
+            },
           ],
-          total: 1,
+          total: 2,
           page: 1,
           pageSize: 20,
         },
@@ -46,7 +71,8 @@ export const ClientDocs = {
 
   getMyInstructors: {
     summary: 'List my instructors',
-    description: 'List all instructors the authenticated user is an ACTIVE client of. Includes instructor profile info.',
+    description:
+      'List all instructors the authenticated user is an ACTIVE client of. Includes instructor profile info.',
     auth: true,
     responses: [
       {
@@ -83,7 +109,8 @@ export const ClientDocs = {
 
   getPendingRequests: {
     summary: 'List pending requests',
-    description: 'List pending incoming client requests for the authenticated user. Excludes expired requests.',
+    description:
+      'List pending incoming client requests for the authenticated user. Excludes expired requests.',
     auth: true,
     responses: [
       {
@@ -139,7 +166,10 @@ export const ClientDocs = {
           },
         },
       },
-      { status: 400, description: 'Relationship already exists or pending request' },
+      {
+        status: 400,
+        description: 'Relationship already exists or pending request',
+      },
       ApiStandardResponses.Unauthorized,
       ApiStandardResponses.Forbidden,
     ],
@@ -168,7 +198,10 @@ export const ClientDocs = {
           createdAt: '2026-03-18T10:00:00.000Z',
         },
       },
-      { status: 400, description: 'Instructor not accepting clients or relationship exists' },
+      {
+        status: 400,
+        description: 'Instructor not accepting clients or relationship exists',
+      },
       ApiStandardResponses.Unauthorized,
       ApiStandardResponses.NotFound,
     ],
@@ -176,7 +209,8 @@ export const ClientDocs = {
 
   acceptRequest: {
     summary: 'Accept client request',
-    description: 'Accept a pending client request. Creates/activates the instructor-client relationship.',
+    description:
+      'Accept a pending client request. Creates/activates the instructor-client relationship.',
     auth: true,
     responses: [
       {
@@ -193,13 +227,19 @@ export const ClientDocs = {
 
   declineRequest: {
     summary: 'Decline client request',
-    description: 'Decline a pending client request.',
+    description:
+      'Decline a pending client request. Only the request recipient can decline. ' +
+      'Also removes any PENDING instructor_client record created by the original invitation.',
     auth: true,
     responses: [
       {
         status: 200,
         description: 'Request declined',
         example: { message: 'Request declined' },
+      },
+      {
+        status: 400,
+        description: 'Request already responded to (not PENDING)',
       },
       ApiStandardResponses.Unauthorized,
       ApiStandardResponses.Forbidden,
@@ -209,13 +249,19 @@ export const ClientDocs = {
 
   cancelRequest: {
     summary: 'Cancel client request',
-    description: 'Cancel a client request that the authenticated user sent.',
+    description:
+      'Cancel a pending client request that the authenticated user sent. ' +
+      'Also removes any PENDING instructor_client record created by the original invitation.',
     auth: true,
     responses: [
       {
         status: 200,
         description: 'Request cancelled',
         example: { message: 'Request cancelled' },
+      },
+      {
+        status: 400,
+        description: 'Request already responded to (not PENDING)',
       },
       ApiStandardResponses.Unauthorized,
       ApiStandardResponses.Forbidden,
@@ -225,12 +271,25 @@ export const ClientDocs = {
 
   updateClient: {
     summary: 'Update client relationship',
-    description: 'Update notes or status for a client relationship. Instructor only.',
+    description:
+      'Update notes or status (ACTIVE | ARCHIVED) for a client relationship. Instructor only. ' +
+      'Returns the updated InstructorClient record.',
     auth: true,
     responses: [
       {
         status: 200,
-        description: 'Client updated',
+        description: 'Client updated — returns the InstructorClient record',
+        example: {
+          id: 'client-relationship-uuid',
+          instructorId: 'instructor-uuid',
+          clientId: 'user-uuid',
+          status: 'ACTIVE',
+          initiatedBy: 'INSTRUCTOR',
+          notes: 'Prefers morning sessions. Working on upper body strength.',
+          startedAt: '2026-01-15T10:00:00.000Z',
+          createdAt: '2026-01-01T10:00:00.000Z',
+          updatedAt: '2026-04-17T10:00:00.000Z',
+        },
       },
       ApiStandardResponses.Unauthorized,
       ApiStandardResponses.Forbidden,
@@ -240,13 +299,64 @@ export const ClientDocs = {
 
   archiveClient: {
     summary: 'Archive client relationship',
-    description: 'Archive (soft-remove) a client relationship. Instructor only.',
+    description:
+      'Archive (soft-remove) a client relationship by setting status to ARCHIVED. Instructor only. ' +
+      'Returns the updated InstructorClient record.',
     auth: true,
     responses: [
       {
         status: 200,
-        description: 'Client archived',
-        example: { message: 'Client relationship archived' },
+        description:
+          'Client archived — returns the updated InstructorClient record',
+        example: {
+          id: 'client-relationship-uuid',
+          instructorId: 'instructor-uuid',
+          clientId: 'user-uuid',
+          status: 'ARCHIVED',
+          initiatedBy: 'INSTRUCTOR',
+          notes: null,
+          startedAt: '2026-01-15T10:00:00.000Z',
+          createdAt: '2026-01-01T10:00:00.000Z',
+          updatedAt: '2026-04-17T10:00:00.000Z',
+        },
+      },
+      ApiStandardResponses.Unauthorized,
+      ApiStandardResponses.Forbidden,
+      ApiStandardResponses.NotFound,
+    ],
+  } as ApiEndpointOptions,
+
+  resendInvitation: {
+    summary: 'Resend client invitation',
+    description:
+      'Resend an existing INSTRUCTOR_TO_CLIENT invitation. Refreshes expiry (+30 days), ' +
+      'regenerates the token for email-only invites, and re-sends the invitation email. ' +
+      'Only the instructor who sent the original invitation can resend it. ' +
+      'Accepted, declined, and cancelled invitations cannot be resent.',
+    auth: true,
+    responses: [
+      {
+        status: 201,
+        description: 'Invitation resent',
+        example: {
+          message: 'Invitation resent successfully',
+          request: {
+            id: 'request-uuid',
+            fromUserId: 'instructor-uuid',
+            toUserId: null,
+            invitedEmail: 'client@example.com',
+            type: 'INSTRUCTOR_TO_CLIENT',
+            status: 'PENDING',
+            message: 'Join my training program!',
+            token: 'new-token-hex',
+            expiresAt: '2026-05-17T10:00:00.000Z',
+            createdAt: '2026-03-18T10:00:00.000Z',
+          },
+        },
+      },
+      {
+        status: 400,
+        description: 'Invitation already accepted, declined, or cancelled',
       },
       ApiStandardResponses.Unauthorized,
       ApiStandardResponses.Forbidden,
@@ -318,7 +428,10 @@ export const ClientDocs = {
         description: 'Invitation accepted',
         example: { message: 'Invitation accepted successfully.' },
       },
-      { status: 400, description: 'Token expired, already accepted, declined, or cancelled' },
+      {
+        status: 400,
+        description: 'Token expired, already accepted, declined, or cancelled',
+      },
       ApiStandardResponses.Unauthorized,
       ApiStandardResponses.NotFound,
     ],
