@@ -15,7 +15,9 @@
     "outDir": "./dist",
     "baseUrl": "./",
     "paths": {
-      "stripe-types": ["./node_modules/stripe/cjs/stripe.core.d.ts"]
+      "stripe-types": [
+        "./node_modules/stripe/cjs/stripe.core.d.ts"
+      ]
     },
     "incremental": true,
     "skipLibCheck": true,
@@ -23,6 +25,7 @@
     "forceConsistentCasingInFileNames": true,
     "noImplicitAny": false,
     "strictBindCallApply": false,
-    "noFallthroughCasesInSwitch": false
+    "noFallthroughCasesInSwitch": false,
+    // "strict": true
   }
 }

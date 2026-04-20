@@ -34,6 +34,40 @@ import {
   PaginatedResponse,
 } from '../../common/dto/pagination.dto';
 
+// ---------------------------------------------------------------------------
+// Local shape types for getMyClients / enrichWithGroupMemberships
+// ---------------------------------------------------------------------------
+
+export interface ClientUserSnapshot {
+  id: string;
+  firstName: string;
+  lastName: string;
+  email: string;
+  avatarId: number | null;
+}
+
+export interface GroupMembershipSnapshot {
+  groupId: string;
+  groupName: string;
+}
+
+export interface ClientRow {
+  id: string;
+  instructorId: string;
+  clientId: string | null;
+  status: InstructorClientStatus;
+  initiatedBy: InitiatedBy;
+  notes: string | null;
+  startedAt: Date | null;
+  createdAt: Date;
+  updatedAt: Date;
+  invitedEmail?: string | null;
+  requestType?: ClientRequestType;
+  expiresAt?: Date;
+  client: ClientUserSnapshot | null;
+  groupMemberships: GroupMembershipSnapshot[];
+}
+
 /**
  * Client Service
  *
@@ -72,32 +106,51 @@ export class ClientService {
   async getMyClients(
     instructorId: string,
     filters: { status?: InstructorClientStatus; page?: number; limit?: number },
-  ): Promise<PaginatedResponse<any>> {
+  ): Promise<PaginatedResponse<ClientRow>> {
     const page = filters.page || 1;
     const limit = filters.limit || 20;
     const offset = (page - 1) * limit;
 
-    const requestedStatus = filters.status || InstructorClientStatus.ACTIVE;
-
-    // PENDING: query client_request table — that's where all pending
-    // items live (email invites, registered-user invites, user requests).
-    if (requestedStatus === InstructorClientStatus.PENDING) {
+    // PENDING items live in client_request (email invites, user invites, requests).
+    if (filters.status === InstructorClientStatus.PENDING) {
       return this.getMyPendingClients(instructorId, page, limit, offset);
     }
 
-    // ACTIVE / ARCHIVED: query instructor_client as before
-    const where: any = { instructorId, status: requestedStatus };
+    // No filter: fetch all instructor_client rows + pending client_request rows,
+    // merge in-memory sorted by createdAt DESC, then paginate.
+    if (filters.status === undefined) {
+      const [icRows, pendingRows]: [InstructorClient[], ClientRow[]] =
+        await Promise.all([
+          this.instructorClientModel.findAll({
+            where: { instructorId },
+            include: [this.clientUserInclude()],
+            order: [['createdAt', 'DESC']],
+          }),
+          this.getRawPendingClients(instructorId),
+        ]);
 
+      const enriched = await this.enrichWithGroupMemberships(
+        instructorId,
+        icRows.map((row) => this.toClientRow(row)),
+      );
+
+      const merged = [...enriched, ...pendingRows].sort(
+        (a, b) => b.createdAt.getTime() - a.createdAt.getTime(),
+      );
+
+      return buildPaginatedResponse(
+        merged.slice(offset, offset + limit),
+        merged.length,
+        page,
+        limit,
+      );
+    }
+
+    // ACTIVE / ARCHIVED: DB-paginated query on instructor_client.
     const { rows, count: totalItems } =
       await this.instructorClientModel.findAndCountAll({
-        where,
-        include: [
-          {
-            model: User,
-            as: 'client',
-            attributes: ['id', 'firstName', 'lastName', 'email', 'avatarId'],
-          },
-        ],
+        where: { instructorId, status: filters.status },
+        include: [this.clientUserInclude()],
         order: [['createdAt', 'DESC']],
         limit,
         offset,
@@ -106,10 +159,42 @@ export class ClientService {
 
     const data = await this.enrichWithGroupMemberships(
       instructorId,
-      rows.map((row) => ({ ...row.toJSON(), clientId: row.clientId })),
+      rows.map((row) => this.toClientRow(row)),
     );
 
     return buildPaginatedResponse(data, totalItems, page, limit);
+  }
+
+  private clientUserInclude() {
+    return {
+      model: User,
+      as: 'client',
+      attributes: ['id', 'firstName', 'lastName', 'email', 'avatarId'],
+    };
+  }
+
+  private toClientRow(row: InstructorClient): ClientRow {
+    return {
+      id: row.id,
+      instructorId: row.instructorId,
+      clientId: row.clientId,
+      status: row.status,
+      initiatedBy: row.initiatedBy,
+      notes: row.notes,
+      startedAt: row.startedAt,
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+      client: row.client
+        ? {
+            id: row.client.id,
+            firstName: row.client.firstName,
+            lastName: row.client.lastName,
+            email: row.client.email,
+            avatarId: row.client.avatarId ?? null,
+          }
+        : null,
+      groupMemberships: [],
+    };
   }
 
   /**
@@ -123,7 +208,7 @@ export class ClientService {
     page: number,
     limit: number,
     offset: number,
-  ): Promise<PaginatedResponse<any>> {
+  ): Promise<PaginatedResponse<ClientRow>> {
     const where = {
       [Op.or]: [
         // Invitations the instructor sent (both email-only and to registered users)
@@ -189,7 +274,7 @@ export class ClientService {
               firstName: clientUser.firstName,
               lastName: clientUser.lastName,
               email: clientUser.email,
-              avatarId: (clientUser as any).avatarId,
+              avatarId: clientUser.avatarId,
             }
           : null,
         groupMemberships: [],
@@ -199,16 +284,84 @@ export class ClientService {
     return buildPaginatedResponse(data, totalItems, page, limit);
   }
 
+  private async getRawPendingClients(
+    instructorId: string,
+  ): Promise<ClientRow[]> {
+    const where = {
+      [Op.or]: [
+        {
+          fromUserId: instructorId,
+          type: ClientRequestType.INSTRUCTOR_TO_CLIENT,
+        },
+        {
+          toUserId: instructorId,
+          type: ClientRequestType.CLIENT_TO_INSTRUCTOR,
+        },
+      ],
+      status: ClientRequestStatus.PENDING,
+      expiresAt: { [Op.gt]: new Date() },
+    };
+
+    const rows = await this.clientRequestModel.findAll({
+      where,
+      include: [
+        {
+          model: User,
+          as: 'fromUser',
+          attributes: ['id', 'firstName', 'lastName', 'email', 'avatarId'],
+        },
+        {
+          model: User,
+          as: 'toUser',
+          attributes: ['id', 'firstName', 'lastName', 'email', 'avatarId'],
+        },
+      ],
+      order: [['createdAt', 'DESC']],
+    });
+
+    return rows.map((row): ClientRow => {
+      const isInstructorInvite =
+        row.type === ClientRequestType.INSTRUCTOR_TO_CLIENT;
+      const clientUser = isInstructorInvite ? row.toUser : row.fromUser;
+      return {
+        id: row.id,
+        instructorId,
+        clientId: clientUser?.id ?? null,
+        status: InstructorClientStatus.PENDING,
+        initiatedBy: isInstructorInvite
+          ? InitiatedBy.INSTRUCTOR
+          : InitiatedBy.CLIENT,
+        notes: row.message,
+        startedAt: null,
+        createdAt: row.createdAt,
+        updatedAt: row.createdAt,
+        invitedEmail: row.invitedEmail,
+        requestType: row.type,
+        expiresAt: row.expiresAt,
+        client: clientUser
+          ? {
+              id: clientUser.id,
+              firstName: clientUser.firstName,
+              lastName: clientUser.lastName,
+              email: clientUser.email,
+              avatarId: clientUser.avatarId ?? null,
+            }
+          : null,
+        groupMemberships: [],
+      };
+    });
+  }
+
   /**
    * Enrich client rows with group membership data for groups
    * owned by this instructor.
    */
   private async enrichWithGroupMemberships(
     instructorId: string,
-    rows: Array<{ clientId: string; [key: string]: any }>,
-  ): Promise<any[]> {
-    const clientIds = rows.map((r) => r.clientId).filter(Boolean);
-    const groupMembershipsMap: Record<string, any[]> = {};
+    rows: ClientRow[],
+  ): Promise<ClientRow[]> {
+    const clientIds = rows.map((r) => r.clientId).filter(Boolean) as string[];
+    const groupMembershipsMap: Record<string, GroupMembershipSnapshot[]> = {};
 
     if (clientIds.length > 0) {
       try {
@@ -227,13 +380,16 @@ export class ClientService {
         });
 
         for (const membership of groupMemberships) {
-          const userId = membership.getDataValue('userId');
+          const userId = membership.getDataValue('userId') as string;
+          const group = membership.getDataValue('group') as
+            | Pick<Group, 'id' | 'name'>
+            | undefined;
           if (!groupMembershipsMap[userId]) {
             groupMembershipsMap[userId] = [];
           }
           groupMembershipsMap[userId].push({
-            groupId: (membership as any).group?.id,
-            groupName: (membership as any).group?.name,
+            groupId: group?.id ?? '',
+            groupName: group?.name ?? '',
           });
         }
       } catch {
@@ -246,7 +402,9 @@ export class ClientService {
 
     return rows.map((row) => ({
       ...row,
-      groupMemberships: groupMembershipsMap[row.clientId] || [],
+      groupMemberships: row.clientId
+        ? (groupMembershipsMap[row.clientId] ?? [])
+        : [],
     }));
   }
 
@@ -790,6 +948,93 @@ export class ClientService {
     return { message: 'Request cancelled' };
   }
 
+  /**
+   * Resend a client invitation
+   *
+   * Works on PENDING or expired invitations owned by the caller.
+   * Refreshes expiresAt (+30 days), regenerates the token for email-only invites,
+   * and re-sends the invitation email.
+   * Rejects ACCEPTED, DECLINED, and CANCELLED requests.
+   */
+  async resendInvitation(
+    instructorId: string,
+    requestId: string,
+  ): Promise<{ message: string; request: ClientRequest }> {
+    const request = await this.clientRequestModel.findOne({
+      where: {
+        id: requestId,
+        fromUserId: instructorId,
+        type: ClientRequestType.INSTRUCTOR_TO_CLIENT,
+      },
+      include: [
+        {
+          model: User,
+          as: 'toUser',
+          attributes: ['id', 'email', 'firstName'],
+        },
+      ],
+    });
+
+    if (!request) {
+      throw new NotFoundException('Invitation not found');
+    }
+
+    if (
+      request.status === ClientRequestStatus.ACCEPTED ||
+      request.status === ClientRequestStatus.DECLINED ||
+      request.status === ClientRequestStatus.CANCELLED
+    ) {
+      throw new BadRequestException(
+        `Cannot resend an invitation that has already been ${request.status.toLowerCase()}`,
+      );
+    }
+
+    const newExpiresAt = new Date();
+    newExpiresAt.setDate(newExpiresAt.getDate() + 30);
+
+    const newToken = request.invitedEmail
+      ? randomBytes(32).toString('hex')
+      : request.token;
+
+    await request.update({
+      status: ClientRequestStatus.PENDING,
+      expiresAt: newExpiresAt,
+      token: newToken,
+    });
+
+    const instructor = await User.findByPk(instructorId, {
+      attributes: ['firstName', 'lastName'],
+    });
+    const instructorName = instructor
+      ? `${instructor.firstName} ${instructor.lastName}`
+      : 'An instructor';
+
+    const recipientEmail = request.invitedEmail ?? request.toUser?.email;
+
+    if (recipientEmail) {
+      this.emailService
+        .sendClientInvitationEmail(
+          recipientEmail,
+          instructorName,
+          request.message ?? undefined,
+          newToken ?? undefined,
+        )
+        .catch((err: Error) =>
+          this.logger.error(
+            `Failed to resend client invitation email to ${recipientEmail}: ${err.message}`,
+            'ClientService',
+          ),
+        );
+    }
+
+    this.logger.log(
+      `Instructor ${instructorId} resent invitation ${requestId}`,
+      'ClientService',
+    );
+
+    return { message: 'Invitation resent successfully', request };
+  }
+
   // =====================================================
   // CLIENT MANAGEMENT
   // =====================================================
@@ -803,7 +1048,10 @@ export class ClientService {
   async updateClient(
     instructorId: string,
     clientId: string,
-    updates: { notes?: string; status?: 'ACTIVE' | 'ARCHIVED' },
+    updates: {
+      notes?: string;
+      status?: InstructorClientStatus.ACTIVE | InstructorClientStatus.ARCHIVED;
+    },
   ): Promise<InstructorClient> {
     const relationship = await this.instructorClientModel.findOne({
       where: { instructorId, clientId },
@@ -813,7 +1061,7 @@ export class ClientService {
       throw new NotFoundException('Client relationship not found');
     }
 
-    const updateData: any = {};
+    const updateData: Partial<Pick<InstructorClient, 'notes' | 'status'>> = {};
 
     if (updates.notes !== undefined) {
       updateData.notes = updates.notes;
@@ -891,7 +1139,12 @@ export class ClientService {
     instructorId: string,
     includeExpired = false,
   ): Promise<ClientRequest[]> {
-    const where: any = {
+    const where: {
+      fromUserId: string;
+      toUserId: null;
+      status?: ClientRequestStatus;
+      expiresAt?: { [Op.gt]: Date };
+    } = {
       fromUserId: instructorId,
       toUserId: null,
     };

@@ -232,10 +232,7 @@ export class AuthService {
     // Revoke all refresh tokens — forces re-login on all devices
     await this.revokeAllUserTokens(userId);
 
-    this.logger.log(
-      `Password changed for user: ${user.email}`,
-      'AuthService',
-    );
+    this.logger.log(`Password changed for user: ${user.email}`, 'AuthService');
 
     return { message: 'Password changed successfully. Please log in again.' };
   }
@@ -326,7 +323,8 @@ export class AuthService {
 
     // Store hashed refresh token in DB
     const tokenHash = this.cryptoService.hashToken(refreshToken);
-    const refreshExpiresIn = this.configService.get('JWT_REFRESH_EXPIRES_IN') || '7d';
+    const refreshExpiresIn =
+      this.configService.get('JWT_REFRESH_EXPIRES_IN') || '7d';
     const expiresAt = new Date();
     const days = parseInt(refreshExpiresIn) || 7;
     expiresAt.setDate(expiresAt.getDate() + days);
@@ -439,10 +437,7 @@ export class AuthService {
   async logoutAll(userId: string): Promise<{ message: string }> {
     await this.revokeAllUserTokens(userId);
 
-    this.logger.log(
-      `All sessions revoked for user: ${userId}`,
-      'AuthService',
-    );
+    this.logger.log(`All sessions revoked for user: ${userId}`, 'AuthService');
 
     return { message: 'Logged out from all devices' };
   }

@@ -26,7 +26,8 @@ export const GroupDocs = {
               id: '550e8400-e29b-41d4-a716-446655440000',
               name: 'Morning HIIT Crew',
               slug: 'morning-hiit-crew',
-              description: 'High-intensity interval training every weekday morning',
+              description:
+                'High-intensity interval training every weekday morning',
               logoUrl: 'https://res.cloudinary.com/...',
               tags: ['fitness', 'hiit', 'morning'],
               joinPolicy: 'OPEN',
@@ -147,6 +148,27 @@ export const GroupDocs = {
   getMyGroups: {
     summary: 'List my groups',
     description: 'Returns all groups the authenticated user belongs to.',
+    auth: true,
+    responses: [
+      {
+        status: 200,
+        description: 'Groups listed',
+        example: [
+          {
+            id: '550e8400-e29b-41d4-a716-446655440000',
+            name: 'Morning HIIT Crew',
+            slug: 'morning-hiit-crew',
+            tags: ['fitness', 'hiit'],
+          },
+        ],
+      },
+      ApiStandardResponses.Unauthorized,
+    ],
+  } as ApiEndpointOptions,
+
+  getInstructorsGroups: {
+    summary: 'List my groups',
+    description: 'Returns all groups the authenticated instructor.',
     auth: true,
     responses: [
       {

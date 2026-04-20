@@ -21,6 +21,7 @@ import { ApiEndpoint } from '../../common/decorators/api-response.decorator';
 import { ClientDocs } from '../../common/docs/client.docs';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { RolesGuard } from '../../common/guards/roles.guard';
+import { InstructorClientStatus } from './entities/instructor-client.entity';
 
 /**
  * Client Controller
@@ -133,6 +134,26 @@ export class ClientController {
   }
 
   /**
+   * POST /clients/invite/:requestId/resend
+   * Resend an existing client invitation (INSTRUCTOR only).
+   * Refreshes expiry (+30 days), regenerates token for email-only invites, re-sends the email.
+   */
+  @Post('invite/:requestId/resend')
+  @Throttle({ default: { limit: 10, ttl: 3600000 } })
+  @UseGuards(AuthGuard('jwt'), RolesGuard)
+  @Roles('INSTRUCTOR', 'ADMIN', 'SUPER_ADMIN')
+  @ApiEndpoint(ClientDocs.resendInvitation)
+  async resendInvitation(
+    @Request() req,
+    @Param('requestId') requestId: string,
+  ) {
+    return this.clientService.resendInvitation(
+      req.user.id as string,
+      requestId,
+    );
+  }
+
+  /**
    * POST /clients/request/:instructorId
    * User requests to become a client of the specified instructor.
    */
@@ -224,7 +245,7 @@ export class ClientController {
   @ApiEndpoint(ClientDocs.archiveClient)
   async archiveClient(@Request() req, @Param('clientId') clientId: string) {
     return this.clientService.updateClient(req.user.id, clientId, {
-      status: 'ARCHIVED',
+      status: InstructorClientStatus.ARCHIVED,
     });
   }
 }

@@ -1,14 +1,6 @@
 import { IsOptional, IsString, IsEnum, MaxLength } from 'class-validator';
 import { ApiPropertyOptional } from '@nestjs/swagger';
-
-/**
- * Allowed status transitions when updating a client relationship.
- * Only ACTIVE and ARCHIVED are valid update targets — PENDING is set automatically.
- */
-enum UpdateClientStatus {
-  ACTIVE = 'ACTIVE',
-  ARCHIVED = 'ARCHIVED',
-}
+import { InstructorClientStatus } from '../entities/instructor-client.entity';
 
 /**
  * Update Client DTO
@@ -19,7 +11,8 @@ enum UpdateClientStatus {
 export class UpdateClientDto {
   @ApiPropertyOptional({
     example: 'Prefers morning sessions. Working on upper body strength.',
-    description: 'Private notes about the client (only visible to the instructor)',
+    description:
+      'Private notes about the client (only visible to the instructor)',
   })
   @IsString()
   @MaxLength(5000)
@@ -27,11 +20,11 @@ export class UpdateClientDto {
   notes?: string;
 
   @ApiPropertyOptional({
-    example: 'ARCHIVED',
+    example: InstructorClientStatus.ARCHIVED,
     description: 'Update the relationship status (ACTIVE or ARCHIVED)',
-    enum: UpdateClientStatus,
+    enum: [InstructorClientStatus.ACTIVE, InstructorClientStatus.ARCHIVED],
   })
-  @IsEnum(UpdateClientStatus)
+  @IsEnum([InstructorClientStatus.ACTIVE, InstructorClientStatus.ARCHIVED])
   @IsOptional()
-  status?: 'ACTIVE' | 'ARCHIVED';
+  status?: InstructorClientStatus.ACTIVE | InstructorClientStatus.ARCHIVED;
 }

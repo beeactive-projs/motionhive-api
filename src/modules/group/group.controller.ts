@@ -88,6 +88,13 @@ export class GroupController {
     return this.groupService.getMyGroups(req.user.id);
   }
 
+  @Get('/instructor')
+  @UseGuards(AuthGuard('jwt'))
+  @ApiEndpoint(GroupDocs.getInstructorsGroups)
+  async getInstructorsGroups(@Request() req) {
+    return this.groupService.getInstructorsGroups(req.user.id);
+  }
+
   @Get(':id')
   @UseGuards(AuthGuard('jwt'))
   @ApiEndpoint(GroupDocs.getById)
@@ -134,7 +141,8 @@ export class GroupController {
   @UseGuards(AuthGuard('jwt'))
   @ApiEndpoint({
     summary: 'Get group statistics',
-    description: 'Member count, session counts, etc. Requires group membership.',
+    description:
+      'Member count, session counts, etc. Requires group membership.',
     auth: true,
     responses: [{ status: 200, description: 'Group statistics' }],
   })
