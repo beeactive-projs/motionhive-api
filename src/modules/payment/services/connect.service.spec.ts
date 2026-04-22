@@ -176,8 +176,8 @@ describe('ConnectService', () => {
       expect(stripeMock.stripe.accountLinks.create).toHaveBeenCalledWith({
         account: 'acct_test',
         type: 'account_onboarding',
-        return_url: 'https://app.test/instructor/payments/onboarding-complete',
-        refresh_url: 'https://app.test/instructor/payments/onboarding-refresh',
+        return_url: 'https://app.test/coaching/payments/onboarding/return',
+        refresh_url: 'https://app.test/coaching/payments/onboarding/refresh',
       });
       expect(result.url).toContain('connect.stripe.com');
       expect(result.expiresAt).toBe(

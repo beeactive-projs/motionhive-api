@@ -148,12 +148,17 @@ export class ConnectService {
 
     const frontendUrl =
       this.configService.get<string>('FRONTEND_URL') ?? 'http://localhost:4200';
+    // FE routes live under `/coaching` (the instructor area) with
+    // `onboarding/return` and `onboarding/refresh` — see
+    // `projects/web/src/app/main/instructor/instructor.routes.ts`.
+    // An earlier iteration pointed Stripe at
+    // `/instructor/payments/onboarding-complete` which doesn't exist
+    // and 404'd after onboarding completion.
     const returnUrl =
-      options.returnUrl ??
-      `${frontendUrl}/instructor/payments/onboarding-complete`;
+      options.returnUrl ?? `${frontendUrl}/coaching/payments/onboarding/return`;
     const refreshUrl =
       options.refreshUrl ??
-      `${frontendUrl}/instructor/payments/onboarding-refresh`;
+      `${frontendUrl}/coaching/payments/onboarding/refresh`;
 
     const link = await this.stripeService.stripe.accountLinks.create({
       account: account.stripeAccountId,

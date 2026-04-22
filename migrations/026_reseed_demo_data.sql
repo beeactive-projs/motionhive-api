@@ -16,10 +16,15 @@
 --   • 1 group membership (user joins the group)
 --   • 2 scheduled sessions in that group
 --   • 1 instructor_client relationship (user → instructor)
---   • Stripe Connect + customer scaffolding for the instructor
---   • 2 products (one-off + subscription) on the instructor
---   • 1 active subscription (user ↔ instructor's subscription product)
---   • 2 invoices (paid + open) demonstrating both states
+--
+-- NOT included: Stripe Connect account / customer / products / invoices
+--   / subscriptions. An earlier iteration seeded those with fake
+--   `acct_demo_*` / `cus_demo_*` / `in_demo_*` ids and
+--   `charges_enabled = TRUE`, which looked fine in the UI but made
+--   every Stripe mutation 500 with "No such destination". Seed data
+--   for Stripe must be REAL or absent — there's no middle ground.
+--   To exercise payments, complete Stripe Connect onboarding through
+--   the in-app flow as the seeded instructor; that creates real rows.
 --
 -- Test credentials:
 --   superadmin@motionhive.fit / Test1234!
@@ -61,14 +66,17 @@ DECLARE
   sid_hiit  CHAR(36);
   sid_strength  CHAR(36);
 
-  -- Payments (pid = product id, invid = invoice id, etc.)
-  pay_stripe_account   CHAR(36);
-  pay_stripe_customer  CHAR(36);
-  pid_oneoff   CHAR(36);
-  pid_sub      CHAR(36);
-  subid_demo   CHAR(36);
-  invid_paid   CHAR(36);
-  invid_open   CHAR(36);
+  -- NOTE: No Stripe/payment fixtures are seeded here on purpose.
+  -- A seeded `stripe_account` with `charges_enabled = TRUE` and a fake
+  -- `acct_demo_...` id lies to the UI — the instructor looks onboarded
+  -- but every Stripe API call 500s with "No such destination". Same
+  -- goes for seeded `stripe_customer`, products with fake
+  -- `stripe_product_id`, seeded invoices, etc. — they're hostile to
+  -- the read-then-mutate flows in this codebase.
+  -- To exercise the payments UI end-to-end, log in as the seeded
+  -- instructor and complete Stripe Connect onboarding in-app. That
+  -- creates a REAL `stripe_account` row that the rest of the system
+  -- can actually call.
 
   -- Common bcrypt hash of 'Test1234!' used for all test accounts
   test_password_hash TEXT := '$2b$12$41I8q54Ve0JxdHOeN66K/OimQyOE5.nex.oCGoAU1xcTGIGt8MKCu';
@@ -322,205 +330,6 @@ BEGIN
       'ACTIVE', 'INSTRUCTOR',
       'Demo active client relationship.',
       NOW() - INTERVAL '14 days', NOW() - INTERVAL '14 days', NOW()
-    );
-  END IF;
-
-  -- =====================================================
-  -- 5. PAYMENTS — Stripe Connect scaffolding for the
-  --    instructor, one customer for the client, 2 products,
-  --    1 subscription, 2 invoices.
-  --
-  --    The Stripe IDs (`acct_demo_...`, `cus_demo_...`,
-  --    `prod_demo_...`, `price_demo_...`, `in_demo_...`,
-  --    `sub_demo_...`) are fake — they don't exist on Stripe
-  --    servers. That means:
-  --      ✓ You can SEE this data in lists / tables.
-  --      ✗ Mutations (send invoice, cancel sub, pay invoice)
-  --        will fail because Stripe returns 404 for the fake
-  --        IDs. That's expected for pre-Stripe-onboarded demo
-  --        data — to test real mutations, complete the Stripe
-  --        Connect onboarding flow inside the app.
-  -- =====================================================
-
-  -- Stripe Connect account for the instructor
-  SELECT id INTO pay_stripe_account
-    FROM stripe_account sa
-   WHERE sa.user_id = uid_instructor;
-  IF pay_stripe_account IS NULL THEN
-    pay_stripe_account := gen_random_uuid()::TEXT;
-    INSERT INTO stripe_account (
-      id, user_id, stripe_account_id,
-      charges_enabled, payouts_enabled, details_submitted,
-      country, default_currency, platform_fee_bps,
-      onboarding_completed_at, created_at, updated_at
-    ) VALUES (
-      pay_stripe_account, uid_instructor,
-      'acct_demo_instructor_0001',
-      TRUE, TRUE, TRUE,
-      'RO', 'ron', 0,
-      NOW() - INTERVAL '30 days',
-      NOW() - INTERVAL '30 days', NOW()
-    );
-  END IF;
-
-  -- Stripe customer for the client user
-  SELECT id INTO pay_stripe_customer
-    FROM stripe_customer sc
-   WHERE sc.user_id = uid_user;
-  IF pay_stripe_customer IS NULL THEN
-    pay_stripe_customer := gen_random_uuid()::TEXT;
-    INSERT INTO stripe_customer (
-      id, user_id, stripe_customer_id,
-      email, name,
-      created_at, updated_at
-    ) VALUES (
-      pay_stripe_customer, uid_user,
-      'cus_demo_test_user_0001',
-      'user@motionhive.fit', 'Test User',
-      NOW() - INTERVAL '20 days', NOW()
-    );
-  END IF;
-
-  -- Products (one-off personal training + monthly subscription)
-  SELECT id INTO pid_oneoff
-    FROM product p
-   WHERE p.instructor_id = uid_instructor
-     AND p.name = 'Single PT session';
-  IF pid_oneoff IS NULL THEN
-    pid_oneoff := gen_random_uuid()::TEXT;
-    INSERT INTO product (
-      id, instructor_id, name, description, type,
-      amount_cents, currency,
-      stripe_product_id, stripe_price_id,
-      is_active, show_on_profile,
-      created_at, updated_at
-    ) VALUES (
-      pid_oneoff, uid_instructor,
-      'Single PT session',
-      '60-minute one-on-one personal training session.',
-      'ONE_OFF',
-      15000, 'RON',
-      'prod_demo_oneoff_0001', 'price_demo_oneoff_0001',
-      TRUE, TRUE,
-      NOW() - INTERVAL '25 days', NOW()
-    );
-  END IF;
-
-  SELECT id INTO pid_sub
-    FROM product p
-   WHERE p.instructor_id = uid_instructor
-     AND p.name = 'Monthly membership';
-  IF pid_sub IS NULL THEN
-    pid_sub := gen_random_uuid()::TEXT;
-    INSERT INTO product (
-      id, instructor_id, name, description, type,
-      amount_cents, currency,
-      interval, interval_count,
-      stripe_product_id, stripe_price_id,
-      is_active, show_on_profile,
-      created_at, updated_at
-    ) VALUES (
-      pid_sub, uid_instructor,
-      'Monthly membership',
-      'Unlimited group classes for a month.',
-      'SUBSCRIPTION',
-      24000, 'RON',
-      'month', 1,
-      'prod_demo_sub_0001', 'price_demo_sub_0001',
-      TRUE, TRUE,
-      NOW() - INTERVAL '25 days', NOW()
-    );
-  END IF;
-
-  -- Active subscription: user pays the monthly membership
-  IF NOT EXISTS (
-    SELECT 1 FROM subscription s
-     WHERE s.instructor_id = uid_instructor
-       AND s.client_id     = uid_user
-       AND s.product_id    = pid_sub
-  ) THEN
-    subid_demo := gen_random_uuid()::TEXT;
-    INSERT INTO subscription (
-      id, instructor_id, client_id,
-      stripe_customer_id, product_id,
-      stripe_subscription_id, stripe_price_id,
-      status, currency, amount_cents,
-      current_period_start, current_period_end,
-      cancel_at_period_end,
-      created_at, updated_at
-    ) VALUES (
-      subid_demo, uid_instructor, uid_user,
-      'cus_demo_test_user_0001', pid_sub,
-      'sub_demo_active_0001', 'price_demo_sub_0001',
-      'active', 'RON', 24000,
-      NOW() - INTERVAL '10 days', NOW() + INTERVAL '20 days',
-      FALSE,
-      NOW() - INTERVAL '10 days', NOW()
-    );
-  END IF;
-
-  -- Paid invoice (showcases "Paid in full" state)
-  IF NOT EXISTS (
-    SELECT 1 FROM invoice i
-     WHERE i.instructor_id     = uid_instructor
-       AND i.stripe_invoice_id = 'in_demo_paid_0001'
-  ) THEN
-    invid_paid := gen_random_uuid()::TEXT;
-    INSERT INTO invoice (
-      id, instructor_id, client_id,
-      stripe_customer_id, stripe_invoice_id,
-      number, status,
-      amount_due_cents, amount_paid_cents, amount_remaining_cents,
-      currency, application_fee_cents,
-      due_date, finalized_at, paid_at,
-      hosted_invoice_url, invoice_pdf,
-      paid_out_of_band, description,
-      created_at, updated_at
-    ) VALUES (
-      invid_paid, uid_instructor, uid_user,
-      'cus_demo_test_user_0001', 'in_demo_paid_0001',
-      'MH-DEMO-0001', 'paid',
-      15000, 15000, 0,
-      'RON', 0,
-      NOW() - INTERVAL '3 days',
-      NOW() - INTERVAL '5 days',
-      NOW() - INTERVAL '3 days',
-      NULL, NULL,
-      FALSE, 'Single PT session — first demo invoice',
-      NOW() - INTERVAL '5 days', NOW()
-    );
-  END IF;
-
-  -- Open invoice (showcases "Awaiting payment" state)
-  IF NOT EXISTS (
-    SELECT 1 FROM invoice i
-     WHERE i.instructor_id     = uid_instructor
-       AND i.stripe_invoice_id = 'in_demo_open_0001'
-  ) THEN
-    invid_open := gen_random_uuid()::TEXT;
-    INSERT INTO invoice (
-      id, instructor_id, client_id,
-      stripe_customer_id, stripe_invoice_id,
-      number, status,
-      amount_due_cents, amount_paid_cents, amount_remaining_cents,
-      currency, application_fee_cents,
-      due_date, finalized_at,
-      hosted_invoice_url,
-      paid_out_of_band, description,
-      requires_immediate_access_waiver,
-      created_at, updated_at
-    ) VALUES (
-      invid_open, uid_instructor, uid_user,
-      'cus_demo_test_user_0001', 'in_demo_open_0001',
-      'MH-DEMO-0002', 'open',
-      20000, 0, 20000,
-      'RON', 0,
-      NOW() + INTERVAL '7 days',
-      NOW() - INTERVAL '1 day',
-      'https://invoice.stripe.com/demo/open-0001',
-      FALSE, 'Second demo invoice — open for payment',
-      TRUE,
-      NOW() - INTERVAL '1 day', NOW()
     );
   END IF;
 
