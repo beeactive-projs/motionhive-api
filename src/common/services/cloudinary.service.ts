@@ -59,9 +59,29 @@ export class CloudinaryService {
           .end(file.buffer);
       });
     } catch (error: unknown) {
-      const message =
-        error instanceof Error ? error.message : 'Unknown Cloudinary error';
-      this.logger.error(`Cloudinary upload failed: ${message}`);
+      // Cloudinary SDK rejects with a plain object (`{ message, http_code,
+      // name }`) rather than an Error instance, so `instanceof Error`
+      // alone drops the real message on the floor. Narrow via a type
+      // guard on the `message` property so we surface whatever the SDK
+      // actually said (e.g. "Invalid image file", "cloud_name required",
+      // "api_key mismatch", ...).
+      let message = 'Unknown Cloudinary error';
+      if (error instanceof Error) {
+        message = error.message;
+      } else if (
+        typeof error === 'object' &&
+        error !== null &&
+        'message' in error &&
+        typeof (error as { message: unknown }).message === 'string'
+      ) {
+        message = (error as { message: string }).message;
+      }
+      // Log the full error object (not PII) so we can see http_code,
+      // name, etc. in Railway logs when "message" alone isn't enough.
+      this.logger.error(
+        `Cloudinary upload failed: ${message}`,
+        JSON.stringify(error, Object.getOwnPropertyNames(error ?? {})),
+      );
       throw new InternalServerErrorException(`Image upload failed: ${message}`);
     }
 
