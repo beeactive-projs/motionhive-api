@@ -4,7 +4,7 @@ import {
   ForbiddenException,
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/sequelize';
-import { Op, fn, col } from 'sequelize';
+import { Op, fn, col, WhereOptions } from 'sequelize';
 import { BlogPost } from './entities/blog-post.entity';
 import { CreateBlogPostDto } from './dto/create-blog-post.dto';
 import { UpdateBlogPostDto } from './dto/update-blog-post.dto';
@@ -45,21 +45,19 @@ export class BlogService {
     const limit = query.limit || 10;
     const offset = (page - 1) * limit;
 
-    const where: any = { isPublished: true };
-    if (query.locale) {
-      where.language = query.locale;
-    }
-    if (query.category) {
-      where.category = query.category;
-    }
-    if (query.search) {
-      const term = buildSearchTerm(query.search);
-      where[Op.or] = [
-        { title: { [Op.iLike]: term } },
-        { excerpt: { [Op.iLike]: term } },
-        { authorName: { [Op.iLike]: term } },
-      ];
-    }
+    const term = query.search ? buildSearchTerm(query.search) : null;
+    const where: WhereOptions<BlogPost> = {
+      isPublished: true,
+      ...(query.locale && { language: query.locale }),
+      ...(query.category && { category: query.category }),
+      ...(term && {
+        [Op.or]: [
+          { title: { [Op.iLike]: term } },
+          { excerpt: { [Op.iLike]: term } },
+          { authorName: { [Op.iLike]: term } },
+        ],
+      }),
+    };
 
     const { rows, count } = await this.blogPostModel.findAndCountAll({
       where,
@@ -81,27 +79,20 @@ export class BlogService {
     const limit = query.limit || 10;
     const offset = (page - 1) * limit;
 
-    const where: any = {};
-
     const isAdmin = auth.roles.some((r) => ADMIN_ROLES.includes(r));
-    if (!isAdmin) {
-      where.authorUserId = auth.userId;
-    }
-
-    if (query.locale) {
-      where.language = query.locale;
-    }
-    if (query.category) {
-      where.category = query.category;
-    }
-    if (query.search) {
-      const term = buildSearchTerm(query.search);
-      where[Op.or] = [
-        { title: { [Op.iLike]: term } },
-        { excerpt: { [Op.iLike]: term } },
-        { authorName: { [Op.iLike]: term } },
-      ];
-    }
+    const term = query.search ? buildSearchTerm(query.search) : null;
+    const where: WhereOptions<BlogPost> = {
+      ...(!isAdmin && { authorUserId: auth.userId }),
+      ...(query.locale && { language: query.locale }),
+      ...(query.category && { category: query.category }),
+      ...(term && {
+        [Op.or]: [
+          { title: { [Op.iLike]: term } },
+          { excerpt: { [Op.iLike]: term } },
+          { authorName: { [Op.iLike]: term } },
+        ],
+      }),
+    };
 
     const { rows, count } = await this.blogPostModel.findAndCountAll({
       where,

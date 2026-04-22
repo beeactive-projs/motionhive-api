@@ -31,11 +31,13 @@ export const createLogger = (): WinstonModuleOptions => {
         ? winston.format.json()
         : winston.format.combine(
             winston.format.colorize(),
-            winston.format.printf(({ timestamp, level, message, context, trace, requestId }) => {
-              const rid = requestId ? `[${requestId}]` : '';
-              const ctx = context ? `[${context}]` : '';
-              return `${timestamp} ${level} ${rid}${ctx}: ${message}${trace ? `\n${trace}` : ''}`;
-            }),
+            winston.format.printf(
+              ({ timestamp, level, message, context, trace, requestId }) => {
+                const rid = requestId ? `[${requestId}]` : '';
+                const ctx = context ? `[${context}]` : '';
+                return `${timestamp} ${level} ${rid}${ctx}: ${message}${trace ? `\n${trace}` : ''}`;
+              },
+            ),
           ),
     ),
     transports: [

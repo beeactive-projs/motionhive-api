@@ -455,7 +455,22 @@ export class ProfileService {
    * Returns user data, roles, and both profiles.
    * The frontend uses this to know what UI to show.
    */
-  async getProfileOverview(user: User) {
+  async getProfileOverview(
+    user: Pick<
+      User,
+      | 'id'
+      | 'email'
+      | 'firstName'
+      | 'lastName'
+      | 'phone'
+      | 'avatarId'
+      | 'avatarUrl'
+      | 'language'
+      | 'timezone'
+      | 'isEmailVerified'
+      | 'createdAt'
+    >,
+  ) {
     const [userProfile, instructorProfile, roles] = await Promise.all([
       this.getUserProfile(user.id),
       this.getInstructorProfile(user.id),

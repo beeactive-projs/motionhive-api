@@ -26,7 +26,10 @@ export const ApiStandardResponses = {
     description: 'Invalid request data',
     example: {
       statusCode: 400,
-      message: ['email must be an email', 'password must be longer than 8 characters'],
+      message: [
+        'email must be an email',
+        'password must be longer than 8 characters',
+      ],
       error: 'Bad Request',
     },
   },
@@ -114,23 +117,35 @@ export const ApiStandardResponses = {
 };
 
 /**
+ * Shape of a single Swagger response config object.
+ * Used by `createApiResponse` and `combineResponses`.
+ */
+export interface ApiResponseDescriptor {
+  status: number;
+  description: string;
+  example?: unknown;
+}
+
+/**
  * Helper to create custom response objects
  */
 export function createApiResponse(
   status: number,
   description: string,
-  example?: any,
-) {
+  example?: unknown,
+): ApiResponseDescriptor {
   return {
     status,
     description,
-    ...(example && { example }),
+    ...(example !== undefined && { example }),
   };
 }
 
 /**
  * Combine multiple standard responses
  */
-export function combineResponses(...responses: any[]) {
+export function combineResponses(
+  ...responses: ApiResponseDescriptor[]
+): ApiResponseDescriptor[] {
   return responses;
 }

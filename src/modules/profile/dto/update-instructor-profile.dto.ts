@@ -4,7 +4,6 @@ import {
   IsArray,
   IsNumber,
   IsBoolean,
-  IsObject,
   MaxLength,
   Min,
   Max,
@@ -12,6 +11,7 @@ import {
 } from 'class-validator';
 import { Type } from 'class-transformer';
 import { ApiPropertyOptional } from '@nestjs/swagger';
+import { SocialLinksDto } from './create-instructor-profile.dto';
 
 class CertificationDto {
   @IsString()
@@ -73,11 +73,16 @@ export class UpdateInstructorProfileDto {
   isAcceptingClients?: boolean;
 
   @ApiPropertyOptional({
-    example: { instagram: 'coach_john', facebook: 'CoachJohn' },
+    type: SocialLinksDto,
+    example: {
+      instagram: 'https://instagram.com/coach_john',
+      facebook: 'https://facebook.com/CoachJohn',
+    },
   })
-  @IsObject()
+  @ValidateNested()
+  @Type(() => SocialLinksDto)
   @IsOptional()
-  socialLinks?: object;
+  socialLinks?: SocialLinksDto;
 
   @ApiPropertyOptional({ example: true })
   @IsBoolean()

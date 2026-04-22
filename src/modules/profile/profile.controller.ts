@@ -11,6 +11,7 @@ import {
 } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
 import { ApiTags } from '@nestjs/swagger';
+import type { AuthenticatedRequest } from '../../common/types/authenticated-request';
 import { ProfileService } from './profile.service';
 import { UpdateUserProfileDto } from './dto/update-user-profile.dto';
 import { CreateInstructorProfileDto } from './dto/create-instructor-profile.dto';
@@ -65,7 +66,7 @@ export class ProfileController {
   @Get('me')
   @UseGuards(AuthGuard('jwt'))
   @ApiEndpoint(ProfileDocs.getProfileOverview)
-  async getProfileOverview(@Request() req) {
+  async getProfileOverview(@Request() req: AuthenticatedRequest) {
     return this.profileService.getProfileOverview(req.user);
   }
 
@@ -82,7 +83,7 @@ export class ProfileController {
     body: UpdateFullProfileDto,
   })
   async updateFullProfile(
-    @Request() req,
+    @Request() req: AuthenticatedRequest,
     @Body() dto: UpdateFullProfileDto,
   ) {
     return this.profileService.updateFullProfile(req.user.id, dto);
@@ -95,7 +96,7 @@ export class ProfileController {
   @Get('user-profile')
   @UseGuards(AuthGuard('jwt'))
   @ApiEndpoint(ProfileDocs.getParticipantProfile)
-  async getUserProfile(@Request() req) {
+  async getUserProfile(@Request() req: AuthenticatedRequest) {
     return this.profileService.getUserProfile(req.user.id);
   }
 
@@ -106,7 +107,7 @@ export class ProfileController {
     body: UpdateUserProfileDto,
   })
   async updateUserProfile(
-    @Request() req,
+    @Request() req: AuthenticatedRequest,
     @Body() dto: UpdateUserProfileDto,
   ) {
     return this.profileService.updateUserProfile(req.user.id, dto);
@@ -123,7 +124,7 @@ export class ProfileController {
     body: CreateInstructorProfileDto,
   })
   async createInstructorProfile(
-    @Request() req,
+    @Request() req: AuthenticatedRequest,
     @Body() dto: CreateInstructorProfileDto,
   ) {
     return this.profileService.createInstructorProfile(req.user.id, dto);
@@ -132,7 +133,7 @@ export class ProfileController {
   @Get('instructor')
   @UseGuards(AuthGuard('jwt'))
   @ApiEndpoint(ProfileDocs.getOrganizerProfile)
-  async getInstructorProfile(@Request() req) {
+  async getInstructorProfile(@Request() req: AuthenticatedRequest) {
     return this.profileService.getInstructorProfile(req.user.id);
   }
 
@@ -143,7 +144,7 @@ export class ProfileController {
     body: UpdateInstructorProfileDto,
   })
   async updateInstructorProfile(
-    @Request() req,
+    @Request() req: AuthenticatedRequest,
     @Body() dto: UpdateInstructorProfileDto,
   ) {
     return this.profileService.updateInstructorProfile(req.user.id, dto);

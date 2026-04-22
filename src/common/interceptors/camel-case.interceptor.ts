@@ -24,14 +24,17 @@ import { map } from 'rxjs/operators';
  */
 @Injectable()
 export class CamelCaseInterceptor implements NestInterceptor {
-  intercept(context: ExecutionContext, next: CallHandler): Observable<any> {
-    return next.handle().pipe(map((data) => this.transformKeys(data)));
+  intercept(context: ExecutionContext, next: CallHandler): Observable<unknown> {
+    return next.handle().pipe(map((data: unknown) => this.transformKeys(data)));
   }
 
   /**
-   * Recursively transform all object keys to camelCase
+   * Recursively transform all object keys to camelCase. Accepts
+   * anything: nulls, primitives, arrays, plain objects, Dates, and
+   * Sequelize model instances (detected via a duck-typed `toJSON`
+   * method).
    */
-  private transformKeys(data: any): any {
+  private transformKeys(data: unknown): unknown {
     if (data === null || data === undefined) {
       return data;
     }
@@ -44,20 +47,27 @@ export class CamelCaseInterceptor implements NestInterceptor {
       return data;
     }
 
-    if (typeof data === 'object' && data.constructor === Object) {
-      const transformed: Record<string, any> = {};
+    if (typeof data !== 'object') {
+      return data;
+    }
 
-      for (const key of Object.keys(data)) {
+    // Plain object: transform keys.
+    if (data.constructor === Object) {
+      const source = data as Record<string, unknown>;
+      const transformed: Record<string, unknown> = {};
+
+      for (const key of Object.keys(source)) {
         const camelKey = this.toCamelCase(key);
-        transformed[camelKey] = this.transformKeys(data[key]);
+        transformed[camelKey] = this.transformKeys(source[key]);
       }
 
       return transformed;
     }
 
-    // Handle Sequelize model instances (they have toJSON)
-    if (typeof data === 'object' && typeof data.toJSON === 'function') {
-      return this.transformKeys(data.toJSON());
+    // Sequelize model instance (or anything else exposing `toJSON`).
+    const maybeToJSON = (data as { toJSON?: unknown }).toJSON;
+    if (typeof maybeToJSON === 'function') {
+      return this.transformKeys((maybeToJSON as () => unknown).call(data));
     }
 
     return data;

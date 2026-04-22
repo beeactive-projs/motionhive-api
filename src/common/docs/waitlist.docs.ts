@@ -29,7 +29,8 @@ export const WaitlistDocs = {
 
   list: {
     summary: 'List all waitlist entries',
-    description: 'Returns all waitlist entries ordered by most recent. Requires ADMIN or SUPER_ADMIN role.',
+    description:
+      'Returns all waitlist entries ordered by most recent. Requires ADMIN or SUPER_ADMIN role.',
     auth: true,
     responses: [
       {
@@ -43,7 +44,8 @@ export const WaitlistDocs = {
 
   count: {
     summary: 'Get waitlist count',
-    description: 'Returns the total number of people on the waitlist. No authentication required.',
+    description:
+      'Returns the total number of people on the waitlist. No authentication required.',
     auth: false,
     responses: [
       {

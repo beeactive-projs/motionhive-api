@@ -26,17 +26,25 @@ export default tseslint.config(
   },
   {
     rules: {
-      '@typescript-eslint/no-explicit-any': 'off',
-      '@typescript-eslint/no-unsafe-assignment': 'off',
-      '@typescript-eslint/no-unsafe-member-access': 'off',
-      '@typescript-eslint/no-unsafe-return': 'off',
-      '@typescript-eslint/no-unsafe-call': 'off',
+      // The project rule in CLAUDE.md: "Never use `any` — always use
+      // strict types; prefer `unknown` + narrowing, or define an
+      // explicit interface/type." Enforced at error level so new `any`
+      // usage breaks CI.
+      '@typescript-eslint/no-explicit-any': 'error',
+      // The unsafe-* family stays at warn. They're noisy because they
+      // fire on every Sequelize/Stripe result that TS can't fully
+      // infer, but warnings show up in the IDE so new violations are
+      // visible without blocking legitimate SDK usage.
+      '@typescript-eslint/no-unsafe-assignment': 'warn',
+      '@typescript-eslint/no-unsafe-member-access': 'warn',
+      '@typescript-eslint/no-unsafe-return': 'warn',
+      '@typescript-eslint/no-unsafe-call': 'warn',
+      '@typescript-eslint/no-unsafe-argument': 'warn',
       '@typescript-eslint/no-unused-vars': 'warn',
       '@typescript-eslint/no-namespace': 'off',
       '@typescript-eslint/no-base-to-string': 'off',
       '@typescript-eslint/restrict-template-expressions': 'off',
       '@typescript-eslint/no-floating-promises': 'warn',
-      '@typescript-eslint/no-unsafe-argument': 'warn',
       '@typescript-eslint/prefer-promise-reject-errors': 'warn',
       'no-empty': 'warn',
       'no-useless-escape': 'warn',

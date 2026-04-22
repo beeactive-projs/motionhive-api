@@ -4,6 +4,7 @@ import { ExtractJwt, Strategy } from 'passport-jwt';
 import { ConfigService } from '@nestjs/config';
 import { UserService } from '../../user/user.service';
 import { RoleService } from '../../role/role.service';
+import type { JwtPayload } from '../types/jwt-payload';
 
 /**
  * JWT Strategy
@@ -55,7 +56,7 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
    * @returns User object with roles (attached to req.user)
    * @throws UnauthorizedException if user not found
    */
-  async validate(payload: any) {
+  async validate(payload: JwtPayload) {
     const user = await this.userService.findById(payload.sub);
 
     if (!user) {

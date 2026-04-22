@@ -1,4 +1,12 @@
-import { IsOptional, IsString, MaxLength, IsEnum, IsDateString, IsNumber, Min } from 'class-validator';
+import {
+  IsOptional,
+  IsString,
+  MaxLength,
+  IsEnum,
+  IsDateString,
+  IsNumber,
+  Min,
+} from 'class-validator';
 import { ApiPropertyOptional } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
 import { PaginationDto } from '../../../common/dto/pagination.dto';
@@ -6,7 +14,8 @@ import { PaginationDto } from '../../../common/dto/pagination.dto';
 export class DiscoverSessionsDto extends PaginationDto {
   @ApiPropertyOptional({
     example: 'yoga',
-    description: 'Search term to filter sessions by title, description, or location',
+    description:
+      'Search term to filter sessions by title, description, or location',
   })
   @IsString()
   @MaxLength(100)

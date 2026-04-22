@@ -38,8 +38,14 @@ export const getDatabaseConfig = (
       acquire: 30000,
       idle: 10000,
     },
+    // Disable Sequelize's per-query retry. It is NOT transaction-aware:
+    // a retry of a query that already aborted its transaction just hits
+    // "current transaction is aborted" and masks the original error in
+    // the logs. For transient connection issues, the pool `acquire`
+    // timeout handles the reconnect; for genuine query failures we want
+    // the real error to surface immediately.
     retry: {
-      max: 3,
+      max: 0,
     },
     dialectOptions: {
       connectTimeout: 60000,
@@ -67,10 +73,20 @@ export const getDatabaseConfig = (
   // Fallback to individual environment variables
   return {
     ...baseConfig,
-    host: configService.get<string>('PGHOST') || configService.get<string>('DB_HOST'),
-    port: configService.get<number>('PGPORT') || configService.get<number>('DB_PORT'),
-    username: configService.get<string>('PGUSER') || configService.get<string>('DB_USERNAME'),
-    password: configService.get<string>('PGPASSWORD') || configService.get<string>('DB_PASSWORD'),
-    database: configService.get<string>('PGDATABASE') || configService.get<string>('DB_DATABASE'),
+    host:
+      configService.get<string>('PGHOST') ||
+      configService.get<string>('DB_HOST'),
+    port:
+      configService.get<number>('PGPORT') ||
+      configService.get<number>('DB_PORT'),
+    username:
+      configService.get<string>('PGUSER') ||
+      configService.get<string>('DB_USERNAME'),
+    password:
+      configService.get<string>('PGPASSWORD') ||
+      configService.get<string>('DB_PASSWORD'),
+    database:
+      configService.get<string>('PGDATABASE') ||
+      configService.get<string>('DB_DATABASE'),
   };
 };

@@ -8,8 +8,7 @@ import { ApiStandardResponses } from './standard-responses';
 export const UserDocs = {
   getProfile: {
     summary: 'Get current user profile',
-    description:
-      'Returns the profile of the currently authenticated user.',
+    description: 'Returns the profile of the currently authenticated user.',
     auth: true,
     responses: [
       {

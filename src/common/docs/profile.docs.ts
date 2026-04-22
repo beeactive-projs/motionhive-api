@@ -19,7 +19,8 @@ export const ProfileDocs = {
     responses: [
       {
         status: 200,
-        description: 'List of matching public instructor profiles (plain array, max 30)',
+        description:
+          'List of matching public instructor profiles (plain array, max 30)',
         example: [
           {
             id: 'profile-uuid',
@@ -65,9 +66,7 @@ export const ProfileDocs = {
           displayName: 'Coach John',
           bio: 'Certified HIIT and strength trainer',
           specializations: ['hiit', 'strength'],
-          certifications: [
-            { name: 'ACE Personal Trainer', year: 2018 },
-          ],
+          certifications: [{ name: 'ACE Personal Trainer', year: 2018 }],
           yearsOfExperience: 8,
           isAcceptingClients: true,
           city: 'Bucharest',

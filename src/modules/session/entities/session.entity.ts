@@ -15,6 +15,19 @@ import { Group } from '../../group/entities/group.entity';
 import { SessionParticipant } from './session-participant.entity';
 
 /**
+ * Shape of the `recurringRule` JSON column for recurring sessions.
+ * Co-located with the entity so consumers (service, DTOs) import one
+ * canonical type rather than redefining locally.
+ */
+export interface RecurringRule {
+  frequency: 'DAILY' | 'WEEKLY' | 'MONTHLY';
+  interval?: number;
+  daysOfWeek?: number[];
+  endDate?: string;
+  endAfterOccurrences?: number;
+}
+
+/**
  * Session Entity
  *
  * Represents a training session (class, workshop, one-on-one).
@@ -136,7 +149,7 @@ export class Session extends Model {
     type: DataType.JSON,
     allowNull: true,
   })
-  declare recurringRule: object;
+  declare recurringRule: RecurringRule | null;
 
   @Column({
     type: DataType.BOOLEAN,

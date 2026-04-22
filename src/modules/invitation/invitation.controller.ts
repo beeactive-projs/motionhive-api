@@ -12,6 +12,7 @@ import {
 import { AuthGuard } from '@nestjs/passport';
 import { ApiTags } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
+import type { AuthenticatedRequest } from '../../common/types/authenticated-request';
 import { InvitationService } from './invitation.service';
 import { CreateInvitationDto } from './dto/create-invitation.dto';
 import { ApiEndpoint } from '../../common/decorators/api-response.decorator';
@@ -39,14 +40,17 @@ export class InvitationController {
   @Post()
   @Throttle({ default: { limit: 20, ttl: 3600000 } })
   @ApiEndpoint({ ...InvitationDocs.create, body: CreateInvitationDto })
-  async create(@Request() req, @Body() dto: CreateInvitationDto) {
+  async create(
+    @Request() req: AuthenticatedRequest,
+    @Body() dto: CreateInvitationDto,
+  ) {
     return this.invitationService.create(req.user.id, dto);
   }
 
   @Get('pending')
   @ApiEndpoint(InvitationDocs.getMyPendingInvitations)
   async getMyPendingInvitations(
-    @Request() req,
+    @Request() req: AuthenticatedRequest,
     @Query() pagination: PaginationDto,
   ) {
     return this.invitationService.getMyPendingInvitations(
@@ -58,26 +62,32 @@ export class InvitationController {
 
   @Post(':token/accept')
   @ApiEndpoint(InvitationDocs.accept)
-  async accept(@Param('token') token: string, @Request() req) {
+  async accept(
+    @Param('token') token: string,
+    @Request() req: AuthenticatedRequest,
+  ) {
     return this.invitationService.accept(token, req.user.id, req.user.email);
   }
 
   @Post(':token/decline')
   @ApiEndpoint(InvitationDocs.decline)
-  async decline(@Param('token') token: string, @Request() req) {
+  async decline(
+    @Param('token') token: string,
+    @Request() req: AuthenticatedRequest,
+  ) {
     return this.invitationService.decline(token, req.user.email);
   }
 
   @Post(':id/cancel')
   @ApiEndpoint(InvitationDocs.cancel)
-  async cancel(@Param('id') id: string, @Request() req) {
+  async cancel(@Param('id') id: string, @Request() req: AuthenticatedRequest) {
     return this.invitationService.cancel(id, req.user.id);
   }
 
   @Post(':id/resend')
   @Throttle({ default: { limit: 3, ttl: 3600000 } })
   @ApiEndpoint(InvitationDocs.resend)
-  async resend(@Param('id') id: string, @Request() req) {
+  async resend(@Param('id') id: string, @Request() req: AuthenticatedRequest) {
     return this.invitationService.resend(id, req.user.id);
   }
 
@@ -85,7 +95,7 @@ export class InvitationController {
   @ApiEndpoint(InvitationDocs.getGroupInvitations)
   async getGroupInvitations(
     @Param('id') groupId: string,
-    @Request() req,
+    @Request() req: AuthenticatedRequest,
     @Query() pagination: PaginationDto,
   ) {
     return this.invitationService.getGroupInvitations(

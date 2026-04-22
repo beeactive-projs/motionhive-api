@@ -23,6 +23,19 @@ export enum JoinPolicy {
 }
 
 /**
+ * Shape of the `settings` JSON column. Nothing is read off this yet —
+ * the schema exists as a hook for group-level preferences (approval
+ * gating, notification policy, default durations). Keep optional so
+ * the entity works with `null` or a partial object.
+ */
+export interface GroupSettings {
+  allowMemberInvites?: boolean;
+  requireApproval?: boolean;
+  notifyOnJoin?: boolean;
+  defaultSessionDurationMinutes?: number;
+}
+
+/**
  * Group Entity
  *
  * Represents a training group created by an instructor.
@@ -90,7 +103,7 @@ export class Group extends Model {
     type: DataType.JSON,
     allowNull: true,
   })
-  declare settings: object | null;
+  declare settings: GroupSettings | null;
 
   @Column({
     type: DataType.BOOLEAN,

@@ -13,11 +13,9 @@ import {
 import { AuthGuard } from '@nestjs/passport';
 import { ApiTags } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
-import type { Request as ExpressRequest, Response } from 'express';
+import type { Response } from 'express';
 import { AuthService } from './auth.service';
-
-/** Request on JWT-protected routes; user is set by AuthGuard('jwt') */
-type AuthenticatedRequest = ExpressRequest & { user: { id: string } };
+import type { AuthenticatedRequest } from '../../common/types/authenticated-request';
 import { RegisterDto } from './dto/register.dto';
 import { LoginDto } from './dto/login.dto';
 import { RefreshTokenDto } from './dto/refresh-token.dto';

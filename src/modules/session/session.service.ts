@@ -9,22 +9,13 @@ import type { LoggerService } from '@nestjs/common';
 import { InjectModel } from '@nestjs/sequelize';
 import { WINSTON_MODULE_NEST_PROVIDER } from 'nest-winston';
 import { Sequelize } from 'sequelize-typescript';
-import { Op } from 'sequelize';
-import { Session } from './entities/session.entity';
+import { Op, WhereOptions } from 'sequelize';
+import { Session, type RecurringRule } from './entities/session.entity';
 import { SessionParticipant } from './entities/session-participant.entity';
 import { CreateSessionDto } from './dto/create-session.dto';
 import { UpdateSessionDto } from './dto/update-session.dto';
 import { buildPaginatedResponse } from '../../common/dto/pagination.dto';
 import { buildSearchTerm } from '../../common/utils/search.utils';
-
-/** Shape of recurringRule JSON stored on Session (for recurring sessions). */
-interface RecurringRule {
-  frequency: 'DAILY' | 'WEEKLY' | 'MONTHLY';
-  interval?: number;
-  daysOfWeek?: number[];
-  endDate?: string;
-  endAfterOccurrences?: number;
-}
 import { UpdateParticipantStatusDto } from './dto/update-participant-status.dto';
 import { User } from '../user/entities/user.entity';
 import { GroupMember } from '../group/entities/group-member.entity';
@@ -75,7 +66,15 @@ export class SessionService {
   /**
    * Create a new session
    */
-  async create(userId: string, dto: CreateSessionDto): Promise<Session> {
+  async create(
+    userId: string,
+    dto: CreateSessionDto,
+  ): Promise<
+    Record<string, unknown> & {
+      warning?: string;
+      conflictingSessionIds?: string[];
+    }
+  > {
     // If group-linked, verify user is a member of the group
     if (dto.groupId) {
       const isMember = await this.memberModel.findOne({
@@ -124,7 +123,7 @@ export class SessionService {
     );
 
     // Return session with conflict warning if applicable
-    const result = session.toJSON() as any;
+    const result: Record<string, unknown> = session.toJSON();
     if (hasConflict) {
       result.warning = `Schedule conflict with ${conflicts.length} existing session(s)`;
       result.conflictingSessionIds = conflicts.map((c) => c.id);
@@ -233,42 +232,32 @@ export class SessionService {
   ) {
     const offset = (page - 1) * limit;
 
-    const where: any = {
+    // Build the scheduledAt range constraint up-front so we don't have
+    // to mutate a typed where clause field-by-field below.
+    const scheduledAt: { [Op.gte]?: Date; [Op.lte]?: Date } = {
+      [Op.gte]: filters?.dateFrom ? new Date(filters.dateFrom) : new Date(),
+    };
+    if (filters?.dateTo) {
+      scheduledAt[Op.lte] = new Date(filters.dateTo);
+    }
+
+    const term = filters?.search ? buildSearchTerm(filters.search) : null;
+    const where: WhereOptions<Session> = {
       visibility: 'PUBLIC',
       status: { [Op.in]: ['SCHEDULED', 'IN_PROGRESS'] },
-      scheduledAt: { [Op.gte]: new Date() },
+      scheduledAt,
+      ...(filters?.sessionType && { sessionType: filters.sessionType }),
+      ...(filters?.maxDurationMinutes && {
+        durationMinutes: { [Op.lte]: filters.maxDurationMinutes },
+      }),
+      ...(term && {
+        [Op.or]: [
+          { title: { [Op.iLike]: term } },
+          { description: { [Op.iLike]: term } },
+          { location: { [Op.iLike]: term } },
+        ],
+      }),
     };
-
-    if (filters?.search) {
-      const term = buildSearchTerm(filters.search);
-      where[Op.or] = [
-        { title: { [Op.iLike]: term } },
-        { description: { [Op.iLike]: term } },
-        { location: { [Op.iLike]: term } },
-      ];
-    }
-
-    if (filters?.sessionType) {
-      where.sessionType = filters.sessionType;
-    }
-
-    if (filters?.dateFrom) {
-      where.scheduledAt = {
-        ...where.scheduledAt,
-        [Op.gte]: new Date(filters.dateFrom),
-      };
-    }
-
-    if (filters?.dateTo) {
-      where.scheduledAt = {
-        ...where.scheduledAt,
-        [Op.lte]: new Date(filters.dateTo),
-      };
-    }
-
-    if (filters?.maxDurationMinutes) {
-      where.durationMinutes = { [Op.lte]: filters.maxDurationMinutes };
-    }
 
     const sortField = filters?.sortBy || 'scheduledAt';
     const sortDir = filters?.sortDir || 'ASC';
@@ -424,7 +413,9 @@ export class SessionService {
     }
 
     if (original.instructorId !== userId) {
-      throw new ForbiddenException('Only the instructor can clone this session');
+      throw new ForbiddenException(
+        'Only the instructor can clone this session',
+      );
     }
 
     const cloned = await this.sessionModel.create({
@@ -531,14 +522,11 @@ export class SessionService {
     const startTime = new Date(scheduledAt);
     const endTime = new Date(startTime.getTime() + durationMinutes * 60000);
 
-    const where: any = {
+    const where: WhereOptions<Session> = {
       instructorId,
       status: { [Op.in]: ['SCHEDULED', 'IN_PROGRESS'] },
+      ...(excludeSessionId && { id: { [Op.ne]: excludeSessionId } }),
     };
-
-    if (excludeSessionId) {
-      where.id = { [Op.ne]: excludeSessionId };
-    }
 
     const sessions = await this.sessionModel.findAll({ where });
 
@@ -562,34 +550,48 @@ export class SessionService {
     const start = new Date(startDate);
     const end = new Date(endDate);
 
-    const [memberships, registrations, clientRelationships] = await Promise.all([
-      this.memberModel.findAll({
-        where: { userId, leftAt: null },
-        attributes: ['groupId'],
-      }),
-      this.participantModel.findAll({
-        where: { userId, status: { [Op.ne]: 'CANCELLED' } },
-        attributes: ['sessionId'],
-      }),
-      this.instructorClientModel.findAll({
-        where: { clientId: userId, status: 'ACTIVE' },
-        attributes: ['instructorId'],
-      }),
-    ]);
+    const [memberships, registrations, clientRelationships] = await Promise.all(
+      [
+        this.memberModel.findAll({
+          where: { userId, leftAt: null },
+          attributes: ['groupId'],
+        }),
+        this.participantModel.findAll({
+          where: { userId, status: { [Op.ne]: 'CANCELLED' } },
+          attributes: ['sessionId'],
+        }),
+        this.instructorClientModel.findAll({
+          where: { clientId: userId, status: 'ACTIVE' },
+          attributes: ['instructorId'],
+        }),
+      ],
+    );
 
     const groupIds = memberships.map((m) => m.groupId);
     const registeredSessionIds = registrations.map((r) => r.sessionId);
-    const clientOfInstructorIds = clientRelationships.map((r) => r.instructorId);
+    const clientOfInstructorIds = clientRelationships.map(
+      (r) => r.instructorId,
+    );
 
     const whereClause = {
       scheduledAt: { [Op.gte]: start, [Op.lte]: end },
       [Op.or]: [
         { instructorId: userId },
         ...(groupIds.length > 0
-          ? [{ groupId: { [Op.in]: groupIds }, visibility: { [Op.in]: ['GROUP', 'PUBLIC'] } }]
+          ? [
+              {
+                groupId: { [Op.in]: groupIds },
+                visibility: { [Op.in]: ['GROUP', 'PUBLIC'] },
+              },
+            ]
           : []),
         ...(clientOfInstructorIds.length > 0
-          ? [{ instructorId: { [Op.in]: clientOfInstructorIds }, visibility: 'CLIENTS' }]
+          ? [
+              {
+                instructorId: { [Op.in]: clientOfInstructorIds },
+                visibility: 'CLIENTS',
+              },
+            ]
           : []),
         ...(registeredSessionIds.length > 0
           ? [{ id: { [Op.in]: registeredSessionIds } }]
@@ -643,11 +645,13 @@ export class SessionService {
     const session = await this.sessionModel.findByPk(sessionId);
     if (!session) throw new NotFoundException('Session not found');
     if (session.instructorId !== userId)
-      throw new ForbiddenException('Only the instructor can preview recurrence');
+      throw new ForbiddenException(
+        'Only the instructor can preview recurrence',
+      );
     if (!session.isRecurring || !session.recurringRule)
       throw new BadRequestException('Session is not recurring or has no rule');
 
-    const rule = session.recurringRule as RecurringRule;
+    const rule = session.recurringRule;
     const firstAt = new Date(session.scheduledAt);
     const dates = this.computeOccurrenceDates(firstAt, rule, weeks, true);
     return { dates: dates.map((d) => d.toISOString()) };
@@ -666,11 +670,13 @@ export class SessionService {
     const template = await this.sessionModel.findByPk(sessionId);
     if (!template) throw new NotFoundException('Session not found');
     if (template.instructorId !== userId)
-      throw new ForbiddenException('Only the instructor can generate instances');
+      throw new ForbiddenException(
+        'Only the instructor can generate instances',
+      );
     if (!template.isRecurring || !template.recurringRule)
       throw new BadRequestException('Session is not recurring or has no rule');
 
-    const rule = template.recurringRule as RecurringRule;
+    const rule = template.recurringRule;
     const firstAt = new Date(template.scheduledAt);
     // Exclude the first occurrence (it's the template itself)
     const occurrenceDates = this.computeOccurrenceDates(
@@ -906,12 +912,16 @@ export class SessionService {
       await transaction.commit();
 
       // Notify instructor (fire-and-forget, outside transaction)
-      this.notifyInstructorOfJoinLeave(session, userId, 'joined').catch(() => {});
+      this.notifyInstructorOfJoinLeave(session, userId, 'joined').catch(
+        () => {},
+      );
 
       return participant;
     } catch (error) {
       // Only rollback if transaction hasn't been committed or rolled back already
-      try { await transaction.rollback(); } catch {}
+      try {
+        await transaction.rollback();
+      } catch {}
       throw error;
     }
   }
@@ -924,7 +934,9 @@ export class SessionService {
   async leaveSession(sessionId: string, userId: string): Promise<void> {
     const transaction = await this.sequelize.transaction();
     try {
-      const session = await this.sessionModel.findByPk(sessionId, { transaction });
+      const session = await this.sessionModel.findByPk(sessionId, {
+        transaction,
+      });
 
       if (!session) {
         await transaction.rollback();
@@ -949,7 +961,8 @@ export class SessionService {
       const now = new Date();
       const sessionStart = new Date(session.scheduledAt);
       const cutoffTime = new Date(
-        sessionStart.getTime() - this.CANCELLATION_CUTOFF_HOURS * 60 * 60 * 1000,
+        sessionStart.getTime() -
+          this.CANCELLATION_CUTOFF_HOURS * 60 * 60 * 1000,
       );
 
       if (now > cutoffTime) {
@@ -965,7 +978,9 @@ export class SessionService {
       // Notify instructor (fire-and-forget, outside transaction)
       this.notifyInstructorOfJoinLeave(session, userId, 'left').catch(() => {});
     } catch (error) {
-      try { await transaction.rollback(); } catch {}
+      try {
+        await transaction.rollback();
+      } catch {}
       throw error;
     }
   }
@@ -1054,7 +1069,9 @@ export class SessionService {
   ): Promise<SessionParticipant> {
     const transaction = await this.sequelize.transaction();
     try {
-      const session = await this.sessionModel.findByPk(sessionId, { transaction });
+      const session = await this.sessionModel.findByPk(sessionId, {
+        transaction,
+      });
 
       if (!session) {
         await transaction.rollback();
@@ -1080,7 +1097,7 @@ export class SessionService {
       }
 
       const oldStatus = participant.status;
-      const updateData: any = { status: dto.status };
+      const updateData: Partial<SessionParticipant> = { status: dto.status };
 
       // Auto-set checkedInAt when marking as ATTENDED
       if (dto.status === 'ATTENDED' && !participant.checkedInAt) {
@@ -1105,7 +1122,9 @@ export class SessionService {
 
       return participant;
     } catch (error) {
-      try { await transaction.rollback(); } catch {}
+      try {
+        await transaction.rollback();
+      } catch {}
       throw error;
     }
   }

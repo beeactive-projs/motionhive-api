@@ -23,11 +23,11 @@ export interface ApiEndpointOptions {
   summary: string;
   description?: string;
   auth?: boolean;
-  body?: Type<any>;
+  body?: Type<unknown>;
   responses?: {
     status: number;
     description: string;
-    example?: any;
+    example?: unknown;
   }[];
 }
 
@@ -66,7 +66,7 @@ export function ApiEndpoint(options: ApiEndpointOptions) {
         ApiResponse({
           status: response.status,
           description: response.description,
-          ...(response.example && {
+          ...(response.example !== undefined && {
             schema: { example: response.example },
           }),
         }),

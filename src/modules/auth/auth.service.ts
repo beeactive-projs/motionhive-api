@@ -23,6 +23,7 @@ import { ResetPasswordDto } from './dto/reset-password.dto';
 import { VerifyEmailDto } from './dto/verify-email.dto';
 import { ResendVerificationDto } from './dto/resend-verification.dto';
 import { RoleService } from '../role/role.service';
+import type { JwtPayload } from './types/jwt-payload';
 import { ProfileService } from '../profile/profile.service';
 import { EmailService } from '../../common/services/email.service';
 import { CryptoService } from '../../common/services/crypto.service';
@@ -324,9 +325,9 @@ export class AuthService {
     // Store hashed refresh token in DB
     const tokenHash = this.cryptoService.hashToken(refreshToken);
     const refreshExpiresIn =
-      this.configService.get('JWT_REFRESH_EXPIRES_IN') || '7d';
+      this.configService.get<string>('JWT_REFRESH_EXPIRES_IN') || '7d';
     const expiresAt = new Date();
-    const days = parseInt(refreshExpiresIn) || 7;
+    const days = parseInt(refreshExpiresIn, 10) || 7;
     expiresAt.setDate(expiresAt.getDate() + days);
 
     await this.refreshTokenModel.create({
@@ -345,9 +346,9 @@ export class AuthService {
    * Rotates the refresh token: issues new one, revokes old one.
    */
   async refreshAccessToken(refreshToken: string) {
-    let payload: any;
+    let payload: JwtPayload;
     try {
-      payload = this.jwtService.verify(refreshToken, {
+      payload = this.jwtService.verify<JwtPayload>(refreshToken, {
         secret: this.configService.get('JWT_REFRESH_SECRET'),
       });
     } catch {

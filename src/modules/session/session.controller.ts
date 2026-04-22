@@ -13,6 +13,7 @@ import {
 import { AuthGuard } from '@nestjs/passport';
 import { ApiTags } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
+import type { AuthenticatedRequest } from '../../common/types/authenticated-request';
 import { SessionService } from './session.service';
 import { CreateSessionDto } from './dto/create-session.dto';
 import { UpdateSessionDto } from './dto/update-session.dto';
@@ -58,13 +59,19 @@ export class SessionController {
   @UseGuards(RolesGuard)
   @Roles('INSTRUCTOR', 'ADMIN', 'SUPER_ADMIN')
   @ApiEndpoint({ ...SessionDocs.create, body: CreateSessionDto })
-  async create(@Request() req, @Body() dto: CreateSessionDto) {
+  async create(
+    @Request() req: AuthenticatedRequest,
+    @Body() dto: CreateSessionDto,
+  ) {
     return this.sessionService.create(req.user.id, dto);
   }
 
   @Get()
   @ApiEndpoint(SessionDocs.getMySessions)
-  async getMySessions(@Request() req, @Query() pagination: PaginationDto) {
+  async getMySessions(
+    @Request() req: AuthenticatedRequest,
+    @Query() pagination: PaginationDto,
+  ) {
     return this.sessionService.getMySessions(
       req.user.id,
       pagination.page,
@@ -95,7 +102,7 @@ export class SessionController {
     responses: [{ status: 200, description: 'Sessions grouped by date' }],
   })
   async getCalendar(
-    @Request() req,
+    @Request() req: AuthenticatedRequest,
     @Query('start') start: string,
     @Query('end') end: string,
   ) {
@@ -104,7 +111,7 @@ export class SessionController {
 
   @Get(':id')
   @ApiEndpoint(SessionDocs.getById)
-  async getById(@Param('id') id: string, @Request() req) {
+  async getById(@Param('id') id: string, @Request() req: AuthenticatedRequest) {
     return this.sessionService.getById(id, req.user.id);
   }
 
@@ -112,7 +119,7 @@ export class SessionController {
   @ApiEndpoint({ ...SessionDocs.update, body: UpdateSessionDto })
   async update(
     @Param('id') id: string,
-    @Request() req,
+    @Request() req: AuthenticatedRequest,
     @Body() dto: UpdateSessionDto,
   ) {
     return this.sessionService.update(id, req.user.id, dto);
@@ -120,7 +127,7 @@ export class SessionController {
 
   @Delete(':id')
   @ApiEndpoint(SessionDocs.delete)
-  async delete(@Param('id') id: string, @Request() req) {
+  async delete(@Param('id') id: string, @Request() req: AuthenticatedRequest) {
     await this.sessionService.delete(id, req.user.id);
     return { message: 'Session deleted successfully' };
   }
@@ -131,7 +138,7 @@ export class SessionController {
   @ApiEndpoint({ ...SessionDocs.cloneSession, body: CloneSessionDto })
   async cloneSession(
     @Param('id') id: string,
-    @Request() req,
+    @Request() req: AuthenticatedRequest,
     @Body() dto: CloneSessionDto,
   ) {
     return this.sessionService.cloneSession(id, req.user.id, dto.scheduledAt);
@@ -143,7 +150,7 @@ export class SessionController {
   @ApiEndpoint(SessionDocs.recurrencePreview)
   async getRecurrencePreview(
     @Param('id') id: string,
-    @Request() req,
+    @Request() req: AuthenticatedRequest,
     @Query('weeks') weeks?: string,
   ) {
     const numWeeks = weeks
@@ -158,7 +165,7 @@ export class SessionController {
   @ApiEndpoint({ ...SessionDocs.generateInstances, body: GenerateInstancesDto })
   async generateInstances(
     @Param('id') id: string,
-    @Request() req,
+    @Request() req: AuthenticatedRequest,
     @Body() dto: GenerateInstancesDto,
   ) {
     return this.sessionService.generateUpcomingInstances(
@@ -171,14 +178,17 @@ export class SessionController {
   @Patch(':id/reschedule')
   @ApiEndpoint({
     summary: 'Reschedule a session',
-    description: 'Update the scheduled time and notify all participants. Instructor only.',
+    description:
+      'Update the scheduled time and notify all participants. Instructor only.',
     auth: true,
-    responses: [{ status: 200, description: 'Session rescheduled successfully' }],
+    responses: [
+      { status: 200, description: 'Session rescheduled successfully' },
+    ],
     body: RescheduleSessionDto,
   })
   async reschedule(
     @Param('id') id: string,
-    @Request() req,
+    @Request() req: AuthenticatedRequest,
     @Body() dto: RescheduleSessionDto,
   ) {
     return this.sessionService.rescheduleSession(
@@ -196,27 +206,39 @@ export class SessionController {
   @Post(':id/join')
   @Throttle({ default: { limit: 10, ttl: 60000 } })
   @ApiEndpoint(SessionDocs.joinSession)
-  async joinSession(@Param('id') id: string, @Request() req) {
+  async joinSession(
+    @Param('id') id: string,
+    @Request() req: AuthenticatedRequest,
+  ) {
     return this.sessionService.joinSession(id, req.user.id);
   }
 
   @Post(':id/leave')
   @Throttle({ default: { limit: 10, ttl: 60000 } })
   @ApiEndpoint(SessionDocs.leaveSession)
-  async leaveSession(@Param('id') id: string, @Request() req) {
+  async leaveSession(
+    @Param('id') id: string,
+    @Request() req: AuthenticatedRequest,
+  ) {
     await this.sessionService.leaveSession(id, req.user.id);
     return { message: 'You have left the session' };
   }
 
   @Post(':id/confirm')
   @ApiEndpoint(SessionDocs.confirmRegistration)
-  async confirmRegistration(@Param('id') id: string, @Request() req) {
+  async confirmRegistration(
+    @Param('id') id: string,
+    @Request() req: AuthenticatedRequest,
+  ) {
     return this.sessionService.confirmRegistration(id, req.user.id);
   }
 
   @Post(':id/checkin')
   @ApiEndpoint(SessionDocs.selfCheckIn)
-  async selfCheckIn(@Param('id') id: string, @Request() req) {
+  async selfCheckIn(
+    @Param('id') id: string,
+    @Request() req: AuthenticatedRequest,
+  ) {
     return this.sessionService.selfCheckIn(id, req.user.id);
   }
 
@@ -228,7 +250,7 @@ export class SessionController {
   async updateParticipantStatus(
     @Param('id') sessionId: string,
     @Param('userId') participantUserId: string,
-    @Request() req,
+    @Request() req: AuthenticatedRequest,
     @Body() dto: UpdateParticipantStatusDto,
   ) {
     return this.sessionService.updateParticipantStatus(

@@ -27,9 +27,7 @@ import { BlogDocs } from '../../common/docs/blog.docs';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { RolesGuard } from '../../common/guards/roles.guard';
 
-interface AuthenticatedRequest {
-  user: { id: string; roles: string[] };
-}
+import type { AuthenticatedRequest } from '../../common/types/authenticated-request';
 
 /**
  * Blog Controller

@@ -74,7 +74,8 @@ export const AuthDocs = {
     responses: [
       {
         status: 200,
-        description: 'New token pair issued (both access and refresh tokens are rotated)',
+        description:
+          'New token pair issued (both access and refresh tokens are rotated)',
         example: {
           accessToken: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...',
           refreshToken: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...',
@@ -128,8 +129,7 @@ export const AuthDocs = {
         status: 200,
         description: 'Email verified successfully',
         example: {
-          message:
-            'Email verified successfully. You can now use all features.',
+          message: 'Email verified successfully. You can now use all features.',
         },
       },
       ApiStandardResponses.BadRequest,

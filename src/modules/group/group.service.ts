@@ -8,7 +8,7 @@ import {
 import type { LoggerService } from '@nestjs/common';
 import { InjectModel } from '@nestjs/sequelize';
 import { WINSTON_MODULE_NEST_PROVIDER } from 'nest-winston';
-import { Op, Sequelize, Transaction, literal } from 'sequelize';
+import { Op, Sequelize, Transaction, WhereOptions, literal } from 'sequelize';
 import { Group, JoinPolicy } from './entities/group.entity';
 import { GroupMember } from './entities/group-member.entity';
 import { CreateGroupDto } from './dto/create-group.dto';
@@ -17,7 +17,10 @@ import { UpdateMemberDto } from './dto/update-member.dto';
 import { DiscoverGroupsDto } from './dto/discover-groups.dto';
 import { User } from '../user/entities/user.entity';
 import { Session } from '../session/entities/session.entity';
-import { InstructorProfile } from '../profile/entities/instructor-profile.entity';
+import {
+  InstructorProfile,
+  type SocialLinks,
+} from '../profile/entities/instructor-profile.entity';
 import { InstructorClient } from '../client/entities/instructor-client.entity';
 import { EmailService } from '../../common/services/email.service';
 import { CryptoService } from '../../common/services/crypto.service';
@@ -36,6 +39,22 @@ import { buildSearchTerm } from '../../common/utils/search.utils';
  * - Members can share/hide their health data per-group
  * - getMembers checks instructor_client table to flag which members are clients
  */
+
+/** Public-facing instructor card rendered inside the group detail view.
+ *  Scalar summary of what `InstructorProfile` + `User` expose publicly. */
+export interface PublicInstructorProfile {
+  userId: string;
+  firstName: string;
+  lastName: string;
+  avatarId: number | null;
+  displayName?: string | null;
+  bio?: string | null;
+  specializations?: string[] | null;
+  yearsOfExperience?: number | null;
+  isAcceptingClients?: boolean;
+  socialLinks?: SocialLinks | null;
+}
+
 @Injectable()
 export class GroupService {
   constructor(
@@ -159,13 +178,16 @@ export class GroupService {
         );
 
         return group;
-      } catch (error: any) {
+      } catch (error: unknown) {
         await transaction.rollback();
 
-        // Retry on unique constraint violation (slug collision from concurrent create)
+        // Retry on unique constraint violation (slug collision from concurrent create).
+        // Sequelize's typed error has `.name` + `.fields`; narrow to the shape we use.
         const isUniqueViolation =
+          error instanceof Error &&
           error.name === 'SequelizeUniqueConstraintError' &&
-          error.fields?.slug !== undefined;
+          (error as Error & { fields?: Record<string, unknown> }).fields
+            ?.slug !== undefined;
 
         if (isUniqueViolation && attempt < MAX_SLUG_RETRIES) {
           this.logger.warn(
@@ -245,14 +267,16 @@ export class GroupService {
   ): Promise<Group> {
     const group = await this.assertOwnerAndGet(groupId, userId);
 
-    // If name changes, regenerate slug
+    // If name changes, regenerate slug. `slug` isn't on UpdateGroupDto
+    // (the client can't set it directly); we attach it here so Sequelize
+    // writes it alongside the DTO payload.
+    const updatePayload: UpdateGroupDto & { slug?: string } = { ...dto };
     if (dto.name && dto.name !== group.name) {
       const baseSlug = this.generateSlug(dto.name);
-      const slug = await this.ensureUniqueSlug(baseSlug);
-      (dto as any).slug = slug;
+      updatePayload.slug = await this.ensureUniqueSlug(baseSlug);
     }
 
-    await group.update(dto);
+    await group.update(updatePayload);
     return group;
   }
 
@@ -484,37 +508,30 @@ export class GroupService {
     const limit = dto.limit || 20;
     const offset = (page - 1) * limit;
 
-    const where: any = {
+    const sequelize = this.groupModel.sequelize!;
+    const tagConditions =
+      dto.tags && dto.tags.length > 0
+        ? dto.tags.map((tag) =>
+            literal(
+              `tags::jsonb @> ${sequelize.escape(JSON.stringify([tag]))}::jsonb`,
+            ),
+          )
+        : null;
+    const term = dto.search ? buildSearchTerm(dto.search) : null;
+
+    const where: WhereOptions<Group> = {
       isPublic: true,
       isActive: true,
+      ...(dto.city && { city: { [Op.iLike]: `%${dto.city}%` } }),
+      ...(dto.country && { country: dto.country }),
+      ...(tagConditions && { [Op.and]: tagConditions }),
+      ...(term && {
+        [Op.or]: [
+          { name: { [Op.iLike]: term } },
+          { description: { [Op.iLike]: term } },
+        ],
+      }),
     };
-
-    // Filter by tags using PostgreSQL jsonb @> operator
-    if (dto.tags && dto.tags.length > 0) {
-      const sequelize = this.groupModel.sequelize!;
-      const tagConditions = dto.tags.map((tag) =>
-        literal(
-          `tags::jsonb @> ${sequelize.escape(JSON.stringify([tag]))}::jsonb`,
-        ),
-      );
-      where[Op.and] = [...(where[Op.and] || []), ...tagConditions];
-    }
-
-    if (dto.city) {
-      where.city = { [Op.iLike]: `%${dto.city}%` };
-    }
-
-    if (dto.country) {
-      where.country = dto.country;
-    }
-
-    if (dto.search) {
-      const term = buildSearchTerm(dto.search);
-      where[Op.or] = [
-        { name: { [Op.iLike]: term } },
-        { description: { [Op.iLike]: term } },
-      ];
-    }
 
     const { rows: data, count: totalItems } =
       await this.groupModel.findAndCountAll({
@@ -588,7 +605,7 @@ export class GroupService {
     });
 
     // Get instructor's profile (if public)
-    let instructorProfile: any = null;
+    let instructorProfile: PublicInstructorProfile | null = null;
     if (ownerMembership) {
       const orgProfile = await InstructorProfile.findOne({
         where: { userId: ownerMembership.userId, isPublic: true },

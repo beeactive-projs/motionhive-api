@@ -1,4 +1,5 @@
 import { UserController } from './user.controller';
+import type { AuthenticatedRequest } from '../../common/types/authenticated-request';
 
 // Smoke test for the /users/me response shape.
 //
@@ -35,7 +36,9 @@ describe('UserController getProfile (/users/me)', () => {
       },
     };
 
-    const result = controller.getProfile(fakeReq) as Record<string, unknown>;
+    const result = controller.getProfile(
+      fakeReq as unknown as AuthenticatedRequest,
+    ) as Record<string, unknown>;
 
     expect(result).toHaveProperty('id', 'u-1');
     expect(result).toHaveProperty('email', 'jane@example.com');

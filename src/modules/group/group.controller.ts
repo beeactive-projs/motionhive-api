@@ -13,6 +13,7 @@ import {
 import { AuthGuard } from '@nestjs/passport';
 import { ApiTags } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
+import type { AuthenticatedRequest } from '../../common/types/authenticated-request';
 import { GroupService } from './group.service';
 import { CreateGroupDto } from './dto/create-group.dto';
 import { UpdateGroupDto } from './dto/update-group.dto';
@@ -77,28 +78,31 @@ export class GroupController {
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('INSTRUCTOR', 'ADMIN', 'SUPER_ADMIN')
   @ApiEndpoint({ ...GroupDocs.create, body: CreateGroupDto })
-  async create(@Request() req, @Body() dto: CreateGroupDto) {
+  async create(
+    @Request() req: AuthenticatedRequest,
+    @Body() dto: CreateGroupDto,
+  ) {
     return this.groupService.create(req.user.id, dto);
   }
 
   @Get()
   @UseGuards(AuthGuard('jwt'))
   @ApiEndpoint(GroupDocs.getMyGroups)
-  async getMyGroups(@Request() req) {
+  async getMyGroups(@Request() req: AuthenticatedRequest) {
     return this.groupService.getMyGroups(req.user.id);
   }
 
   @Get('/instructor')
   @UseGuards(AuthGuard('jwt'))
   @ApiEndpoint(GroupDocs.getInstructorsGroups)
-  async getInstructorsGroups(@Request() req) {
+  async getInstructorsGroups(@Request() req: AuthenticatedRequest) {
     return this.groupService.getInstructorsGroups(req.user.id);
   }
 
   @Get(':id')
   @UseGuards(AuthGuard('jwt'))
   @ApiEndpoint(GroupDocs.getById)
-  async getById(@Param('id') id: string, @Request() req) {
+  async getById(@Param('id') id: string, @Request() req: AuthenticatedRequest) {
     return this.groupService.getById(id, req.user.id);
   }
 
@@ -107,7 +111,7 @@ export class GroupController {
   @ApiEndpoint({ ...GroupDocs.update, body: UpdateGroupDto })
   async update(
     @Param('id') id: string,
-    @Request() req,
+    @Request() req: AuthenticatedRequest,
     @Body() dto: UpdateGroupDto,
   ) {
     return this.groupService.update(id, req.user.id, dto);
@@ -116,7 +120,10 @@ export class GroupController {
   @Delete(':id')
   @UseGuards(AuthGuard('jwt'))
   @ApiEndpoint(GroupDocs.deleteGroup)
-  async deleteGroup(@Param('id') id: string, @Request() req) {
+  async deleteGroup(
+    @Param('id') id: string,
+    @Request() req: AuthenticatedRequest,
+  ) {
     await this.groupService.deleteGroup(id, req.user.id);
     return { message: 'Group deleted successfully' };
   }
@@ -131,7 +138,7 @@ export class GroupController {
   })
   async transferOwnership(
     @Param('id') id: string,
-    @Request() req,
+    @Request() req: AuthenticatedRequest,
     @Body() dto: { newOwnerId: string },
   ) {
     return this.groupService.transferOwnership(id, req.user.id, dto.newOwnerId);
@@ -146,7 +153,10 @@ export class GroupController {
     auth: true,
     responses: [{ status: 200, description: 'Group statistics' }],
   })
-  async getStats(@Param('id') id: string, @Request() req) {
+  async getStats(
+    @Param('id') id: string,
+    @Request() req: AuthenticatedRequest,
+  ) {
     return this.groupService.getGroupStats(id, req.user.id);
   }
 
@@ -158,7 +168,10 @@ export class GroupController {
   @Throttle({ default: { limit: 10, ttl: 60000 } })
   @UseGuards(AuthGuard('jwt'))
   @ApiEndpoint(GroupDocs.selfJoin)
-  async selfJoin(@Param('id') id: string, @Request() req) {
+  async selfJoin(
+    @Param('id') id: string,
+    @Request() req: AuthenticatedRequest,
+  ) {
     await this.groupService.selfJoinGroup(id, req.user.id);
     return { message: 'You have joined the group' };
   }
@@ -172,7 +185,7 @@ export class GroupController {
   @ApiEndpoint(GroupDocs.getMembers)
   async getMembers(
     @Param('id') id: string,
-    @Request() req,
+    @Request() req: AuthenticatedRequest,
     @Query() pagination: PaginationDto,
   ) {
     return this.groupService.getMembers(
@@ -188,7 +201,7 @@ export class GroupController {
   @ApiEndpoint({ ...GroupDocs.updateMyMembership, body: UpdateMemberDto })
   async updateMyMembership(
     @Param('id') id: string,
-    @Request() req,
+    @Request() req: AuthenticatedRequest,
     @Body() dto: UpdateMemberDto,
   ) {
     return this.groupService.updateMyMembership(id, req.user.id, dto);
@@ -197,7 +210,10 @@ export class GroupController {
   @Delete(':id/members/me')
   @UseGuards(AuthGuard('jwt'))
   @ApiEndpoint(GroupDocs.leaveGroup)
-  async leaveGroup(@Param('id') id: string, @Request() req) {
+  async leaveGroup(
+    @Param('id') id: string,
+    @Request() req: AuthenticatedRequest,
+  ) {
     await this.groupService.leaveGroup(id, req.user.id);
     return { message: 'You have left the group' };
   }
@@ -208,7 +224,7 @@ export class GroupController {
   async removeMember(
     @Param('id') id: string,
     @Param('userId') memberId: string,
-    @Request() req,
+    @Request() req: AuthenticatedRequest,
   ) {
     await this.groupService.removeMember(id, memberId, req.user.id);
     return { message: 'Member removed successfully' };
@@ -222,7 +238,10 @@ export class GroupController {
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('INSTRUCTOR', 'ADMIN', 'SUPER_ADMIN')
   @ApiEndpoint(GroupDocs.generateJoinLink)
-  async generateJoinLink(@Param('id') id: string, @Request() req) {
+  async generateJoinLink(
+    @Param('id') id: string,
+    @Request() req: AuthenticatedRequest,
+  ) {
     const result = await this.groupService.generateJoinLink(id, req.user.id);
     return {
       message: 'Join link generated successfully',
@@ -235,7 +254,10 @@ export class GroupController {
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('INSTRUCTOR', 'ADMIN', 'SUPER_ADMIN')
   @ApiEndpoint(GroupDocs.revokeJoinLink)
-  async revokeJoinLink(@Param('id') id: string, @Request() req) {
+  async revokeJoinLink(
+    @Param('id') id: string,
+    @Request() req: AuthenticatedRequest,
+  ) {
     await this.groupService.revokeJoinLink(id, req.user.id);
     return { message: 'Join link revoked successfully' };
   }
@@ -244,7 +266,10 @@ export class GroupController {
   @Throttle({ default: { limit: 10, ttl: 60000 } })
   @UseGuards(AuthGuard('jwt'))
   @ApiEndpoint(GroupDocs.joinViaLink)
-  async joinViaLink(@Param('token') token: string, @Request() req) {
+  async joinViaLink(
+    @Param('token') token: string,
+    @Request() req: AuthenticatedRequest,
+  ) {
     await this.groupService.joinViaLink(token, req.user.id);
     return { message: 'You have joined the group' };
   }

@@ -34,6 +34,25 @@ export interface OAuthProfile {
 }
 
 /**
+ * GDPR Article 20 data-portability export shape. Every field is the
+ * `.toJSON()` output of its Sequelize model, which is why the
+ * per-field types are unknown to the typechecker (Sequelize instance
+ * methods are stripped but the scalar shape isn't enumerated). Keep
+ * the categories strict; the inner shapes can evolve with the entities.
+ */
+export interface UserDataExport {
+  exportedAt: string;
+  user: Record<string, unknown>;
+  socialAccounts: Record<string, unknown>[];
+  userProfile: Record<string, unknown> | null;
+  instructorProfile: Record<string, unknown> | null;
+  groupMemberships: Record<string, unknown>[];
+  sessionParticipations: Record<string, unknown>[];
+  clientRelationships: Record<string, unknown>[];
+  invitations: Record<string, unknown>[];
+}
+
+/**
  * User Service
  *
  * Handles all business logic related to users:
@@ -337,7 +356,7 @@ export class UserService {
    * @returns A plain object keyed by data category, with an exportedAt timestamp
    * @throws NotFoundException if no user exists with that ID
    */
-  async exportUserData(userId: string): Promise<Record<string, any>> {
+  async exportUserData(userId: string): Promise<UserDataExport> {
     const user = await this.userModel.findByPk(userId, {
       attributes: {
         exclude: [

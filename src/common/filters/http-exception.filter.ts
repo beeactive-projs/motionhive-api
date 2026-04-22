@@ -45,14 +45,28 @@ export class HttpExceptionFilter implements ExceptionFilter {
       ? exception.getStatus()
       : HttpStatus.INTERNAL_SERVER_ERROR;
 
-    // Get error message
+    // Get error message. NestJS's `getResponse()` can be a string or an
+    // object like `{ statusCode, message }` — narrow via a type guard
+    // rather than an `as any` cast so we can't accidentally read off a
+    // string.
     let message: string | string[];
     if (isHttpException) {
-      const exceptionResponse = exception.getResponse();
-      message =
-        typeof exceptionResponse === 'string'
-          ? exceptionResponse
-          : (exceptionResponse as any).message || 'An error occurred';
+      const exceptionResponse: unknown = exception.getResponse();
+      if (typeof exceptionResponse === 'string') {
+        message = exceptionResponse;
+      } else if (
+        exceptionResponse &&
+        typeof exceptionResponse === 'object' &&
+        'message' in exceptionResponse
+      ) {
+        const raw = (exceptionResponse as { message: unknown }).message;
+        message =
+          typeof raw === 'string' || Array.isArray(raw)
+            ? (raw as string | string[])
+            : 'An error occurred';
+      } else {
+        message = 'An error occurred';
+      }
     } else {
       message = 'Internal server error';
     }

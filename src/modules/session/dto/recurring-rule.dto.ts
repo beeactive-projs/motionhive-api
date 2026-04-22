@@ -83,8 +83,7 @@ export class RecurringRuleDto {
 
   @ApiPropertyOptional({
     example: 12,
-    description:
-      'Stop after this many occurrences (alternative to endDate).',
+    description: 'Stop after this many occurrences (alternative to endDate).',
     minimum: 1,
     maximum: 365,
   })

@@ -13,6 +13,7 @@ import {
 import { AuthGuard } from '@nestjs/passport';
 import { ApiTags } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
+import type { AuthenticatedRequest } from '../../common/types/authenticated-request';
 import { ClientService } from './client.service';
 import { CreateClientRequestDto } from './dto/create-client-request.dto';
 import { UpdateClientDto } from './dto/update-client.dto';
@@ -54,7 +55,10 @@ export class ClientController {
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('INSTRUCTOR', 'ADMIN', 'SUPER_ADMIN')
   @ApiEndpoint(ClientDocs.getMyClients)
-  async getMyClients(@Request() req, @Query() query: ListClientsDto) {
+  async getMyClients(
+    @Request() req: AuthenticatedRequest,
+    @Query() query: ListClientsDto,
+  ) {
     return this.clientService.getMyClients(req.user.id, {
       status: query.status,
       page: query.page,
@@ -69,7 +73,7 @@ export class ClientController {
   @Get('my-instructors')
   @UseGuards(AuthGuard('jwt'))
   @ApiEndpoint(ClientDocs.getMyInstructors)
-  async getMyInstructors(@Request() req) {
+  async getMyInstructors(@Request() req: AuthenticatedRequest) {
     return this.clientService.getMyInstructors(req.user.id);
   }
 
@@ -80,7 +84,7 @@ export class ClientController {
   @Get('requests/pending')
   @UseGuards(AuthGuard('jwt'))
   @ApiEndpoint(ClientDocs.getPendingRequests)
-  async getPendingRequests(@Request() req) {
+  async getPendingRequests(@Request() req: AuthenticatedRequest) {
     return this.clientService.getPendingRequests(req.user.id);
   }
 
@@ -95,7 +99,7 @@ export class ClientController {
   @Roles('INSTRUCTOR', 'ADMIN', 'SUPER_ADMIN')
   @ApiEndpoint(ClientDocs.getPendingEmailInvites)
   async getPendingEmailInvites(
-    @Request() req,
+    @Request() req: AuthenticatedRequest,
     @Query('includeExpired') includeExpired?: string,
   ) {
     return this.clientService.getPendingEmailInvites(
@@ -125,7 +129,10 @@ export class ClientController {
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('INSTRUCTOR', 'ADMIN', 'SUPER_ADMIN')
   @ApiEndpoint({ ...ClientDocs.sendInvitation, body: CreateClientRequestDto })
-  async sendInvitation(@Request() req, @Body() dto: CreateClientRequestDto) {
+  async sendInvitation(
+    @Request() req: AuthenticatedRequest,
+    @Body() dto: CreateClientRequestDto,
+  ) {
     return this.clientService.sendClientInvitationByEmail(
       req.user.id,
       dto.email,
@@ -144,13 +151,10 @@ export class ClientController {
   @Roles('INSTRUCTOR', 'ADMIN', 'SUPER_ADMIN')
   @ApiEndpoint(ClientDocs.resendInvitation)
   async resendInvitation(
-    @Request() req,
+    @Request() req: AuthenticatedRequest,
     @Param('requestId') requestId: string,
   ) {
-    return this.clientService.resendInvitation(
-      req.user.id as string,
-      requestId,
-    );
+    return this.clientService.resendInvitation(req.user.id, requestId);
   }
 
   /**
@@ -162,7 +166,7 @@ export class ClientController {
   @UseGuards(AuthGuard('jwt'))
   @ApiEndpoint(ClientDocs.requestToBeClient)
   async requestToBeClient(
-    @Request() req,
+    @Request() req: AuthenticatedRequest,
     @Param('instructorId') instructorId: string,
     @Body() dto: { message?: string },
   ) {
@@ -181,7 +185,10 @@ export class ClientController {
   @Post('requests/accept-by-token')
   @UseGuards(AuthGuard('jwt'))
   @ApiEndpoint(ClientDocs.acceptByToken)
-  async acceptByToken(@Request() req, @Body() dto: { token: string }) {
+  async acceptByToken(
+    @Request() req: AuthenticatedRequest,
+    @Body() dto: { token: string },
+  ) {
     return this.clientService.acceptByToken(dto.token, req.user.id);
   }
 
@@ -192,7 +199,10 @@ export class ClientController {
   @Post('requests/:requestId/accept')
   @UseGuards(AuthGuard('jwt'))
   @ApiEndpoint(ClientDocs.acceptRequest)
-  async acceptRequest(@Param('requestId') requestId: string, @Request() req) {
+  async acceptRequest(
+    @Param('requestId') requestId: string,
+    @Request() req: AuthenticatedRequest,
+  ) {
     return this.clientService.acceptRequest(requestId, req.user.id);
   }
 
@@ -203,7 +213,10 @@ export class ClientController {
   @Post('requests/:requestId/decline')
   @UseGuards(AuthGuard('jwt'))
   @ApiEndpoint(ClientDocs.declineRequest)
-  async declineRequest(@Param('requestId') requestId: string, @Request() req) {
+  async declineRequest(
+    @Param('requestId') requestId: string,
+    @Request() req: AuthenticatedRequest,
+  ) {
     return this.clientService.declineRequest(requestId, req.user.id);
   }
 
@@ -214,7 +227,10 @@ export class ClientController {
   @Post('requests/:requestId/cancel')
   @UseGuards(AuthGuard('jwt'))
   @ApiEndpoint(ClientDocs.cancelRequest)
-  async cancelRequest(@Param('requestId') requestId: string, @Request() req) {
+  async cancelRequest(
+    @Param('requestId') requestId: string,
+    @Request() req: AuthenticatedRequest,
+  ) {
     return this.clientService.cancelRequest(requestId, req.user.id);
   }
 
@@ -227,7 +243,7 @@ export class ClientController {
   @Roles('INSTRUCTOR', 'ADMIN', 'SUPER_ADMIN')
   @ApiEndpoint({ ...ClientDocs.updateClient, body: UpdateClientDto })
   async updateClient(
-    @Request() req,
+    @Request() req: AuthenticatedRequest,
     @Param('clientId') clientId: string,
     @Body() dto: UpdateClientDto,
   ) {
@@ -243,7 +259,10 @@ export class ClientController {
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('INSTRUCTOR', 'ADMIN', 'SUPER_ADMIN')
   @ApiEndpoint(ClientDocs.archiveClient)
-  async archiveClient(@Request() req, @Param('clientId') clientId: string) {
+  async archiveClient(
+    @Request() req: AuthenticatedRequest,
+    @Param('clientId') clientId: string,
+  ) {
     return this.clientService.updateClient(req.user.id, clientId, {
       status: InstructorClientStatus.ARCHIVED,
     });

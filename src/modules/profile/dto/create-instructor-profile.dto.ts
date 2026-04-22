@@ -4,7 +4,7 @@ import {
   IsArray,
   IsNumber,
   IsBoolean,
-  IsObject,
+  IsUrl,
   MaxLength,
   Min,
   Max,
@@ -29,6 +29,22 @@ class CertificationDto {
   @IsNumber()
   year: number;
 }
+
+/**
+ * Nested DTO for the `socialLinks` field. All platforms optional;
+ * each accepts a URL with required protocol so instructors can't
+ * submit bare usernames that break the link on the public profile.
+ */
+class SocialLinksDto {
+  @IsOptional() @IsUrl() instagram?: string;
+  @IsOptional() @IsUrl() facebook?: string;
+  @IsOptional() @IsUrl() twitter?: string;
+  @IsOptional() @IsUrl() youtube?: string;
+  @IsOptional() @IsUrl() tiktok?: string;
+  @IsOptional() @IsUrl() linkedin?: string;
+  @IsOptional() @IsUrl() website?: string;
+}
+export { SocialLinksDto };
 
 export class CreateInstructorProfileDto {
   @ApiPropertyOptional({
@@ -84,11 +100,16 @@ export class CreateInstructorProfileDto {
   isPublic?: boolean;
 
   @ApiPropertyOptional({
-    example: { instagram: 'coach_john', facebook: 'CoachJohn' },
+    type: SocialLinksDto,
+    example: {
+      instagram: 'https://instagram.com/coach_john',
+      facebook: 'https://facebook.com/CoachJohn',
+    },
   })
-  @IsObject()
+  @ValidateNested()
+  @Type(() => SocialLinksDto)
   @IsOptional()
-  socialLinks?: object;
+  socialLinks?: SocialLinksDto;
 
   @ApiPropertyOptional({ example: true })
   @IsBoolean()

@@ -49,7 +49,7 @@ export class InvoiceLineItemDto {
 export class CreateInvoiceDto {
   @ApiPropertyOptional({ description: 'Existing BeeActive user id' })
   @ValidateIf((o: CreateInvoiceDto) => !o.guestEmail)
-  // @IsUUID()
+  @IsUUID()
   clientUserId?: string;
 
   @ApiPropertyOptional({ example: 'guest@example.com' })

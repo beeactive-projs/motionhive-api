@@ -1,7 +1,6 @@
-
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { InjectModel } from '@nestjs/sequelize';
-import { Transaction } from 'sequelize';
+import { Transaction, WhereOptions } from 'sequelize';
 import { Role } from './entities/role.entity';
 import { Permission } from './entities/permission.entity';
 import { UserRole } from './entities/user-role.entity';
@@ -122,11 +121,10 @@ export class RoleService {
   }
 
   async getUserRoles(userId: string, groupId?: string): Promise<Role[]> {
-    const where: any = { userId: userId };
-
-    if (groupId !== undefined) {
-      where.groupId = groupId;
-    }
+    const where: WhereOptions<UserRole> = {
+      userId,
+      ...(groupId !== undefined && { groupId }),
+    };
 
     const userRoles = await this.userRoleModel.findAll({
       where,
@@ -171,14 +169,11 @@ export class RoleService {
   ): Promise<boolean> {
     const role = await this.findByName(roleName);
 
-    const where: any = {
-      userId: userId,
+    const where: WhereOptions<UserRole> = {
+      userId,
       roleId: role.id,
+      ...(groupId !== undefined && { groupId }),
     };
-
-    if (groupId !== undefined) {
-      where.groupId = groupId;
-    }
 
     const userRole = await this.userRoleModel.findOne({ where });
 
@@ -196,14 +191,11 @@ export class RoleService {
 
     const roleIds = roles.map((r) => r.id);
 
-    const where: any = {
-      userId: userId,
+    const where: WhereOptions<UserRole> = {
+      userId,
       roleId: roleIds,
+      ...(groupId !== undefined && { groupId }),
     };
-
-    if (groupId !== undefined) {
-      where.groupId = groupId;
-    }
 
     const count = await this.userRoleModel.count({ where });
 

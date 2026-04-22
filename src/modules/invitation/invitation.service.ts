@@ -210,7 +210,11 @@ export class InvitationService {
     const transaction = await this.sequelize.transaction();
     try {
       // Add user to group (pass transaction so it participates)
-      await this.groupService.addMember(invitation.groupId, userId, transaction);
+      await this.groupService.addMember(
+        invitation.groupId,
+        userId,
+        transaction,
+      );
 
       // Assign role (group-scoped)
       await this.roleService.assignRoleToUser(

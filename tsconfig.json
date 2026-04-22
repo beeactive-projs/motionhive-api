@@ -21,11 +21,16 @@
     },
     "incremental": true,
     "skipLibCheck": true,
-    "strictNullChecks": true,
     "forceConsistentCasingInFileNames": true,
-    "noImplicitAny": false,
-    "strictBindCallApply": false,
-    "noFallthroughCasesInSwitch": false,
-    // "strict": true
+    // Strict mode is ON with ONE opt-out:
+    //  - strictPropertyInitialization: false
+    // NestJS DTOs and Sequelize entities use class fields that are
+    // populated by the framework (class-validator, sequelize hydration)
+    // rather than in a constructor, so flipping that check would require
+    // adding `!` to every column/field — pure noise with no safety gain.
+    // Everything else in strict mode stays on.
+    "strict": true,
+    "strictPropertyInitialization": false,
+    "noFallthroughCasesInSwitch": false
   }
 }

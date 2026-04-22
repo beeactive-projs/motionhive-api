@@ -23,9 +23,7 @@ export const getJwtConfig = (
 
   // This should never happen due to env validation, but double-check
   if (!secret) {
-    throw new Error(
-      'JWT_SECRET is required! Please set it in your .env file.',
-    );
+    throw new Error('JWT_SECRET is required! Please set it in your .env file.');
   }
 
   return {

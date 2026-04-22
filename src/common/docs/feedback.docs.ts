@@ -28,7 +28,8 @@ export const FeedbackDocs = {
 
   list: {
     summary: 'List all feedback',
-    description: 'Returns all feedback entries ordered by most recent. Requires ADMIN or SUPER_ADMIN role.',
+    description:
+      'Returns all feedback entries ordered by most recent. Requires ADMIN or SUPER_ADMIN role.',
     auth: true,
     responses: [
       {

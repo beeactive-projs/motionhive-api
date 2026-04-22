@@ -8,8 +8,8 @@
     "experimentalDecorators": true,
     "emitDecoratorMetadata": true,
     "target": "ES2023",
-    "strictNullChecks": true,
-    "noImplicitAny": false,
+    "strict": true,
+    "strictPropertyInitialization": false,
     "skipLibCheck": true,
     "baseUrl": ".",
     "paths": {

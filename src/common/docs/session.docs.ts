@@ -182,7 +182,11 @@ export const SessionDocs = {
       {
         status: 201,
         description: 'Session cloned',
-        example: { id: '...', title: '...', scheduledAt: '2026-02-27T09:00:00.000Z' },
+        example: {
+          id: '...',
+          title: '...',
+          scheduledAt: '2026-02-27T09:00:00.000Z',
+        },
       },
       ApiStandardResponses.Unauthorized,
       ApiStandardResponses.Forbidden,
@@ -199,8 +203,15 @@ export const SessionDocs = {
     responses: [
       {
         status: 200,
-        description: 'List of ISO date strings (includes the template session date)',
-        example: { dates: ['2026-02-17T09:00:00.000Z', '2026-02-19T09:00:00.000Z', '2026-02-21T09:00:00.000Z'] },
+        description:
+          'List of ISO date strings (includes the template session date)',
+        example: {
+          dates: [
+            '2026-02-17T09:00:00.000Z',
+            '2026-02-19T09:00:00.000Z',
+            '2026-02-21T09:00:00.000Z',
+          ],
+        },
       },
       { status: 400, description: 'Session is not recurring or has no rule' },
       ApiStandardResponses.Unauthorized,

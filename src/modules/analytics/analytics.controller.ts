@@ -1,6 +1,7 @@
 import { Controller, Get, UseGuards, Request } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
 import { ApiTags } from '@nestjs/swagger';
+import type { AuthenticatedRequest } from '../../common/types/authenticated-request';
 import { AnalyticsService } from './analytics.service';
 import { ApiEndpoint } from '../../common/decorators/api-response.decorator';
 import { Roles } from '../../common/decorators/roles.decorator';
@@ -30,7 +31,7 @@ export class AnalyticsController {
     auth: true,
     responses: [{ status: 200, description: 'Instructor analytics summary' }],
   })
-  async getInstructorSummary(@Request() req) {
+  async getInstructorSummary(@Request() req: AuthenticatedRequest) {
     return this.analyticsService.getInstructorSummary(req.user.id);
   }
 
@@ -42,7 +43,7 @@ export class AnalyticsController {
     auth: true,
     responses: [{ status: 200, description: 'User activity summary' }],
   })
-  async getUserActivity(@Request() req) {
+  async getUserActivity(@Request() req: AuthenticatedRequest) {
     return this.analyticsService.getUserActivity(req.user.id);
   }
 
@@ -51,7 +52,8 @@ export class AnalyticsController {
   @Roles('ADMIN', 'SUPER_ADMIN')
   @ApiEndpoint({
     summary: 'Platform statistics',
-    description: 'Platform-wide stats: users, instructors, groups, sessions. Admin only.',
+    description:
+      'Platform-wide stats: users, instructors, groups, sessions. Admin only.',
     auth: true,
     responses: [{ status: 200, description: 'Platform statistics' }],
   })

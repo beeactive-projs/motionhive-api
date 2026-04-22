@@ -15,9 +15,7 @@ import {
 import { AuthGuard } from '@nestjs/passport';
 import { ApiTags } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
-import type { Request as ExpressRequest } from 'express';
-
-type AuthenticatedRequest = ExpressRequest & { user: { id: string } };
+import type { AuthenticatedRequest } from '../../common/types/authenticated-request';
 
 import { ApiEndpoint } from '../../common/decorators/api-response.decorator';
 import { PaymentDocs } from '../../common/docs/payment.docs';

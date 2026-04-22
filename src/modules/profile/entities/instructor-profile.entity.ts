@@ -11,6 +11,32 @@ import {
 import { User } from '../../user/entities/user.entity';
 
 /**
+ * Shape of a single certification entry in the `certifications` JSON
+ * column. Instructors can attach any number of these to their profile.
+ */
+export interface Certification {
+  name: string;
+  issuingBody?: string;
+  issuedAt?: string;
+  expiresAt?: string;
+  credentialUrl?: string;
+}
+
+/**
+ * Shape of the `socialLinks` JSON column. All fields optional — the
+ * instructor fills in whichever platforms they actually use.
+ */
+export interface SocialLinks {
+  instagram?: string;
+  facebook?: string;
+  twitter?: string;
+  youtube?: string;
+  tiktok?: string;
+  linkedin?: string;
+  website?: string;
+}
+
+/**
  * Instructor Profile Entity
  *
  * Professional data for instructors/trainers.
@@ -62,7 +88,7 @@ export class InstructorProfile extends Model {
     type: DataType.JSON,
     allowNull: true,
   })
-  declare certifications: object[];
+  declare certifications: Certification[] | null;
 
   @Column({
     type: DataType.INTEGER,
@@ -80,7 +106,7 @@ export class InstructorProfile extends Model {
     type: DataType.JSON,
     allowNull: true,
   })
-  declare socialLinks: object;
+  declare socialLinks: SocialLinks | null;
 
   @Column({
     type: DataType.BOOLEAN,

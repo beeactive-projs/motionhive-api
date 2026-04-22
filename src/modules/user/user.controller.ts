@@ -15,6 +15,7 @@ import { AuthGuard } from '@nestjs/passport';
 import { ApiTags, ApiConsumes } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
 import { FileInterceptor } from '@nestjs/platform-express';
+import type { AuthenticatedRequest } from '../../common/types/authenticated-request';
 import { UserService } from './user.service';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { ApiEndpoint } from '../../common/decorators/api-response.decorator';
@@ -41,7 +42,7 @@ export class UserController {
    */
   @Get('me')
   @ApiEndpoint(UserDocs.getProfile)
-  getProfile(@Request() req) {
+  getProfile(@Request() req: AuthenticatedRequest) {
     return {
       id: req.user.id,
       email: req.user.email,
@@ -64,7 +65,10 @@ export class UserController {
    */
   @Patch('me')
   @ApiEndpoint({ ...UserDocs.updateProfile, body: UpdateUserDto })
-  async updateProfile(@Request() req, @Body() dto: UpdateUserDto) {
+  async updateProfile(
+    @Request() req: AuthenticatedRequest,
+    @Body() dto: UpdateUserDto,
+  ) {
     const user = await this.userService.updateUser(req.user.id, dto);
     return {
       id: user.id,
@@ -101,7 +105,7 @@ export class UserController {
     ],
   })
   async uploadAvatar(
-    @Request() req,
+    @Request() req: AuthenticatedRequest,
     @UploadedFile() file: Express.Multer.File,
   ) {
     if (!file) {
@@ -132,7 +136,7 @@ export class UserController {
     auth: true,
     responses: [{ status: 200, description: 'User data export' }],
   })
-  async exportData(@Request() req) {
+  async exportData(@Request() req: AuthenticatedRequest) {
     return this.userService.exportUserData(req.user.id);
   }
 
@@ -142,7 +146,7 @@ export class UserController {
   @Delete('me')
   @Throttle({ default: { limit: 1, ttl: 3600000 } })
   @ApiEndpoint(UserDocs.deleteAccount)
-  async deleteAccount(@Request() req) {
+  async deleteAccount(@Request() req: AuthenticatedRequest) {
     await this.userService.deleteAccount(req.user.id);
     return { message: 'Account deleted successfully' };
   }

@@ -1,4 +1,8 @@
-import { Injectable, NotFoundException, ForbiddenException } from '@nestjs/common';
+import {
+  Injectable,
+  NotFoundException,
+  ForbiddenException,
+} from '@nestjs/common';
 import { InjectModel } from '@nestjs/sequelize';
 import { Op } from 'sequelize';
 import { Session } from '../session/entities/session.entity';
@@ -100,7 +104,9 @@ export class AnalyticsService {
         const totalParticipants = await this.participantModel.count({
           where: {
             sessionId: { [Op.in]: completedSessionIds },
-            status: { [Op.in]: ['ATTENDED', 'NO_SHOW', 'CONFIRMED', 'REGISTERED'] },
+            status: {
+              [Op.in]: ['ATTENDED', 'NO_SHOW', 'CONFIRMED', 'REGISTERED'],
+            },
           },
         });
 
@@ -112,7 +118,9 @@ export class AnalyticsService {
         });
 
         averageAttendanceRate =
-          totalParticipants > 0 ? Math.round((attended / totalParticipants) * 100) / 100 : 0;
+          totalParticipants > 0
+            ? Math.round((attended / totalParticipants) * 100) / 100
+            : 0;
       }
     }
 
@@ -124,7 +132,10 @@ export class AnalyticsService {
       },
     });
 
-    const totalMembers = groups.reduce((sum, g) => sum + (g.memberCount || 0), 0);
+    const totalMembers = groups.reduce(
+      (sum, g) => sum + (g.memberCount || 0),
+      0,
+    );
 
     return {
       period: 'last_30_days',

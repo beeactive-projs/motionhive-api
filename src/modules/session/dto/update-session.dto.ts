@@ -81,7 +81,9 @@ export class UpdateSessionDto {
   @IsOptional()
   status?: string;
 
-  @ApiPropertyOptional({ description: 'Toggle recurring; set recurringRule when true.' })
+  @ApiPropertyOptional({
+    description: 'Toggle recurring; set recurringRule when true.',
+  })
   @IsBoolean()
   @IsOptional()
   isRecurring?: boolean;
