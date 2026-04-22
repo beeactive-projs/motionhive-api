@@ -3,6 +3,7 @@ import { SequelizeModule } from '@nestjs/sequelize';
 
 import { RoleModule } from '../role/role.module';
 import { User } from '../user/entities/user.entity';
+import { EmailService } from '../../common/services/email.service';
 
 // Entities
 import { StripeAccount } from './entities/stripe-account.entity';
@@ -30,6 +31,7 @@ import { EarningsService } from './services/earnings.service';
 import { PaymentWebhookController } from './payment-webhook.controller';
 import { PaymentController } from './payment.controller';
 import { PaymentClientController } from './payment-client.controller';
+import { PaymentPublicController } from './payment-public.controller';
 
 /**
  * PaymentModule
@@ -80,6 +82,7 @@ import { PaymentClientController } from './payment-client.controller';
     PaymentWebhookController,
     PaymentController,
     PaymentClientController,
+    PaymentPublicController,
   ],
   providers: [
     StripeService,
@@ -92,6 +95,7 @@ import { PaymentClientController } from './payment-client.controller';
     SubscriptionService,
     RefundService,
     EarningsService,
+    EmailService,
   ],
   exports: [StripeService, CustomerService],
 })

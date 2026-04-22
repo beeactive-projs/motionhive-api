@@ -13,6 +13,7 @@ import {
   participantStatusTemplate,
   waitlistConfirmationTemplate,
   feedbackConfirmationTemplate,
+  invoiceSendTemplate,
 } from './email-templates';
 
 /**
@@ -298,6 +299,56 @@ export class EmailService {
     const html = feedbackConfirmationTemplate(type, title, name);
 
     await this.send(email, subject, html);
+  }
+
+  // =====================================================
+  // INVOICE EMAILS
+  // =====================================================
+
+  /**
+   * Send an invoice email via our own transport (Resend), used when the
+   * instructor wants to deliver the invoice to an address that differs
+   * from the customer's email on file in Stripe. Stripe's native
+   * `sendInvoice` always goes to the customer's saved email, so we take
+   * delivery over on this path and link to Stripe's hosted invoice page
+   * and PDF.
+   */
+  async sendInvoiceEmail(params: {
+    to: string;
+    instructorName: string;
+    amountLabel: string;
+    dueDateLabel: string | null;
+    invoiceNumber: string | null;
+    hostedInvoiceUrl: string;
+    invoicePdfUrl: string | null;
+    recipientName?: string | null;
+  }): Promise<void> {
+    const {
+      to,
+      instructorName,
+      amountLabel,
+      dueDateLabel,
+      invoiceNumber,
+      hostedInvoiceUrl,
+      invoicePdfUrl,
+      recipientName,
+    } = params;
+
+    const subject = invoiceNumber
+      ? `Invoice ${invoiceNumber} from ${instructorName}`
+      : `Invoice from ${instructorName}`;
+
+    const html = invoiceSendTemplate({
+      instructorName,
+      amountLabel,
+      dueDateLabel,
+      invoiceNumber,
+      hostedInvoiceUrl,
+      invoicePdfUrl,
+      recipientName,
+    });
+
+    await this.send(to, subject, html);
   }
 
   // =====================================================

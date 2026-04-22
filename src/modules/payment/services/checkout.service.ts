@@ -20,9 +20,17 @@ import { StripeService } from './stripe.service';
 import { CustomerService } from './customer.service';
 import { CreateCheckoutDto } from '../dto/create-checkout.dto';
 
-const IMMEDIATE_ACCESS_WAIVER_TEXT_RO =
-  'Sunt de acord cu accesul imediat la serviciu și renunț la dreptul meu ' +
-  'de retragere de 14 zile (OUG 34/2014).';
+/**
+ * Canonical waiver text saved to `payment_consent`. Bilingual on purpose:
+ * the frontend shows whichever language the client picked, but the legal
+ * audit log always records both so we don't depend on which UI locale the
+ * client happened to have active.
+ */
+const IMMEDIATE_ACCESS_WAIVER_TEXT =
+  'RO: Sunt de acord cu accesul imediat la serviciu și renunț la dreptul ' +
+  'meu de retragere de 14 zile (OUG 34/2014). | ' +
+  'EN: I agree to immediate access to the service and waive my 14-day ' +
+  'right of withdrawal (Romanian OUG 34/2014).';
 
 /**
  * CheckoutService
@@ -86,7 +94,7 @@ export class CheckoutService {
             invoiceId: invoice.id,
             userId: clientUserId,
             consentType: ConsentType.IMMEDIATE_ACCESS_WAIVER,
-            consentText: IMMEDIATE_ACCESS_WAIVER_TEXT_RO,
+            consentText: IMMEDIATE_ACCESS_WAIVER_TEXT,
             ipAddress: requestContext.ip ?? null,
             userAgent: requestContext.userAgent ?? null,
           },

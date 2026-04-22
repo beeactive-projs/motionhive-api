@@ -18,6 +18,7 @@ import * as bcrypt from 'bcrypt';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { CryptoService } from '../../common/services';
+import { CloudinaryService } from '../../common/services/cloudinary.service';
 import { UserProfile } from '../profile/entities/user-profile.entity';
 import { InstructorProfile } from '../profile/entities/instructor-profile.entity';
 import { GroupMember } from '../group/entities/group-member.entity';
@@ -54,6 +55,7 @@ export class UserService {
     private socialAccountModel: typeof SocialAccount,
     private configService: ConfigService,
     private cryptoService: CryptoService,
+    private readonly cloudinaryService: CloudinaryService,
     @Inject(WINSTON_MODULE_NEST_PROVIDER)
     private readonly logger: LoggerService,
   ) {}
@@ -250,6 +252,49 @@ export class UserService {
       throw new NotFoundException('User not found');
     }
     await user.update(dto);
+    return user;
+  }
+
+  /**
+   * Upload a new profile picture for the given user.
+   *
+   * Stores the image in Cloudinary under the `avatars/` folder, saves
+   * the secure URL + public_id on the user row, and DELETES the
+   * previous Cloudinary asset (if any) so we don't leak storage on
+   * every re-upload. Cleanup runs after the DB write — if Cloudinary
+   * fails to delete the old asset we log and move on rather than
+   * undoing the user-visible change.
+   */
+  async uploadAvatar(userId: string, file: Express.Multer.File): Promise<User> {
+    const user = await this.findById(userId);
+    if (!user) {
+      throw new NotFoundException('User not found');
+    }
+
+    const previousPublicId = user.avatarPublicId;
+    const { url, publicId } = await this.cloudinaryService.uploadImage(
+      file,
+      'avatars',
+    );
+    user.avatarUrl = url;
+    user.avatarPublicId = publicId;
+    await user.save();
+
+    if (previousPublicId && previousPublicId !== publicId) {
+      try {
+        await this.cloudinaryService.deleteImage(previousPublicId);
+      } catch (err) {
+        // Non-fatal — the new avatar is already live; the old asset
+        // just lingers. A periodic sweeper can clean orphans later.
+        this.logger.warn(
+          `Failed to delete old avatar ${previousPublicId} for user ${userId}: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+          'UserService',
+        );
+      }
+    }
+
     return user;
   }
 

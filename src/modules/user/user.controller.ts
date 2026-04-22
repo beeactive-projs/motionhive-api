@@ -6,11 +6,15 @@ import {
   Delete,
   Body,
   UseGuards,
+  UseInterceptors,
+  UploadedFile,
   Request,
+  BadRequestException,
 } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
-import { ApiTags } from '@nestjs/swagger';
+import { ApiTags, ApiConsumes } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
+import { FileInterceptor } from '@nestjs/platform-express';
 import { UserService } from './user.service';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { ApiEndpoint } from '../../common/decorators/api-response.decorator';
@@ -45,6 +49,7 @@ export class UserController {
       lastName: req.user.lastName,
       phone: req.user.phone,
       avatarId: req.user.avatarId,
+      avatarUrl: req.user.avatarUrl,
       language: req.user.language,
       timezone: req.user.timezone,
       isActive: req.user.isActive,
@@ -68,8 +73,50 @@ export class UserController {
       lastName: user.lastName,
       phone: user.phone,
       avatarId: user.avatarId,
+      avatarUrl: user.avatarUrl,
       language: user.language,
       timezone: user.timezone,
+    };
+  }
+
+  /**
+   * Upload a new profile picture. Accepts a single image under the
+   * `file` form field. The server streams it to Cloudinary (folder
+   * `avatars/`), saves the secure URL on the user, and cleans up the
+   * previous asset. Returns the new avatar URL so the UI can swap the
+   * image in place without refetching the whole profile.
+   */
+  @Post('me/avatar')
+  @UseInterceptors(FileInterceptor('file'))
+  @ApiConsumes('multipart/form-data')
+  @Throttle({ default: { limit: 20, ttl: 3_600_000 } })
+  @ApiEndpoint({
+    summary: 'Upload profile picture',
+    description:
+      'Accepts an image file under the `file` form field. Max 5 MB, image MIME types only.',
+    auth: true,
+    responses: [
+      { status: 200, description: 'Avatar uploaded' },
+      { status: 400, description: 'No file, wrong type, or too large' },
+    ],
+  })
+  async uploadAvatar(
+    @Request() req,
+    @UploadedFile() file: Express.Multer.File,
+  ) {
+    if (!file) {
+      throw new BadRequestException('No file provided.');
+    }
+    if (!file.mimetype?.startsWith('image/')) {
+      throw new BadRequestException('Only image files are accepted.');
+    }
+    const MAX_BYTES = 5 * 1024 * 1024;
+    if (file.size > MAX_BYTES) {
+      throw new BadRequestException('File is larger than 5 MB.');
+    }
+    const user = await this.userService.uploadAvatar(req.user.id, file);
+    return {
+      avatarUrl: user.avatarUrl,
     };
   }
 

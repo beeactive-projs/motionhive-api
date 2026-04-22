@@ -142,7 +142,8 @@ export const PaymentDocs = {
   updateProduct: {
     summary: 'Update a product',
     description:
-      'Updates name/description/active flag. Amount changes create a new ' +
+      'Updates name/description/active flag, or the public-profile ' +
+      'visibility flag (showOnProfile). Amount changes create a new ' +
       'Stripe Price and replace the mirrored stripePriceId (the old Price ' +
       'is archived, not deleted, so historical invoices still resolve).',
     auth: true,

@@ -31,6 +31,8 @@ export interface EarningsSummary {
   nextPayoutDate: string | null;
   monthToDateRevenueCents: number;
   outstandingInvoicesCents: number;
+  openInvoiceCount: number;
+  overdueInvoiceCount: number;
   topClients: TopClientSummary[];
 }
 
@@ -79,9 +81,9 @@ export class EarningsService {
     })) as unknown as { total: number }[];
     const monthToDateRevenueCents = Number(mtdResult?.total ?? 0);
 
-    // Outstanding from open invoices.
+    // Outstanding from open invoices — total remaining + counts.
     const outstandingInvoices = await this.invoiceModel.findAll({
-      attributes: ['amountRemainingCents'],
+      attributes: ['amountRemainingCents', 'dueDate'],
       where: { instructorId, status: InvoiceStatus.OPEN },
       raw: true,
     });
@@ -90,6 +92,11 @@ export class EarningsService {
         sum + (r.amountRemainingCents ?? 0),
       0,
     );
+    const openInvoiceCount = outstandingInvoices.length;
+    const overdueInvoiceCount = outstandingInvoices.filter(
+      (r: { dueDate: Date | string | null }) =>
+        r.dueDate != null && new Date(r.dueDate).getTime() < now.getTime(),
+    ).length;
 
     // Top clients by total paid (lifetime). Grouped at SQL level; names
     // joined in a second pass so we can fall back to StripeCustomer for
@@ -183,6 +190,8 @@ export class EarningsService {
       nextPayoutDate,
       monthToDateRevenueCents,
       outstandingInvoicesCents,
+      openInvoiceCount,
+      overdueInvoiceCount,
       topClients,
     };
   }

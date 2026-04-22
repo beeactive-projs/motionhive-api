@@ -11,6 +11,7 @@ import {
 } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
 import { ApiTags } from '@nestjs/swagger';
+import { Throttle } from '@nestjs/throttler';
 import type { Request as ExpressRequest } from 'express';
 
 type AuthenticatedRequest = ExpressRequest & { user: { id: string } };
@@ -75,6 +76,7 @@ export class PaymentClientController {
   @Post('invoices/:id/pay')
   @UseGuards(RolesGuard)
   @Roles('USER')
+  @Throttle({ default: { limit: 30, ttl: 3_600_000 } })
   @ApiEndpoint({ ...PaymentDocs.payInvoice, body: CreateCheckoutDto })
   async payInvoice(
     @Request() req: AuthenticatedRequest,
@@ -125,5 +127,27 @@ export class PaymentClientController {
       pagination.page ?? 1,
       pagination.limit ?? 20,
     );
+  }
+
+  /**
+   * GET /payments/my/counts
+   *
+   * Lightweight count-only lookup for the profile tabs. Tells the
+   * client how many invoices / memberships they have in total and
+   * how many are actionable (open invoices, active memberships) so
+   * badges can render without hydrating the full lists.
+   */
+  @Get('counts')
+  @UseGuards(RolesGuard)
+  @Roles('USER')
+  async getMyCounts(@Request() req: AuthenticatedRequest): Promise<{
+    invoices: { total: number; open: number };
+    memberships: { total: number; active: number };
+  }> {
+    const [invoices, memberships] = await Promise.all([
+      this.invoiceService.countForClient(req.user.id),
+      this.subscriptionService.countForClient(req.user.id),
+    ]);
+    return { invoices, memberships };
   }
 }

@@ -1,5 +1,6 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import {
+  IsBoolean,
   IsEnum,
   IsInt,
   IsOptional,
@@ -56,4 +57,14 @@ export class CreateProductDto {
   @Min(1)
   @Max(12)
   intervalCount?: number;
+
+  @ApiPropertyOptional({
+    example: false,
+    default: false,
+    description:
+      'When true, this product is listed on the instructor public profile under "Services / pricing".',
+  })
+  @IsOptional()
+  @IsBoolean()
+  showOnProfile?: boolean;
 }

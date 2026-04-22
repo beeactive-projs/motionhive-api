@@ -9,7 +9,7 @@ import {
 import type { LoggerService } from '@nestjs/common';
 import { InjectModel } from '@nestjs/sequelize';
 import { WINSTON_MODULE_NEST_PROVIDER } from 'nest-winston';
-import { Transaction } from 'sequelize';
+import { Op, Transaction } from 'sequelize';
 import { Sequelize } from 'sequelize-typescript';
 import type { Stripe } from 'stripe-types';
 
@@ -184,9 +184,12 @@ export class SubscriptionService {
     instructorId: string,
     page: number,
     limit: number,
+    status?: SubscriptionStatus,
   ): Promise<PaginatedResponse<Subscription>> {
+    const where: Record<string, unknown> = { instructorId };
+    if (status) where.status = status;
     const { rows, count } = await this.subscriptionModel.findAndCountAll({
-      where: { instructorId },
+      where,
       order: [['createdAt', 'DESC']],
       limit,
       offset: getOffset(page, limit),
@@ -206,6 +209,27 @@ export class SubscriptionService {
       offset: getOffset(page, limit),
     });
     return buildPaginatedResponse(rows, count, page, limit);
+  }
+
+  /**
+   * Count-only lookups for the client's billing tabs. Avoids hydrating
+   * the full list just to render a badge.
+   */
+  async countForClient(
+    clientId: string,
+  ): Promise<{ total: number; active: number }> {
+    const [total, active] = await Promise.all([
+      this.subscriptionModel.count({ where: { clientId } }),
+      this.subscriptionModel.count({
+        where: {
+          clientId,
+          status: {
+            [Op.in]: [SubscriptionStatus.ACTIVE, SubscriptionStatus.TRIALING],
+          },
+        },
+      }),
+    ]);
+    return { total, active };
   }
 
   async cancel(

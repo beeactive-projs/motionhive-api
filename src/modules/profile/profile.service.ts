@@ -470,6 +470,7 @@ export class ProfileService {
         lastName: user.lastName,
         phone: user.phone,
         avatarId: user.avatarId,
+        avatarUrl: user.avatarUrl,
         language: user.language,
         timezone: user.timezone,
         isEmailVerified: user.isEmailVerified,

@@ -34,4 +34,12 @@ export class UpdateProductDto {
   @IsOptional()
   @IsBoolean()
   isActive?: boolean;
+
+  @ApiPropertyOptional({
+    description:
+      'When true, this product is listed on the instructor public profile.',
+  })
+  @IsOptional()
+  @IsBoolean()
+  showOnProfile?: boolean;
 }

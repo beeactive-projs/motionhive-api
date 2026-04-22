@@ -15,7 +15,7 @@
     "paths": {
       "stripe-types": ["./node_modules/stripe/cjs/stripe.core.d.ts"]
     },
-    "types": ["jest", "node"]
+    "types": ["jest", "node", "multer"]
   },
   "include": ["src/**/*", "test/**/*"]
 }

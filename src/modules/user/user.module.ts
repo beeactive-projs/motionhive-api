@@ -5,6 +5,7 @@ import { SocialAccount } from './entities/social-account.entity';
 import { UserService } from './user.service';
 import { UserController } from './user.controller';
 import { CryptoService } from '../../common/services';
+import { CloudinaryService } from '../../common/services/cloudinary.service';
 
 /**
  * User Module
@@ -19,13 +20,12 @@ import { CryptoService } from '../../common/services';
  * - exports: What other modules can use
  */
 @Module({
-  imports: [
-    SequelizeModule.forFeature([User, SocialAccount]),
-  ],
+  imports: [SequelizeModule.forFeature([User, SocialAccount])],
   controllers: [UserController],
   providers: [
     UserService,
     CryptoService, // Provide CryptoService for token hashing
+    CloudinaryService, // Used by UserService.uploadAvatar
   ],
   exports: [UserService], // Export UserService so AuthModule can use it
 })

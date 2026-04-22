@@ -70,6 +70,7 @@ export class ProductService {
           stripeProductId: null,
           stripePriceId: null,
           isActive: true,
+          showOnProfile: dto.showOnProfile ?? false,
         },
         { transaction: tx },
       );
@@ -148,6 +149,25 @@ export class ProductService {
     return buildPaginatedResponse(rows, count, page, limit);
   }
 
+  /**
+   * Public list of products the instructor has chosen to display on their
+   * profile. Active + showOnProfile=true only. No pagination — this drives
+   * a small "Services / pricing" card on the public profile page.
+   */
+  async listPublicForInstructor(instructorId: string): Promise<Product[]> {
+    return this.productModel.findAll({
+      where: {
+        instructorId,
+        isActive: true,
+        showOnProfile: true,
+      },
+      order: [
+        ['type', 'ASC'],
+        ['amountCents', 'ASC'],
+      ],
+    });
+  }
+
   async update(
     instructorId: string,
     productId: string,
@@ -162,6 +182,9 @@ export class ProductService {
         product.description = dto.description;
       }
       if (dto.isActive !== undefined) product.isActive = dto.isActive;
+      if (dto.showOnProfile !== undefined) {
+        product.showOnProfile = dto.showOnProfile;
+      }
 
       // Amount change ⇒ create a new Stripe Price (immutable in Stripe).
       if (

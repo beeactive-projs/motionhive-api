@@ -21,6 +21,7 @@ import { StripeCustomer } from '../entities/stripe-customer.entity';
 import { User } from '../../user/entities/user.entity';
 import { StripeService } from './stripe.service';
 import { CustomerService } from './customer.service';
+import { EmailService } from '../../../common/services/email.service';
 import {
   NotificationService,
   NotificationType,
@@ -72,6 +73,7 @@ export class InvoiceService {
     private readonly sequelize: Sequelize,
     private readonly stripeService: StripeService,
     private readonly customerService: CustomerService,
+    private readonly emailService: EmailService,
     private readonly notificationService: NotificationService,
     @Inject(WINSTON_MODULE_NEST_PROVIDER)
     private readonly logger: LoggerService,
@@ -170,6 +172,21 @@ export class InvoiceService {
       );
     }
 
+    // Stripe rejects past timestamps for `due_date`. Reject here with a
+    // friendly 400 so we don't waste a Stripe round-trip + void a local
+    // row for a preventable input error.
+    if (dto.dueDate) {
+      const due = new Date(dto.dueDate);
+      if (Number.isNaN(due.getTime())) {
+        throw new BadRequestException('Invalid due date.');
+      }
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      if (due.getTime() < today.getTime()) {
+        throw new BadRequestException('Due date cannot be in the past.');
+      }
+    }
+
     const account = await this.stripeAccountModel.findOne({
       where: { userId: instructorId },
     });
@@ -210,8 +227,12 @@ export class InvoiceService {
             instructorId,
             clientId: dto.clientUserId ?? null,
             stripeCustomerId: customer.stripeCustomerId,
-            // Temporarily empty — updated after the Stripe call below.
-            stripeInvoiceId: '',
+            // Left NULL until the Stripe API call below returns the real
+            // id. The column is UNIQUE and Postgres treats NULLs as
+            // distinct, so concurrent drafts with NULL placeholders don't
+            // collide on the unique index. Setting this to '' (as we used
+            // to) causes the 2nd draft ever created to fail that UNIQUE.
+            stripeInvoiceId: null,
             subscriptionId: null,
             number: null,
             status: InvoiceStatus.DRAFT,
@@ -363,6 +384,27 @@ export class InvoiceService {
     return buildPaginatedResponse(enriched, count, page, limit);
   }
 
+  /**
+   * Count-only lookups for the client's billing tabs. Avoids hydrating
+   * the full list just to render a badge next to a tab label.
+   */
+  async countForClient(
+    clientId: string,
+  ): Promise<{ total: number; open: number }> {
+    const [total, open] = await Promise.all([
+      this.invoiceModel.count({
+        where: {
+          clientId,
+          status: { [Op.in]: [InvoiceStatus.OPEN, InvoiceStatus.PAID] },
+        },
+      }),
+      this.invoiceModel.count({
+        where: { clientId, status: InvoiceStatus.OPEN },
+      }),
+    ]);
+    return { total, open };
+  }
+
   async getOneForUser(
     invoiceId: string,
     userId: string,
@@ -433,12 +475,25 @@ export class InvoiceService {
   }
 
   /**
-   * Finalize a draft invoice → status OPEN, Stripe emails the client.
-   * Idempotent: calling on an already-open invoice is a no-op.
+   * Finalize a draft invoice → status OPEN.
+   *
+   * Two delivery paths:
+   *   - No `overrideEmail` (or override matches the customer's on-file
+   *     email): Stripe sends the email natively. Keeps receipt tracking
+   *     consistent in the Stripe dashboard.
+   *   - `overrideEmail` present and different: we skip Stripe's native
+   *     send and deliver the hosted-invoice link via our own Resend
+   *     transport. Stripe's `invoices.sendInvoice` doesn't accept a
+   *     per-send recipient — it always targets the customer's saved
+   *     email — so overrides are necessarily routed through us.
+   *
+   * Idempotent: calling on an already-open invoice only re-triggers the
+   * email; finalization is skipped.
    */
   async sendInvoice(
     instructorId: string,
     invoiceId: string,
+    overrideEmail?: string,
   ): Promise<InvoiceResponse> {
     const invoice = await this.requireOwnedInvoice(instructorId, invoiceId);
     if (
@@ -450,10 +505,12 @@ export class InvoiceService {
       );
     }
 
+    const stripeInvoiceId = this.requireStripeInvoiceId(invoice);
+
     if (invoice.status === InvoiceStatus.DRAFT) {
       const finalized =
         await this.stripeService.stripe.invoices.finalizeInvoice(
-          invoice.stripeInvoiceId,
+          stripeInvoiceId,
           undefined,
           {
             idempotencyKey: this.stripeService.buildIdempotencyKey(
@@ -469,19 +526,95 @@ export class InvoiceService {
       invoice.invoicePdf = finalized.invoice_pdf ?? null;
       invoice.number = finalized.number ?? null;
     }
-    await this.stripeService.stripe.invoices.sendInvoice(
-      invoice.stripeInvoiceId,
-      undefined,
-      {
-        idempotencyKey: this.stripeService.buildIdempotencyKey(
-          'invoice',
-          invoice.id,
-          'send',
-        ),
-      },
-    );
+
+    // Resolve the recipient for the override decision.
+    const onFileEmail = await this.resolveOnFileEmail(invoice);
+    const normalizedOverride = overrideEmail?.trim().toLowerCase() || null;
+    const normalizedOnFile = onFileEmail?.trim().toLowerCase() || null;
+    const useOverridePath =
+      !!normalizedOverride && normalizedOverride !== normalizedOnFile;
+
+    if (useOverridePath) {
+      if (!invoice.hostedInvoiceUrl) {
+        // Shouldn't happen — finalization always returns a hosted URL —
+        // but refuse to send an empty-link email rather than silently
+        // shipping a broken one.
+        throw new BadRequestException(
+          'Invoice is not ready to send (hosted URL missing).',
+        );
+      }
+      const instructor = (await this.sequelize.models.User.findByPk(
+        instructorId,
+      )) as User | null;
+      const instructorName =
+        [instructor?.firstName, instructor?.lastName]
+          .filter(Boolean)
+          .join(' ')
+          .trim() || 'Your instructor';
+      const amountLabel = this.formatAmount(
+        invoice.amountDueCents,
+        invoice.currency,
+      );
+      const dueDateLabel = invoice.dueDate
+        ? new Date(invoice.dueDate).toLocaleDateString('en-GB', {
+            day: '2-digit',
+            month: 'short',
+            year: 'numeric',
+          })
+        : null;
+
+      await this.emailService.sendInvoiceEmail({
+        to: overrideEmail as string,
+        instructorName,
+        amountLabel,
+        dueDateLabel,
+        invoiceNumber: invoice.number,
+        hostedInvoiceUrl: invoice.hostedInvoiceUrl,
+        invoicePdfUrl: invoice.invoicePdf,
+        recipientName: null,
+      });
+      this.logger.log(
+        `Invoice ${invoice.id} delivered to override address ${overrideEmail} (on-file: ${onFileEmail ?? 'none'})`,
+        'InvoiceService',
+      );
+    } else {
+      await this.stripeService.stripe.invoices.sendInvoice(
+        stripeInvoiceId,
+        undefined,
+        {
+          idempotencyKey: this.stripeService.buildIdempotencyKey(
+            'invoice',
+            invoice.id,
+            'send',
+          ),
+        },
+      );
+    }
     await invoice.save();
     return this.enrich(invoice);
+  }
+
+  /**
+   * Look up the customer's email (registered user or stripe_customer
+   * guest row). Returns null when neither is available.
+   */
+  private async resolveOnFileEmail(invoice: Invoice): Promise<string | null> {
+    if (invoice.clientId) {
+      const user = (await this.sequelize.models.User.findByPk(
+        invoice.clientId,
+      )) as User | null;
+      if (user?.email) return user.email;
+    }
+    const sc = await this.stripeCustomerModel.findOne({
+      where: { stripeCustomerId: invoice.stripeCustomerId },
+    });
+    return sc?.email ?? null;
+  }
+
+  private formatAmount(amountCents: number, currency: string): string {
+    const amount = amountCents / 100;
+    const code = currency.toUpperCase();
+    return `${amount.toFixed(2)} ${code}`;
   }
 
   async voidInvoice(
@@ -496,8 +629,9 @@ export class InvoiceService {
     }
     if (invoice.status === InvoiceStatus.VOID) return this.enrich(invoice);
 
+    const stripeInvoiceId = this.requireStripeInvoiceId(invoice);
     await this.stripeService.stripe.invoices.voidInvoice(
-      invoice.stripeInvoiceId,
+      stripeInvoiceId,
       undefined,
       {
         idempotencyKey: this.stripeService.buildIdempotencyKey(
@@ -534,10 +668,12 @@ export class InvoiceService {
       );
     }
 
+    const stripeInvoiceId = this.requireStripeInvoiceId(invoice);
+
     // Finalize first if still draft — Stripe requires it.
     if (invoice.status === InvoiceStatus.DRAFT) {
       await this.stripeService.stripe.invoices.finalizeInvoice(
-        invoice.stripeInvoiceId,
+        stripeInvoiceId,
         undefined,
         {
           idempotencyKey: this.stripeService.buildIdempotencyKey(
@@ -549,7 +685,7 @@ export class InvoiceService {
       );
     }
     await this.stripeService.stripe.invoices.pay(
-      invoice.stripeInvoiceId,
+      stripeInvoiceId,
       { paid_out_of_band: true },
       {
         idempotencyKey: this.stripeService.buildIdempotencyKey(
@@ -715,6 +851,23 @@ export class InvoiceService {
       throw new ForbiddenException('You do not own this invoice.');
     }
     return invoice;
+  }
+
+  /**
+   * Narrow the nullable `stripeInvoiceId` column to a string for calls
+   * that hand it to Stripe. A null id means the local row was never
+   * successfully persisted to Stripe (`createOneOff` failed before the
+   * Stripe response and marked the row VOID); all mutation paths gate
+   * on `status` first, so in practice this should never fire, but we
+   * refuse rather than pass `undefined` to the Stripe SDK.
+   */
+  private requireStripeInvoiceId(invoice: Invoice): string {
+    if (!invoice.stripeInvoiceId) {
+      throw new BadRequestException(
+        'Invoice has no Stripe record — it was never successfully created on Stripe.',
+      );
+    }
+    return invoice.stripeInvoiceId;
   }
 
   /**

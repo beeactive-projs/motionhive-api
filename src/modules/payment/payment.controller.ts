@@ -35,6 +35,8 @@ import { OnboardingStartDto } from './dto/onboarding-start.dto';
 import { CreateProductDto } from './dto/create-product.dto';
 import { UpdateProductDto } from './dto/update-product.dto';
 import { CreateInvoiceDto } from './dto/create-invoice.dto';
+import { SendInvoiceDto } from './dto/send-invoice.dto';
+import { ListSubscriptionsQueryDto } from './dto/list-subscriptions.query.dto';
 import {
   CreateSubscriptionDto,
   CancelSubscriptionDto,
@@ -230,8 +232,9 @@ export class PaymentController {
   async sendInvoice(
     @Request() req: AuthenticatedRequest,
     @Param('id', new ParseUUIDPipe()) id: string,
+    @Body() body: SendInvoiceDto,
   ) {
-    return this.invoiceService.sendInvoice(req.user.id, id);
+    return this.invoiceService.sendInvoice(req.user.id, id, body.overrideEmail);
   }
 
   @Post('invoices/:id/void')
@@ -281,12 +284,13 @@ export class PaymentController {
   @ApiEndpoint(PaymentDocs.listSubscriptions)
   async listSubscriptions(
     @Request() req: AuthenticatedRequest,
-    @Query() pagination: PaginationDto,
+    @Query() query: ListSubscriptionsQueryDto,
   ) {
     return this.subscriptionService.listForInstructor(
       req.user.id,
-      pagination.page ?? 1,
-      pagination.limit ?? 20,
+      query.page ?? 1,
+      query.limit ?? 20,
+      query.status,
     );
   }
 

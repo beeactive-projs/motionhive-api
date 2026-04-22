@@ -164,6 +164,19 @@ export class Product extends Model {
   })
   declare isActive: boolean;
 
+  /**
+   * When true, this product is listed on the instructor's public profile
+   * under "Services / pricing". Defaults to false — the instructor opts in
+   * per product.
+   */
+  @Column({
+    type: DataType.BOOLEAN,
+    allowNull: false,
+    defaultValue: false,
+    field: 'show_on_profile',
+  })
+  declare showOnProfile: boolean;
+
   @CreatedAt
   declare createdAt: Date;
 

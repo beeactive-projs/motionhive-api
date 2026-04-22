@@ -116,11 +116,21 @@ export class Invoice extends Model {
   })
   declare subscriptionId: string | null;
 
+  /**
+   * The Stripe Invoice id (`in_...`). NULL only for the brief window
+   * between the local row insert and the Stripe API response inside
+   * `createOneOff` — once Stripe returns, this is filled in and never
+   * cleared. Rows that stay NULL are VOIDed failed-creation artifacts
+   * kept for the audit trail / reconciliation sweep.
+   *
+   * The column is UNIQUE at the DB level; Postgres treats multiple
+   * NULLs as distinct so pending drafts don't collide.
+   */
   @Column({
     type: DataType.STRING(255),
-    allowNull: false,
+    allowNull: true,
   })
-  declare stripeInvoiceId: string;
+  declare stripeInvoiceId: string | null;
 
   /**
    * Stripe-assigned human-readable invoice number (e.g. `ACB-0001`).
