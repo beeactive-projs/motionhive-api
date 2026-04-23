@@ -155,10 +155,9 @@ export class ConnectService {
     // `/instructor/payments/onboarding-complete` which doesn't exist
     // and 404'd after onboarding completion.
     const returnUrl =
-      options.returnUrl ?? `${frontendUrl}/coaching/payments/onboarding/return`;
+      options.returnUrl ?? `${frontendUrl}/coaching/onboarding/return`;
     const refreshUrl =
-      options.refreshUrl ??
-      `${frontendUrl}/coaching/payments/onboarding/refresh`;
+      options.refreshUrl ?? `${frontendUrl}/coaching/onboarding/refresh`;
 
     const link = await this.stripeService.stripe.accountLinks.create({
       account: account.stripeAccountId,
