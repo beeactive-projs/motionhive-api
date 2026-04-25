@@ -61,10 +61,10 @@ All database tables and columns use `snake_case`:
 
 ```sql
 -- Tables
-user, group, session_participant, instructor_profile, user_profile, instructor_client
+user, group, session_participant, instructor_profile, instructor_client, venue
 
 -- Columns
-first_name, last_name, created_at, is_active, shared_health_info
+first_name, last_name, created_at, is_active, country_code, city
 ```
 
 ### API Responses: `camelCase`
@@ -77,12 +77,9 @@ All API responses return `camelCase` keys:
   "lastName": "Doe",
   "isActive": true,
   "createdAt": "2026-01-15T10:30:00.000Z",
-  "sharedHealthInfo": true,
-  "healthData": {
-    "fitnessLevel": "INTERMEDIATE",
-    "heightCm": 180.5,
-    "weightKg": 75.0
-  }
+  "phone": "+40721234567",
+  "countryCode": "RO",
+  "city": "Bucharest"
 }
 ```
 

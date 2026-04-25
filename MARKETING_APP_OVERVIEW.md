@@ -16,7 +16,7 @@ It replaces the usual chaos of WhatsApp groups + spreadsheets + DMs + separate p
 
 **Market position**: sits between "just use WhatsApp" (too messy) and "pay €200/mo for Mindbody" (too heavy). Built for the coach with 15–50 regulars.
 
-**Geography (v1)**: Romania-first. Currency RON. Stripe Connect country hardcoded to `RO`. EU consumer-rights compliance (OUG 34/2014) built in.
+**Geography**: Multi-country from day one — Stripe Connect supports 46 countries; the instructor's `user.countryCode` drives both the Connect account country and the payout currency. EU consumer-rights compliance (OUG 34/2014) built in for EU residents.
 
 ---
 
@@ -49,7 +49,7 @@ Everything below is **live in the codebase today** unless marked otherwise.
 - GDPR data export (`/users/me/data-export`)
 
 ### 3.2 Profiles
-- **User profile**: personal info, fitness profile (goals, level, health notes), preferences
+- **User profile**: personal info (name, phone, country, city, avatar)
 - **Instructor profile**: bio, specialties, experience, photo, discoverable card
 - Unified profile update endpoint (PATCH multiple sections in one call)
 - Instructor discovery: participants can search/filter instructors
@@ -208,7 +208,7 @@ The web app splits routes by role. Every route below is guarded by the role show
 - Feedback dialog (globally available)
 
 ### 5.2 Shared (any logged-in user)
-- `/profile` — unified profile editor (personal, fitness, instructor-if-applicable)
+- `/profile` — unified profile editor (personal, instructor-if-applicable)
 - `/join/:token` — accept a group invite link
 
 ### 5.3 Instructor routes (`instructorGuard`)

@@ -3,21 +3,25 @@ import type { LoggerService } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { WINSTON_MODULE_NEST_PROVIDER } from 'nest-winston';
 import { Resend } from 'resend';
-import { escapeHtml } from '../utils/html.utils';
 import {
-  emailVerificationTemplate,
-  welcomeTemplate,
-  passwordResetTemplate,
-  invitationTemplate,
-  sessionCancelledTemplate,
-  invitationAcceptedTemplate,
-  participantStatusTemplate,
-  waitlistConfirmationTemplate,
-  feedbackConfirmationTemplate,
-  invoiceSendTemplate,
-  subscriptionSetupTemplate,
+  clientInvitationExistingUserTemplate,
+  clientInvitationNewUserTemplate,
+  clientRequestAcceptedTemplate,
+  clientRequestDeclinedTemplate,
+  clientRequestToInstructorTemplate,
   collaborationEndedTemplate,
-} from './email-templates';
+  emailVerificationTemplate,
+  feedbackConfirmationTemplate,
+  invitationAcceptedTemplate,
+  invitationTemplate,
+  invoiceSendTemplate,
+  participantStatusTemplate,
+  passwordResetTemplate,
+  sessionCancelledTemplate,
+  subscriptionSetupTemplate,
+  waitlistConfirmationTemplate,
+  welcomeTemplate,
+} from '../email';
 
 /**
  * Email Service
@@ -175,19 +179,12 @@ export class EmailService {
       ? `${this.frontendUrl}/auth/signup?token=${token}`
       : `${this.frontendUrl}/auth/signup?ref=client-invite`;
 
-    const safeInstructor = escapeHtml(instructorName);
-    const safeMessage = escapeHtml(message);
     const subject = `${instructorName} invited you to MotionHive`;
-    const html = `
-      <div style="font-family: sans-serif; max-width: 600px; margin: 0 auto;">
-        <h2>You've been invited!</h2>
-        <p><strong>${safeInstructor}</strong> would like you to join MotionHive as their client.</p>
-        ${message ? `<p style="padding: 12px; background: #f5f5f5; border-radius: 8px; font-style: italic;">"${safeMessage}"</p>` : ''}
-        <p>Create your account to get started:</p>
-        <a href="${signUpLink}" style="display: inline-block; padding: 12px 24px; background: #f59e0b; color: #fff; text-decoration: none; border-radius: 8px; font-weight: bold;">Join MotionHive</a>
-        <p style="margin-top: 24px; color: #666; font-size: 14px;">If you already have an account, just log in and the invitation will be waiting for you.</p>
-      </div>
-    `;
+    const html = clientInvitationNewUserTemplate({
+      instructorName,
+      signUpLink,
+      message,
+    });
 
     await this.send(email, subject, html);
   }
@@ -203,22 +200,14 @@ export class EmailService {
     requestId: string,
     message?: string,
   ): Promise<void> {
-    const safeFirst = escapeHtml(instructorFirstName);
-    const safeClient = escapeHtml(clientName);
-    const safeMessage = escapeHtml(message);
-    const greeting = instructorFirstName ? `Hi ${safeFirst},` : 'Hi,';
-    const link = `${this.frontendUrl}/coaching/clients?requestId=${encodeURIComponent(requestId)}`;
+    const reviewLink = `${this.frontendUrl}/coaching/clients?requestId=${encodeURIComponent(requestId)}`;
     const subject = `${clientName} wants to work with you on MotionHive`;
-    const html = `
-      <div style="font-family: sans-serif; max-width: 600px; margin: 0 auto;">
-        <p>${greeting}</p>
-        <h2 style="margin: 0 0 12px;">New client request</h2>
-        <p><strong>${safeClient}</strong> wants to work with you as a client.</p>
-        ${message ? `<p style="padding: 12px; background: #f5f5f5; border-radius: 8px; font-style: italic;">"${safeMessage}"</p>` : ''}
-        <p>Log in to accept or decline:</p>
-        <a href="${link}" style="display: inline-block; padding: 12px 24px; background: #f59e0b; color: #fff; text-decoration: none; border-radius: 8px; font-weight: bold;">Review request</a>
-      </div>
-    `;
+    const html = clientRequestToInstructorTemplate({
+      instructorFirstName,
+      clientName,
+      reviewLink,
+      message,
+    });
     await this.send(email, subject, html);
   }
 
@@ -232,19 +221,13 @@ export class EmailService {
     recipientFirstName: string | null,
     responderName: string,
   ): Promise<void> {
-    const safeFirst = escapeHtml(recipientFirstName);
-    const safeResponder = escapeHtml(responderName);
-    const greeting = recipientFirstName ? `Hi ${safeFirst},` : 'Hi,';
-    const link = `${this.frontendUrl}/profile?tab=coaches`;
+    const appLink = `${this.frontendUrl}/profile?tab=coaches`;
     const subject = `${responderName} accepted your request on MotionHive`;
-    const html = `
-      <div style="font-family: sans-serif; max-width: 600px; margin: 0 auto;">
-        <p>${greeting}</p>
-        <h2 style="margin: 0 0 12px;">Request accepted</h2>
-        <p><strong>${safeResponder}</strong> accepted your request. You can now coordinate sessions, memberships and invoices together.</p>
-        <a href="${link}" style="display: inline-block; padding: 12px 24px; background: #f59e0b; color: #fff; text-decoration: none; border-radius: 8px; font-weight: bold;">Open MotionHive</a>
-      </div>
-    `;
+    const html = clientRequestAcceptedTemplate({
+      recipientFirstName,
+      responderName,
+      appLink,
+    });
     await this.send(email, subject, html);
   }
 
@@ -257,17 +240,11 @@ export class EmailService {
     recipientFirstName: string | null,
     responderName: string,
   ): Promise<void> {
-    const safeFirst = escapeHtml(recipientFirstName);
-    const safeResponder = escapeHtml(responderName);
-    const greeting = recipientFirstName ? `Hi ${safeFirst},` : 'Hi,';
     const subject = `Update on your request on MotionHive`;
-    const html = `
-      <div style="font-family: sans-serif; max-width: 600px; margin: 0 auto;">
-        <p>${greeting}</p>
-        <p><strong>${safeResponder}</strong> isn't able to take on your request at this time.</p>
-        <p style="color: #666; font-size: 14px;">You can explore other options on MotionHive whenever you're ready.</p>
-      </div>
-    `;
+    const html = clientRequestDeclinedTemplate({
+      recipientFirstName,
+      responderName,
+    });
     await this.send(email, subject, html);
   }
 
@@ -283,24 +260,14 @@ export class EmailService {
     requestId: string,
     message?: string,
   ): Promise<void> {
-    const safeFirst = escapeHtml(recipientFirstName);
-    const safeInstructor = escapeHtml(instructorName);
-    const safeMessage = escapeHtml(message);
-    const greeting = recipientFirstName ? `Hi ${safeFirst},` : 'Hi,';
     const acceptLink = `${this.frontendUrl}/profile?tab=coaches&requestId=${encodeURIComponent(requestId)}`;
-
     const subject = `${instructorName} wants to add you as a client on MotionHive`;
-    const html = `
-      <div style="font-family: sans-serif; max-width: 600px; margin: 0 auto;">
-        <p>${greeting}</p>
-        <h2 style="margin: 0 0 12px;">${safeInstructor} sent you a client request</h2>
-        <p><strong>${safeInstructor}</strong> wants to add you as a client on MotionHive. Accept to start coordinating sessions, memberships and invoices together.</p>
-        ${message ? `<p style="padding: 12px; background: #f5f5f5; border-radius: 8px; font-style: italic;">"${safeMessage}"</p>` : ''}
-        <p>Log in to accept or decline:</p>
-        <a href="${acceptLink}" style="display: inline-block; padding: 12px 24px; background: #f59e0b; color: #fff; text-decoration: none; border-radius: 8px; font-weight: bold;">Review request</a>
-        <p style="margin-top: 24px; color: #666; font-size: 14px;">If you weren't expecting this, you can safely ignore the email or decline from your account.</p>
-      </div>
-    `;
+    const html = clientInvitationExistingUserTemplate({
+      recipientFirstName,
+      instructorName,
+      acceptLink,
+      message,
+    });
 
     await this.send(email, subject, html);
   }

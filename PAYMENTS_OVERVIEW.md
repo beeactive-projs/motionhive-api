@@ -62,10 +62,11 @@ Stripe Connect Express powers all money movement. Instructors onboard via Stripe
 #### Invoices
 | Method | Path | Description | Rate Limit |
 |---|---|---|---|
-| POST | `/payments/invoices` | Create one-off invoice (registered user or guest email) | 30/hr |
+| POST | `/payments/invoices` | Create one-off invoice (registered user or guest email). Leaves it in DRAFT unless `sendImmediately=true`. | 30/hr |
 | GET | `/payments/invoices` | List invoices (filterable by status) | default |
 | GET | `/payments/invoices/:id` | Invoice detail (includes hosted URL + PDF) | default |
-| POST | `/payments/invoices/:id/send` | Finalize and email via Stripe | 30/hr |
+| GET | `/payments/invoices/:id/line-items` | Fetch line items from Stripe on demand (not mirrored locally) | default |
+| POST | `/payments/invoices/:id/send` | Finalize (if DRAFT) + email. Routes through Resend when `overrideEmail` differs from on-file email; otherwise Stripe native send. | 30/hr |
 | POST | `/payments/invoices/:id/void` | Void (only OPEN/UNCOLLECTIBLE, never PAID) | default |
 | POST | `/payments/invoices/:id/mark-paid` | Mark paid out-of-band (cash/bank transfer, no fees) | default |
 
@@ -89,10 +90,12 @@ Stripe Connect Express powers all money movement. Instructors onboard via Stripe
 |---|---|---|
 | GET | `/payments/my/invoices` | List my invoices (OPEN + PAID only) |
 | GET | `/payments/my/invoices/:id` | Invoice detail (includes hosted URL + PDF) |
-| POST | `/payments/my/invoices/:id/pay` | Get payment URL (hosted invoice page + EU waiver) |
+| GET | `/payments/my/invoices/:id/line-items` | Fetch line items from Stripe on demand |
+| POST | `/payments/my/invoices/:id/pay` | Create Checkout session for invoice. Requires `immediateAccessWaiverAccepted` when `invoice.requiresImmediateAccessWaiver=true`. Inserts Payment row before returning URL (race-safe). |
 | POST | `/payments/my/setup-intent` | Save a card via Stripe Elements |
 | POST | `/payments/my/portal-link` | Open Stripe Customer Portal (manage cards, subs) |
 | GET | `/payments/my/subscriptions` | List my subscriptions |
+| GET | `/payments/my/counts` | Lightweight `{invoices: {total, open}, memberships: {total, active}}` for profile badges |
 
 ### Public Webhook
 
@@ -126,7 +129,7 @@ Stripe Connect Express powers all money movement. Instructors onboard via Stripe
 3. **Cannot edit a finalized invoice** — void and recreate
 4. **Refund window: 14 days** from original charge (enforced in RefundService)
 5. **`application_fee_amount = 0` is REJECTED by Stripe** — the helper OMITS it entirely when fee is 0
-6. **Currency: RON only** for v1 (hardcoded in ConnectService `country: 'RO'`)
+6. **Country & currency are driven by the instructor's `user.countryCode`** (46 Stripe Connect countries supported); ConnectService resolves the right currency per country. Platform fee is configurable per instructor via `stripe_account.platform_fee_bps` (default 0).
 7. **EU Consumer Rights (OUG 34/2014)**: invoices flagged `requiresImmediateAccessWaiver=true` require the client to accept a cooling-off waiver before payment, logged in `payment_consent`
 8. **Subscriptions default to `cancel_at_period_end`** — immediate cancellation is an explicit override
 9. **Guest invoicing**: instructors can invoice external emails; if the guest later registers with that email, `CustomerService.linkGuestToUser` connects existing stripe_customer row

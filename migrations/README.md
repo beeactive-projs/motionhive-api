@@ -90,7 +90,7 @@ SOURCE /path/to/migrations/001_create_core_tables.sql;
 
 ### Profile Tables (004)
 - **instructor_profile** - Instructor profiles (bio, specializations, certifications)
-- **user_profile** - User profiles (fitness level, goals, emergency contact)
+- _(`user_profile` was dropped in migration 027 — personal info now lives directly on the `user` table: firstName, lastName, phone, countryCode, city, avatar)_
 
 ### Client Tables (007)
 - **instructor_client** - Instructor-client relationships
@@ -125,7 +125,6 @@ user
  ├─> refresh_token
  ├─> social_account
  ├─> instructor_profile
- ├─> user_profile
  ├─> instructor_client (as instructor)
  └─> instructor_client (as client)
 ```

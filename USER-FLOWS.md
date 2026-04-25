@@ -42,7 +42,6 @@ POST /auth/register [Public, Rate: 3/hour]
 Transaction:
   +-- Create User record (password hashed, bcrypt 12 rounds)
   +-- Assign USER role (global)
-  +-- Create empty UserProfile
   +-- Generate email verification token (hashed, 24h expiry)
   |
   v
@@ -103,7 +102,7 @@ POST /auth/google [Public, Rate: 10/15min]
   |   +-- If social_account exists for (GOOGLE, provider_user_id) -> return that user
   |   +-- If user exists by email -> link new social_account, return user
   |   +-- Else -> create user (no password, isEmailVerified=true),
-  |              create social_account, assign USER, create UserProfile
+  |              create social_account, assign USER role
   |
   v
 Return { accessToken, refreshToken, user } (same shape as login/register)
@@ -248,12 +247,10 @@ User Profile:
   DELETE /users/me         -> Delete account (GDPR soft-delete)
 
 Unified Profile Update:
-  PATCH  /profile/me       -> Update user + userProfile + instructor in ONE call
+  PATCH  /profile/me       -> Update user (personal info) + instructor profile in ONE call
 
 Individual Profiles:
-  GET    /profile/me              -> Full profile overview (user + userProfile + instructor)
-  GET    /profile/user            -> Get user profile (fitness/health data)
-  PATCH  /profile/user            -> Update user health/fitness data
+  GET    /profile/me              -> Full profile overview (user + instructor profile)
   POST   /profile/instructor      -> Activate instructor profile + assign INSTRUCTOR role
   GET    /profile/instructor      -> Get instructor profile
   PATCH  /profile/instructor      -> Update instructor professional data
@@ -354,7 +351,6 @@ The `GET /groups/:id/members` endpoint returns an `isClient` flag for each membe
       "firstName": "Jane",
       "lastName": "Doe",
       "isOwner": false,
-      "sharedHealthInfo": true,
       "isClient": true,
       "joinedAt": "2026-01-15T10:00:00.000Z"
     }

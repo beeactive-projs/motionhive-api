@@ -7,7 +7,7 @@ file to remember why something works the way it does.
 **Companion docs:**
 - `/Users/ionutbutnaru/.claude/plans/fluffy-painting-scroll.md` — the approved plan
 - `/Users/ionutbutnaru/.claude/plans/fluffy-painting-scroll-frontend.md` — the Angular frontend plan
-- `migrations/019_create_payment_tables.sql` — the schema
+- Payment-related migrations live in `migrations/` (started at 019; later migrations added multi-country support, currency resolution, and additional payment columns)
 
 ---
 

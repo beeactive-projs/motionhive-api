@@ -615,16 +615,35 @@ export class ClientService {
 
     // Create the relationship record (PENDING) and request in a transaction
     const result = await this.sequelize.transaction(async (transaction) => {
-      // Create instructor_client record with PENDING status
-      await this.instructorClientModel.create(
-        {
-          instructorId,
-          clientId: toUserId,
-          status: InstructorClientStatus.PENDING,
-          initiatedBy: InitiatedBy.INSTRUCTOR,
-        },
-        { transaction },
-      );
+      // Reuse a prior row for this pair if one exists (e.g. ARCHIVED from
+      // an ended collaboration). Resetting it to PENDING keeps a single
+      // canonical row per (instructor, client) pair so acceptRequest doesn't
+      // see duplicates.
+      const existing = await this.instructorClientModel.findOne({
+        where: { instructorId, clientId: toUserId },
+        transaction,
+      });
+
+      if (existing) {
+        await existing.update(
+          {
+            status: InstructorClientStatus.PENDING,
+            initiatedBy: InitiatedBy.INSTRUCTOR,
+            startedAt: null,
+          },
+          { transaction },
+        );
+      } else {
+        await this.instructorClientModel.create(
+          {
+            instructorId,
+            clientId: toUserId,
+            status: InstructorClientStatus.PENDING,
+            initiatedBy: InitiatedBy.INSTRUCTOR,
+          },
+          { transaction },
+        );
+      }
 
       // Create client_request record
       const expiresAt = new Date();
