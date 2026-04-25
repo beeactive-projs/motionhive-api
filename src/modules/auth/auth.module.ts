@@ -13,6 +13,7 @@ import { RoleModule } from '../role/role.module';
 import { ProfileModule } from '../profile/profile.module';
 import { EmailService } from '../../common/services/email.service';
 import { CryptoService } from '../../common/services/crypto.service';
+import { EmailVerifierService } from '../../common/services/email-verifier.service';
 
 @Module({
   imports: [
@@ -28,7 +29,13 @@ import { CryptoService } from '../../common/services/crypto.service';
     }),
   ],
   controllers: [AuthController],
-  providers: [AuthService, JwtStrategy, EmailService, CryptoService],
+  providers: [
+    AuthService,
+    JwtStrategy,
+    EmailService,
+    CryptoService,
+    EmailVerifierService,
+  ],
   exports: [AuthService],
 })
 export class AuthModule {}

@@ -1,14 +1,22 @@
 import {
-  IsString,
-  IsNotEmpty,
-  MinLength,
-  MaxLength,
-  IsOptional,
   IsEmail,
   IsIn,
+  IsNotEmpty,
+  IsOptional,
+  IsString,
+  MaxLength,
+  MinLength,
 } from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
+/**
+ * Feedback is accepted anonymously (used by the marketing website
+ * too). To avoid turning the endpoint into an SMTP amplifier, the
+ * confirmation mail — when sent — goes only to the email the
+ * submitter entered, never to a client-supplied user id. A `userId`
+ * is NOT accepted from the body; if the request is authenticated the
+ * controller attaches it server-side from the JWT.
+ */
 export class CreateFeedbackDto {
   @ApiProperty({ example: 'BUG', enum: ['BUG', 'SUGGESTION', 'OTHER'] })
   @IsString()
@@ -29,15 +37,17 @@ export class CreateFeedbackDto {
   @IsString()
   @IsNotEmpty()
   @MinLength(10)
+  @MaxLength(5000)
   message: string;
 
-  @ApiPropertyOptional({ example: '550e8400-e29b-41d4-a716-446655440000' })
-  @IsString()
-  @IsOptional()
-  userId?: string;
-
+  /**
+   * Optional contact email provided by the submitter. Also where the
+   * confirmation mail is sent (so an attacker can only spam themselves
+   * or addresses they already control).
+   */
   @ApiPropertyOptional({ example: 'user@example.com' })
-  @IsEmail()
   @IsOptional()
+  @IsEmail()
+  @MaxLength(255)
   email?: string;
 }

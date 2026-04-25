@@ -11,6 +11,7 @@ import {
 import { ConnectService } from './connect.service';
 import { StripeService } from './stripe.service';
 import { StripeAccount } from '../entities/stripe-account.entity';
+import { User } from '../../user/entities/user.entity';
 import {
   NotificationService,
   NotificationType,
@@ -62,6 +63,7 @@ function makeAccountRow(
 describe('ConnectService', () => {
   let service: ConnectService;
   let stripeAccountModel: ModelMock;
+  let userModel: ModelMock;
   let stripeMock: {
     stripe: {
       accounts: { create: jest.Mock; createLoginLink: jest.Mock };
@@ -74,6 +76,9 @@ describe('ConnectService', () => {
 
   beforeEach(async () => {
     stripeAccountModel = makeModelMock();
+    userModel = makeModelMock();
+    // Default: user exists with Stripe-supported country.
+    userModel.findByPk.mockResolvedValue({ countryCode: 'RO' });
     stripeMock = {
       stripe: {
         accounts: {
@@ -99,6 +104,7 @@ describe('ConnectService', () => {
       providers: [
         ConnectService,
         { provide: getModelToken(StripeAccount), useValue: stripeAccountModel },
+        { provide: getModelToken(User), useValue: userModel },
         { provide: Sequelize, useValue: makeSequelizeMock() },
         { provide: StripeService, useValue: stripeMock },
         { provide: ConfigService, useValue: configMock },

@@ -1,5 +1,6 @@
 import { Controller, Get, Post, Body, UseGuards } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
+import { Throttle } from '@nestjs/throttler';
 import { ApiTags } from '@nestjs/swagger';
 import { WaitlistService } from './waitlist.service';
 import { CreateWaitlistDto } from './dto/create-waitlist.dto';
@@ -14,6 +15,7 @@ export class WaitlistController {
   constructor(private readonly waitlistService: WaitlistService) {}
 
   @Post()
+  @Throttle({ default: { limit: 7, ttl: 900_000 } })
   @ApiEndpoint(WaitlistDocs.create)
   async create(@Body() dto: CreateWaitlistDto) {
     return this.waitlistService.create(dto);

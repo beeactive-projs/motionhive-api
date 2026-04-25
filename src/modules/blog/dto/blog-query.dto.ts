@@ -1,4 +1,11 @@
-import { IsOptional, IsString, IsNumber, Min, Max } from 'class-validator';
+import {
+  IsOptional,
+  IsString,
+  IsNumber,
+  Min,
+  Max,
+  MaxLength,
+} from 'class-validator';
 import { Type } from 'class-transformer';
 import { ApiPropertyOptional } from '@nestjs/swagger';
 
@@ -31,6 +38,7 @@ export class BlogQueryDto {
     description: 'Search by title, excerpt, or tags',
   })
   @IsString()
+  @MaxLength(100)
   @IsOptional()
   search?: string;
 

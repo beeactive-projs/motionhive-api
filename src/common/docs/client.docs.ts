@@ -97,8 +97,6 @@ export const ClientDocs = {
               displayName: 'Coach John',
               specializations: ['hiit', 'strength'],
               bio: 'Certified trainer with 8 years experience',
-              locationCity: 'Bucharest',
-              locationCountry: 'RO',
             },
           },
         ],

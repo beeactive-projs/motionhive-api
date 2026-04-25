@@ -234,11 +234,29 @@ export class SessionService {
 
     // Build the scheduledAt range constraint up-front so we don't have
     // to mutate a typed where clause field-by-field below.
+    //
+    // Cap the effective range at 180 days. Two attack shapes to block:
+    //   1. dateFrom=1900-01-01 & dateTo=2100-01-01  → huge explicit span.
+    //   2. dateFrom=1900-01-01 & dateTo omitted     → unbounded on the
+    //      lower side (to=now, so ~126-year span backwards).
+    // The implicit upper bound when dateTo is absent is `now`, so we
+    // check `from` against whichever upper bound we'll actually pass to
+    // the query.
+    const MAX_RANGE_MS = 180 * 24 * 60 * 60 * 1000;
+    const now = new Date();
+    const from = filters?.dateFrom ? new Date(filters.dateFrom) : now;
+    const to = filters?.dateTo ? new Date(filters.dateTo) : null;
+    const effectiveUpper = to ?? now;
+    if (effectiveUpper.getTime() - from.getTime() > MAX_RANGE_MS) {
+      throw new BadRequestException(
+        'Date range cannot exceed 180 days. Please narrow your search.',
+      );
+    }
     const scheduledAt: { [Op.gte]?: Date; [Op.lte]?: Date } = {
-      [Op.gte]: filters?.dateFrom ? new Date(filters.dateFrom) : new Date(),
+      [Op.gte]: from,
     };
-    if (filters?.dateTo) {
-      scheduledAt[Op.lte] = new Date(filters.dateTo);
+    if (to) {
+      scheduledAt[Op.lte] = to;
     }
 
     const term = filters?.search ? buildSearchTerm(filters.search) : null;
@@ -975,8 +993,15 @@ export class SessionService {
       await participant.update({ status: 'CANCELLED' }, { transaction });
       await transaction.commit();
 
-      // Notify instructor (fire-and-forget, outside transaction)
-      this.notifyInstructorOfJoinLeave(session, userId, 'left').catch(() => {});
+      // Notify instructor (fire-and-forget, outside transaction).
+      // Log on failure — silent drop buries real notification bugs.
+      this.notifyInstructorOfJoinLeave(session, userId, 'left').catch(
+        (err: unknown) =>
+          this.logger.warn(
+            `Failed to notify instructor of leave: ${(err as Error).message}`,
+            'SessionService',
+          ),
+      );
     } catch (error) {
       try {
         await transaction.rollback();
@@ -1107,7 +1132,7 @@ export class SessionService {
       await participant.update(updateData, { transaction });
       await transaction.commit();
 
-      // Notify participant of status change (fire-and-forget, outside transaction)
+      // Notify participant of status change (fire-and-forget, outside transaction).
       if (oldStatus !== dto.status && participant.user) {
         this.emailService
           .sendParticipantStatusEmail(
@@ -1117,7 +1142,12 @@ export class SessionService {
             dto.status,
             session.scheduledAt,
           )
-          .catch(() => {});
+          .catch((err: unknown) =>
+            this.logger.warn(
+              `Failed to send participant-status email: ${(err as Error).message}`,
+              'SessionService',
+            ),
+          );
       }
 
       return participant;
@@ -1164,7 +1194,12 @@ export class SessionService {
             instructorName,
             session.scheduledAt,
           )
-          .catch(() => {});
+          .catch((err: unknown) =>
+            this.logger.warn(
+              `Failed to email session-cancel notice to ${participant.user?.email}: ${(err as Error).message}`,
+              'SessionService',
+            ),
+          );
       }
     }
 

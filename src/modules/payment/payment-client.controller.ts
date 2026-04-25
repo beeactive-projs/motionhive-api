@@ -128,6 +128,24 @@ export class PaymentClientController {
   }
 
   /**
+   * Client-initiated cancel — always at-period-end. The client keeps
+   * access through the rest of the billing period they already paid
+   * for. Idempotent: cancelling an already-scheduled subscription is
+   * a no-op and returns the current state.
+   */
+  @Post('subscriptions/:id/cancel')
+  @UseGuards(RolesGuard)
+  @Roles('USER')
+  @Throttle({ default: { limit: 10, ttl: 3_600_000 } })
+  @ApiEndpoint(PaymentDocs.cancelMySubscription)
+  async cancelMySubscription(
+    @Request() req: AuthenticatedRequest,
+    @Param('id', new ParseUUIDPipe()) id: string,
+  ) {
+    return this.subscriptionService.cancelByClient(req.user.id, id);
+  }
+
+  /**
    * GET /payments/my/counts
    *
    * Lightweight count-only lookup for the profile tabs. Tells the

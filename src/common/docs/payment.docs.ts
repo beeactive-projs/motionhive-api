@@ -205,6 +205,23 @@ export const PaymentDocs = {
     responses: [{ status: 200, description: 'Invoice returned' }],
   } as ApiEndpointOptions,
 
+  updateInvoice: {
+    summary: 'Edit a draft invoice',
+    description:
+      'Replaces line items and/or due date / description on a DRAFT invoice. ' +
+      'Once an invoice is finalized (OPEN/PAID/VOID/UNCOLLECTIBLE) it can no ' +
+      'longer be edited — void it and create a new draft.',
+    auth: true,
+    responses: [
+      { status: 200, description: 'Invoice updated' },
+      {
+        status: 400,
+        description:
+          'Invoice is not a draft, due date in the past, or no fields supplied',
+      },
+    ],
+  } as ApiEndpointOptions,
+
   sendInvoice: {
     summary: 'Finalize and send an invoice',
     description:
@@ -257,6 +274,44 @@ export const PaymentDocs = {
     summary: 'List my subscriptions',
     auth: true,
     responses: [{ status: 200, description: 'Subscriptions listed' }],
+  } as ApiEndpointOptions,
+
+  getSubscription: {
+    summary: 'Get a single subscription',
+    description:
+      'Returns one subscription with eager-loaded client + plan ' +
+      'snapshots. 403 if the caller is not the issuing instructor.',
+    auth: true,
+    responses: [
+      { status: 200, description: 'Subscription returned' },
+      { status: 404, description: 'Subscription not found' },
+    ],
+  } as ApiEndpointOptions,
+
+  getSubscriptionSetupLink: {
+    summary: 'Mint a fresh card-setup link for an incomplete subscription',
+    description:
+      'Returns a Stripe-hosted Checkout URL where the client can save a ' +
+      'payment method. Once they do, the saved card becomes the default ' +
+      'and the subscription auto-activates. Returns `{ url: null }` when ' +
+      'the subscription is no longer INCOMPLETE.',
+    auth: true,
+    responses: [
+      { status: 201, description: 'Setup link returned' },
+      { status: 404, description: 'Subscription not found' },
+    ],
+  } as ApiEndpointOptions,
+
+  cancelMySubscription: {
+    summary: 'Cancel my subscription (client)',
+    description:
+      'Cancels at-period-end. The client keeps access through the rest ' +
+      'of the billing period they already paid for. Idempotent.',
+    auth: true,
+    responses: [
+      { status: 201, description: 'Cancellation scheduled' },
+      { status: 404, description: 'Subscription not found' },
+    ],
   } as ApiEndpointOptions,
 
   cancelSubscription: {

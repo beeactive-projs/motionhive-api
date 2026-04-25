@@ -9,9 +9,7 @@ import { InjectModel } from '@nestjs/sequelize';
 import { Sequelize } from 'sequelize-typescript';
 import { Op, Transaction, literal } from 'sequelize';
 import { WINSTON_MODULE_NEST_PROVIDER } from 'nest-winston';
-import { UserProfile } from './entities/user-profile.entity';
 import { InstructorProfile } from './entities/instructor-profile.entity';
-import { UpdateUserProfileDto } from './dto/update-user-profile.dto';
 import { CreateInstructorProfileDto } from './dto/create-instructor-profile.dto';
 import { UpdateInstructorProfileDto } from './dto/update-instructor-profile.dto';
 import { UpdateFullProfileDto } from './dto/update-full-profile.dto';
@@ -24,18 +22,18 @@ import { buildSearchTerm } from '../../common/utils/search.utils';
 /**
  * Profile Service
  *
- * Manages user and instructor profiles.
+ * Manages the instructor profile; the person's identity (name, email,
+ * country, city) lives on `user`. Prior to migration 027 this module
+ * also owned a `user_profile` table with health/fitness data, but no
+ * UI consumed it and it has been dropped.
  *
- * Key concepts:
- * - User profile is created automatically at registration
- * - Instructor profile is created when user activates "instruct activities"
- * - A user can have BOTH profiles (instructor who also joins other classes)
+ * Instructor location comes from `user.countryCode` / `user.city` now,
+ * not a duplicate on `instructor_profile`. Discovery queries therefore
+ * JOIN through the user row.
  */
 @Injectable()
 export class ProfileService {
   constructor(
-    @InjectModel(UserProfile)
-    private userProfileModel: typeof UserProfile,
     @InjectModel(InstructorProfile)
     private instructorProfileModel: typeof InstructorProfile,
     private sequelize: Sequelize,
@@ -46,50 +44,6 @@ export class ProfileService {
   ) {}
 
   // =====================================================
-  // USER PROFILE
-  // =====================================================
-
-  /**
-   * Create empty user profile (called during registration)
-   */
-  async createUserProfile(
-    userId: string,
-    transaction?: Transaction,
-  ): Promise<UserProfile> {
-    return this.userProfileModel.create({ userId: userId }, { transaction });
-  }
-
-  /**
-   * Get user profile for the authenticated user
-   */
-  async getUserProfile(userId: string): Promise<UserProfile | null> {
-    return this.userProfileModel.findOne({
-      where: { userId: userId },
-    });
-  }
-
-  /**
-   * Update user profile
-   *
-   * All fields are optional — user fills them progressively.
-   */
-  async updateUserProfile(
-    userId: string,
-    dto: UpdateUserProfileDto,
-  ): Promise<UserProfile> {
-    const profile = await this.userProfileModel.findOne({
-      where: { userId: userId },
-    });
-
-    if (!profile) {
-      throw new NotFoundException('User profile not found');
-    }
-
-    await profile.update(dto);
-    return profile;
-  }
-
-  // =====================================================
   // INSTRUCTOR PROFILE
   // =====================================================
 
@@ -97,13 +51,8 @@ export class ProfileService {
    * Create an instructor profile within an existing transaction.
    *
    * Used during registration when isInstructor=true, so the entire
-   * registration (user + user profile + instructor profile + roles) is
-   * atomic. The caller owns the transaction commit/rollback.
-   *
-   * @param userId - The newly created user's UUID
-   * @param firstName - Used as displayName fallback
-   * @param lastName - Used as displayName fallback
-   * @param transaction - The outer transaction to join
+   * registration (user + instructor profile + roles) is atomic. The
+   * caller owns the transaction commit/rollback.
    */
   async createInstructorProfileInTransaction(
     userId: string,
@@ -125,8 +74,6 @@ export class ProfileService {
         showSocialLinks: true,
         showEmail: true,
         showPhone: false,
-        locationCity: null,
-        locationCountry: null,
       },
       { transaction },
     );
@@ -152,7 +99,6 @@ export class ProfileService {
     userId: string,
     dto: CreateInstructorProfileDto,
   ): Promise<InstructorProfile> {
-    // Check if already has instructor profile
     const existing = await this.instructorProfileModel.findOne({
       where: { userId: userId },
     });
@@ -161,7 +107,6 @@ export class ProfileService {
       throw new ConflictException('Instructor profile already exists');
     }
 
-    // Wrap in transaction: create profile + assign role must both succeed
     const transaction = await this.sequelize.transaction();
     try {
       const profile = await this.instructorProfileModel.create(
@@ -178,13 +123,10 @@ export class ProfileService {
           showSocialLinks: dto.showSocialLinks ?? true,
           showEmail: dto.showEmail ?? true,
           showPhone: dto.showPhone ?? false,
-          locationCity: dto.locationCity ?? null,
-          locationCountry: dto.locationCountry ?? null,
         },
         { transaction },
       );
 
-      // Assign INSTRUCTOR role (global, not group-scoped yet)
       await this.roleService.assignRoleToUserByName(
         userId,
         'INSTRUCTOR',
@@ -207,9 +149,6 @@ export class ProfileService {
     }
   }
 
-  /**
-   * Get instructor profile for the authenticated user
-   */
   async getInstructorProfile(
     userId: string,
   ): Promise<InstructorProfile | null> {
@@ -218,15 +157,14 @@ export class ProfileService {
     });
   }
 
-  /**
-   * Update instructor profile
-   */
   async updateInstructorProfile(
     userId: string,
     dto: UpdateInstructorProfileDto,
+    transaction?: Transaction,
   ): Promise<InstructorProfile> {
     const profile = await this.instructorProfileModel.findOne({
       where: { userId: userId },
+      transaction,
     });
 
     if (!profile) {
@@ -235,7 +173,7 @@ export class ProfileService {
       );
     }
 
-    await profile.update(dto);
+    await profile.update(dto, { transaction });
     return profile;
   }
 
@@ -244,43 +182,45 @@ export class ProfileService {
   // =====================================================
 
   /**
-   * Update full profile (user + user profile + instructor) in one call
+   * Update full profile (user + instructor) in one call.
    *
-   * Only provided sections are updated. If a section is omitted, it's skipped.
+   * Only provided sections are updated; omitted sections are skipped.
+   * Country/city live on `user` — pass them via `account`.
+   *
+   * The account update, instructor update, and instructor activation
+   * (when going from "no instructor profile" to "wants to instruct")
+   * all run inside the SAME Sequelize-managed transaction. If any
+   * step fails the whole call rolls back, so callers never observe
+   * partial state.
    */
   async updateFullProfile(userId: string, dto: UpdateFullProfileDto) {
-    const results: {
-      account?: User;
-      fitnessProfile?: UserProfile;
-      instructor?: InstructorProfile;
-    } = {};
+    return this.sequelize.transaction(async (tx) => {
+      const results: {
+        account?: User;
+        instructor?: InstructorProfile;
+      } = {};
 
-    // Update core user fields
-    if (dto.account && Object.keys(dto.account).length > 0) {
-      results.account = await this.userService.updateUser(userId, dto.account);
-    }
+      if (dto.account && Object.keys(dto.account).length > 0) {
+        results.account = await this.userService.updateUser(
+          userId,
+          dto.account,
+          tx,
+        );
+      }
 
-    // Update user profile
-    if (dto.fitnessProfile && Object.keys(dto.fitnessProfile).length > 0) {
-      results.fitnessProfile = await this.updateUserProfile(
-        userId,
-        dto.fitnessProfile,
-      );
-    }
+      if (dto.instructor && Object.keys(dto.instructor).length > 0) {
+        const instProfile = await this.instructorProfileModel.findOne({
+          where: { userId },
+          transaction: tx,
+        });
 
-    // Update instructor profile
-    // If instructor profile doesn't exist yet, treat this as "become an instructor"
-    if (dto.instructor && Object.keys(dto.instructor).length > 0) {
-      const instProfile = await this.getInstructorProfile(userId);
-      if (!instProfile) {
-        const transaction = await this.sequelize.transaction();
-        try {
+        if (!instProfile) {
           const created = await this.instructorProfileModel.create(
             {
-              userId: userId,
+              userId,
               displayName: dto.instructor.displayName || null,
             },
-            { transaction },
+            { transaction: tx },
           );
 
           await this.roleService.assignRoleToUserByName(
@@ -288,38 +228,32 @@ export class ProfileService {
             'INSTRUCTOR',
             undefined,
             undefined,
-            transaction,
+            tx,
           );
 
-          // Apply the instructor fields in the same transaction
-          await created.update(dto.instructor, { transaction });
-
-          await transaction.commit();
+          await created.update(dto.instructor, { transaction: tx });
 
           this.logger.log(
             `User ${userId} activated instructor profile via PATCH /profile/me`,
             'ProfileService',
           );
-
           results.instructor = created;
-        } catch (error) {
-          await transaction.rollback();
-          throw error;
+        } else {
+          results.instructor = await this.updateInstructorProfile(
+            userId,
+            dto.instructor,
+            tx,
+          );
         }
-      } else {
-        results.instructor = await this.updateInstructorProfile(
-          userId,
-          dto.instructor,
-        );
       }
-    }
 
-    this.logger.log(
-      `Full profile updated for user ${userId} (sections: ${Object.keys(results).join(', ')})`,
-      'ProfileService',
-    );
+      this.logger.log(
+        `Full profile updated for user ${userId} (sections: ${Object.keys(results).join(', ')})`,
+        'ProfileService',
+      );
 
-    return results;
+      return results;
+    });
   }
 
   // =====================================================
@@ -327,32 +261,32 @@ export class ProfileService {
   // =====================================================
 
   /**
-   * Discover public instructor profiles
+   * Discover public instructor profiles.
    *
    * Returns paginated list of instructors who have set isPublic=true.
-   * Supports search by name/bio/specialization and filtering by city/country.
-   * Sorted by years of experience (most experienced first).
+   * City/country filters target `user` (the person's location) now,
+   * not a duplicate on instructor_profile.
    */
   async discoverInstructors(dto: DiscoverInstructorsDto) {
     const where: Record<string | symbol, unknown> = {};
+    const userWhere: Record<string | symbol, unknown> = {};
 
     if (dto.city) {
-      where.locationCity = { [Op.iLike]: buildSearchTerm(dto.city) };
+      userWhere.city = { [Op.iLike]: buildSearchTerm(dto.city) };
     }
 
     if (dto.country) {
-      where.locationCountry = dto.country;
+      userWhere.countryCode = dto.country.toUpperCase();
     }
 
-    // Search across name, profile, specializations and location
     if (dto.search) {
       const term = buildSearchTerm(dto.search);
       where[Op.or] = [
         { displayName: { [Op.iLike]: term } },
         { bio: { [Op.iLike]: term } },
-        { locationCity: { [Op.iLike]: term } },
         { '$user.first_name$': { [Op.iLike]: term } },
         { '$user.last_name$': { [Op.iLike]: term } },
+        { '$user.city$': { [Op.iLike]: term } },
         literal(
           `CAST("InstructorProfile"."specializations" AS TEXT) ILIKE ${this.sequelize.escape(term)}`,
         ),
@@ -364,7 +298,16 @@ export class ProfileService {
       include: [
         {
           model: User,
-          attributes: ['id', 'firstName', 'lastName', 'avatarId'],
+          attributes: [
+            'id',
+            'firstName',
+            'lastName',
+            'avatarId',
+            'city',
+            'countryCode',
+          ],
+          where: Object.keys(userWhere).length ? userWhere : undefined,
+          required: Object.keys(userWhere).length > 0,
         },
       ],
       subQuery: false,
@@ -376,8 +319,6 @@ export class ProfileService {
         'specializations',
         'yearsOfExperience',
         'isAcceptingClients',
-        'locationCity',
-        'locationCountry',
         'socialLinks',
         'showSocialLinks',
       ],
@@ -396,17 +337,14 @@ export class ProfileService {
       specializations: profile.specializations,
       yearsOfExperience: profile.yearsOfExperience,
       isAcceptingClients: profile.isAcceptingClients,
-      city: profile.locationCity,
-      country: profile.locationCountry,
+      city: profile.user?.city ?? null,
+      countryCode: profile.user?.countryCode ?? null,
       socialLinks: profile.showSocialLinks ? profile.socialLinks : null,
     }));
   }
 
   /**
-   * Get a public instructor profile by user ID
-   *
-   * Returns the instructor's public profile if isPublic is true.
-   * Used when a user clicks on an instructor from the discover list.
+   * Get a public instructor profile by user ID.
    */
   async getInstructorPublicProfile(instructorUserId: string) {
     const profile = await this.instructorProfileModel.findOne({
@@ -414,7 +352,14 @@ export class ProfileService {
       include: [
         {
           model: User,
-          attributes: ['id', 'firstName', 'lastName', 'avatarId'],
+          attributes: [
+            'id',
+            'firstName',
+            'lastName',
+            'avatarId',
+            'city',
+            'countryCode',
+          ],
         },
       ],
     });
@@ -437,8 +382,8 @@ export class ProfileService {
       certifications: profile.certifications,
       yearsOfExperience: profile.yearsOfExperience,
       isAcceptingClients: profile.isAcceptingClients,
-      city: profile.locationCity,
-      country: profile.locationCountry,
+      city: profile.user?.city ?? null,
+      countryCode: profile.user?.countryCode ?? null,
       socialLinks: profile.showSocialLinks ? profile.socialLinks : null,
       showEmail: profile.showEmail,
       showPhone: profile.showPhone,
@@ -450,10 +395,10 @@ export class ProfileService {
   // =====================================================
 
   /**
-   * Get complete profile overview
+   * Get complete profile overview.
    *
-   * Returns user data, roles, and both profiles.
-   * The frontend uses this to know what UI to show.
+   * Returns the account + roles + instructor profile (if any). The
+   * historical `fitnessProfile` section is gone — see migration 027.
    */
   async getProfileOverview(
     user: Pick<
@@ -469,10 +414,11 @@ export class ProfileService {
       | 'timezone'
       | 'isEmailVerified'
       | 'createdAt'
+      | 'countryCode'
+      | 'city'
     >,
   ) {
-    const [userProfile, instructorProfile, roles] = await Promise.all([
-      this.getUserProfile(user.id),
+    const [instructorProfile, roles] = await Promise.all([
       this.getInstructorProfile(user.id),
       this.roleService.getUserRoles(user.id),
     ]);
@@ -490,23 +436,11 @@ export class ProfileService {
         timezone: user.timezone,
         isEmailVerified: user.isEmailVerified,
         createdAt: user.createdAt,
+        countryCode: user.countryCode,
+        city: user.city,
       },
       roles: roles.map((r) => r.name),
       hasInstructorProfile: !!instructorProfile,
-      fitnessProfile: userProfile
-        ? {
-            dateOfBirth: userProfile.dateOfBirth,
-            gender: userProfile.gender,
-            heightCm: userProfile.heightCm,
-            weightKg: userProfile.weightKg,
-            fitnessLevel: userProfile.fitnessLevel,
-            goals: userProfile.goals ?? [],
-            medicalConditions: userProfile.medicalConditions ?? [],
-            emergencyContactName: userProfile.emergencyContactName,
-            emergencyContactPhone: userProfile.emergencyContactPhone,
-            notes: userProfile.notes,
-          }
-        : null,
       instructorProfile: instructorProfile
         ? {
             displayName: instructorProfile.displayName,
@@ -516,8 +450,6 @@ export class ProfileService {
             yearsOfExperience: instructorProfile.yearsOfExperience,
             isAcceptingClients: instructorProfile.isAcceptingClients,
             socialLinks: instructorProfile.socialLinks,
-            locationCity: instructorProfile.locationCity,
-            locationCountry: instructorProfile.locationCountry,
           }
         : null,
     };

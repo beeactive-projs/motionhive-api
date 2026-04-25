@@ -18,6 +18,7 @@ import { Invoice, InvoiceStatus } from '../entities/invoice.entity';
 import { Payment, PaymentStatus } from '../entities/payment.entity';
 import { StripeAccount } from '../entities/stripe-account.entity';
 import { StripeCustomer } from '../entities/stripe-customer.entity';
+import { Subscription } from '../entities/subscription.entity';
 import { User } from '../../user/entities/user.entity';
 import { StripeService } from './stripe.service';
 import { CustomerService } from './customer.service';
@@ -70,6 +71,10 @@ export class InvoiceService {
     private readonly stripeAccountModel: typeof StripeAccount,
     @InjectModel(StripeCustomer)
     private readonly stripeCustomerModel: typeof StripeCustomer,
+    @InjectModel(Subscription)
+    private readonly subscriptionModel: typeof Subscription,
+    @InjectModel(User)
+    private readonly userModel: typeof User,
     private readonly sequelize: Sequelize,
     private readonly stripeService: StripeService,
     private readonly customerService: CustomerService,
@@ -176,15 +181,7 @@ export class InvoiceService {
     // friendly 400 so we don't waste a Stripe round-trip + void a local
     // row for a preventable input error.
     if (dto.dueDate) {
-      const due = new Date(dto.dueDate);
-      if (Number.isNaN(due.getTime())) {
-        throw new BadRequestException('Invalid due date.');
-      }
-      const today = new Date();
-      today.setHours(0, 0, 0, 0);
-      if (due.getTime() < today.getTime()) {
-        throw new BadRequestException('Due date cannot be in the past.');
-      }
+      this.assertDueDateNotPast(dto.dueDate);
     }
 
     const account = await this.stripeAccountModel.findOne({
@@ -201,7 +198,12 @@ export class InvoiceService {
       );
     }
 
-    const currency = (dto.currency ?? 'RON').toLowerCase();
+    const instructorUser = await this.userModel.findByPk(instructorId);
+    const currency = this.stripeService.resolveCurrency({
+      explicit: dto.currency,
+      accountCurrency: account.defaultCurrency,
+      countryCode: instructorUser?.countryCode,
+    });
     const totalCents = dto.lineItems.reduce(
       (sum, line) => sum + line.amountCents * (line.quantity ?? 1),
       0,
@@ -346,6 +348,166 @@ export class InvoiceService {
       });
       throw err;
     }
+  }
+
+  /**
+   * Update a DRAFT invoice in place.
+   *
+   * Stripe's data model: invoice metadata (`due_date`, `description`) is
+   * mutable on a draft via `invoices.update`; line items are separate
+   * `invoiceitem` objects that can only be added/removed individually
+   * (no batch replace). For correctness we list every existing item on
+   * the draft and delete them, then re-create the full set from the
+   * incoming DTO. That keeps the invoice consistent even if a previous
+   * edit half-failed and left orphan items behind.
+   *
+   * Status guard: any state past DRAFT is rejected. Once an invoice is
+   * finalized/sent (OPEN/PAID/VOID/UNCOLLECTIBLE) the line items are
+   * frozen on Stripe — there is no API to change them. The right move
+   * for users is "void + create new", which the UI will surface.
+   *
+   * Idempotency: the new line items use a deterministic key
+   * `invoice_item:<row.id>:edit_<editVersion>_line_<i>`. We bump
+   * `editVersion` (derived from the call timestamp) so re-issuing the
+   * same edit retries cleanly via Stripe's idempotency layer, but two
+   * *different* edits in flight don't collide on the same key.
+   */
+  async updateDraft(
+    instructorId: string,
+    invoiceId: string,
+    dto: {
+      lineItems?: {
+        description: string;
+        amountCents: number;
+        quantity?: number;
+      }[];
+      dueDate?: string;
+      description?: string;
+    },
+  ): Promise<InvoiceResponse> {
+    if (
+      !dto.lineItems &&
+      dto.dueDate === undefined &&
+      dto.description === undefined
+    ) {
+      throw new BadRequestException(
+        'Provide at least one of lineItems, dueDate, or description.',
+      );
+    }
+
+    if (dto.dueDate) {
+      this.assertDueDateNotPast(dto.dueDate);
+    }
+
+    const invoice = await this.requireOwnedInvoice(instructorId, invoiceId);
+    if (invoice.status !== InvoiceStatus.DRAFT) {
+      throw new BadRequestException(
+        'Only draft invoices can be edited. Void this invoice and create a new one to make changes.',
+      );
+    }
+    const stripeInvoiceId = this.requireStripeInvoiceId(invoice);
+
+    // Recompute the fee in case line-item totals changed. Read account
+    // fresh because admins can adjust fee bps live.
+    const account = await this.stripeAccountModel.findOne({
+      where: { userId: instructorId },
+    });
+    if (!account) {
+      throw new UnprocessableEntityException(
+        'Stripe account is no longer available for this instructor.',
+      );
+    }
+    const feeBps = account.platformFeeBps ?? 0;
+
+    const editVersion = Date.now();
+
+    // 1. If line items changed, swap them on Stripe (delete then recreate).
+    if (dto.lineItems) {
+      const existing = await this.stripeService.stripe.invoiceItems.list({
+        invoice: stripeInvoiceId,
+        limit: 100,
+      });
+      for (const item of existing.data) {
+        await this.stripeService.stripe.invoiceItems.del(item.id);
+      }
+
+      const currency = invoice.currency.toLowerCase();
+      for (let i = 0; i < dto.lineItems.length; i++) {
+        const line = dto.lineItems[i];
+        await this.stripeService.stripe.invoiceItems.create(
+          {
+            customer: invoice.stripeCustomerId,
+            invoice: stripeInvoiceId,
+            amount: line.amountCents * (line.quantity ?? 1),
+            currency,
+            description: line.description,
+          },
+          {
+            idempotencyKey: this.stripeService.buildIdempotencyKey(
+              'invoice_item',
+              invoice.id,
+              `edit_${editVersion}_line_${i}`,
+            ),
+          },
+        );
+      }
+    }
+
+    // 2. Update invoice metadata (due_date, description, fee). Recompute
+    //    `application_fee_amount` from the *new* total — Stripe rejects
+    //    `application_fee_amount` higher than the invoice total.
+    const newTotalCents = dto.lineItems
+      ? dto.lineItems.reduce(
+          (sum, line) => sum + line.amountCents * (line.quantity ?? 1),
+          0,
+        )
+      : invoice.amountDueCents;
+    const feeParams = this.stripeService.buildFeeParams(newTotalCents, feeBps);
+
+    const updateParams: Stripe.InvoiceUpdateParams = {
+      ...feeParams,
+    };
+    if (dto.dueDate) {
+      // Note: this DTO can't send "" or null — IsOptional + IsDateString
+      // means we either get an ISO string or nothing. So this branch
+      // only sets a new due date; we never have to "clear" one back to
+      // the days_until_due fallback.
+      updateParams.due_date = Math.floor(
+        new Date(dto.dueDate).getTime() / 1000,
+      );
+    }
+    if (dto.description !== undefined) {
+      updateParams.description = dto.description || undefined;
+    }
+
+    await this.stripeService.stripe.invoices.update(
+      stripeInvoiceId,
+      updateParams,
+    );
+
+    // 3. Sync local row from the truth on Stripe. We re-fetch instead of
+    //    optimistically writing because Stripe is the source of truth
+    //    for amount totals (line-item taxes/coupons/etc. could shift
+    //    things in the future).
+    const fresh =
+      await this.stripeService.stripe.invoices.retrieve(stripeInvoiceId);
+    invoice.amountDueCents = fresh.amount_due ?? newTotalCents;
+    invoice.amountRemainingCents = fresh.amount_remaining ?? newTotalCents;
+    invoice.applicationFeeCents = feeParams.application_fee_amount ?? 0;
+    if (dto.dueDate !== undefined) {
+      invoice.dueDate = dto.dueDate ? new Date(dto.dueDate) : null;
+    }
+    if (dto.description !== undefined) {
+      invoice.description = dto.description || null;
+    }
+    await invoice.save();
+
+    this.logger.log(
+      `Invoice ${invoice.id} (stripe ${stripeInvoiceId}) edited by instructor ${instructorId}`,
+      'InvoiceService',
+    );
+
+    return this.enrich(invoice);
   }
 
   async listMine(
@@ -729,11 +891,37 @@ export class InvoiceService {
     stripeInvoice: Stripe.Invoice,
     tx: Transaction,
   ): Promise<Invoice | null> {
-    const local = await this.invoiceModel.findOne({
+    let local = await this.invoiceModel.findOne({
       where: { stripeInvoiceId: stripeInvoice.id },
       transaction: tx,
     });
-    if (!local) return null;
+
+    // SUBSCRIPTION-INVOICE INGESTION
+    // Stripe creates these for us automatically — one per billing
+    // cycle, plus the activation invoice when a subscription is set
+    // up. They never go through our `createOneOff` path, so they have
+    // no local row by default. Without this lazy-create branch they
+    // would be invisible to clients and instructors forever.
+    //
+    // We identify the originating subscription via:
+    //   1. Our own `beeactive_subscription_id` metadata (set on every
+    //      sub we create — most reliable).
+    //   2. Fallback: `parent.subscription_details.subscription` (Dahlia
+    //      API; older API versions surfaced this at `invoice.subscription`
+    //      — we check both for forward/back compat).
+    if (!local) {
+      const localSub = await this.findLocalSubFromInvoice(stripeInvoice, tx);
+      if (localSub) {
+        local = await this.createInvoiceRowFromSubscription(
+          stripeInvoice,
+          localSub,
+          tx,
+        );
+      } else {
+        // Truly orphan — log once and ignore.
+        return null;
+      }
+    }
 
     const wasPaid = local.status === InvoiceStatus.PAID;
 
@@ -851,6 +1039,137 @@ export class InvoiceService {
       throw new ForbiddenException('You do not own this invoice.');
     }
     return invoice;
+  }
+
+  /**
+   * Locate our local Subscription row from a Stripe Invoice payload.
+   * Tries metadata first (set by us on every subscription we create),
+   * then the Dahlia and pre-Dahlia subscription pointer locations.
+   * Returns null if the invoice doesn't belong to a subscription we
+   * track (e.g. created directly in the Stripe Dashboard).
+   */
+  private async findLocalSubFromInvoice(
+    stripeInvoice: Stripe.Invoice,
+    tx: Transaction,
+  ): Promise<Subscription | null> {
+    // Cast to a permissive shape — Stripe SDK types lag the live API.
+    const raw = stripeInvoice as unknown as {
+      subscription?: string | null;
+      parent?: {
+        subscription_details?: { subscription?: string | null } | null;
+      } | null;
+      metadata?: Record<string, string> | null;
+      lines?: { data?: { metadata?: Record<string, string> | null }[] };
+    };
+
+    const fromInvoiceMeta = raw.metadata?.beeactive_subscription_id;
+    const fromLineMeta =
+      raw.lines?.data?.[0]?.metadata?.beeactive_subscription_id;
+    const localSubId = fromInvoiceMeta ?? fromLineMeta;
+    if (localSubId) {
+      const sub = await this.subscriptionModel.findByPk(localSubId, {
+        transaction: tx,
+      });
+      if (sub) return sub;
+    }
+
+    const stripeSubId =
+      raw.parent?.subscription_details?.subscription ??
+      raw.subscription ??
+      null;
+    if (stripeSubId) {
+      return this.subscriptionModel.findOne({
+        where: { stripeSubscriptionId: stripeSubId },
+        transaction: tx,
+      });
+    }
+    return null;
+  }
+
+  /**
+   * Materialize a local invoice row for a subscription-generated
+   * Stripe invoice we hadn't seen before. The caller (sync) then
+   * applies the rest of the field updates as if the row had always
+   * existed.
+   */
+  private async createInvoiceRowFromSubscription(
+    stripeInvoice: Stripe.Invoice,
+    sub: Subscription,
+    tx: Transaction,
+  ): Promise<Invoice> {
+    const status = this.mapStripeInvoiceStatus(
+      stripeInvoice.status,
+      InvoiceStatus.DRAFT,
+    );
+    return this.invoiceModel.create(
+      {
+        instructorId: sub.instructorId,
+        clientId: sub.clientId,
+        stripeCustomerId: sub.stripeCustomerId,
+        stripeInvoiceId: stripeInvoice.id ?? null,
+        subscriptionId: sub.id,
+        number: stripeInvoice.number ?? null,
+        status,
+        amountDueCents: stripeInvoice.amount_due ?? sub.amountCents,
+        amountPaidCents: stripeInvoice.amount_paid ?? 0,
+        amountRemainingCents:
+          stripeInvoice.amount_remaining ?? stripeInvoice.amount_due ?? 0,
+        currency: (stripeInvoice.currency ?? sub.currency).toUpperCase(),
+        applicationFeeCents:
+          (stripeInvoice as unknown as { application_fee_amount?: number })
+            .application_fee_amount ?? 0,
+        dueDate: stripeInvoice.due_date
+          ? new Date(stripeInvoice.due_date * 1000)
+          : null,
+        finalizedAt: ['open', 'paid', 'uncollectible'].includes(
+          stripeInvoice.status ?? '',
+        )
+          ? new Date()
+          : null,
+        paidAt: stripeInvoice.status === 'paid' ? new Date() : null,
+        voidedAt: null,
+        hostedInvoiceUrl: stripeInvoice.hosted_invoice_url ?? null,
+        invoicePdf: stripeInvoice.invoice_pdf ?? null,
+        paidOutOfBand: false,
+        description: null,
+        metadata: null,
+        // Subscription-generated invoices don't go through our EU
+        // waiver UI (the consent was given when the subscription was
+        // accepted), so the flag stays off.
+        requiresImmediateAccessWaiver: false,
+        waiverAcceptedAt: null,
+      },
+      { transaction: tx },
+    );
+  }
+
+  /**
+   * Validate that a due-date string isn't in the past. Throws 400 on
+   * unparseable input and on past dates.
+   *
+   * Why we use UTC midnight on BOTH sides:
+   *   ISO date-only strings (e.g. "2026-04-25" — what the DTO emits)
+   *   parse as UTC midnight via `new Date(...)`.
+   *   `new Date(); setHours(0,0,0,0)` produces *local* midnight, which
+   *   differs from UTC midnight by the server's timezone offset.
+   *   For a server in UTC- (Americas), local midnight is AHEAD of UTC
+   *   midnight, so today's-date inputs would be rejected as "past".
+   *   Comparing UTC-to-UTC eliminates that drift entirely.
+   */
+  private assertDueDateNotPast(dueDateInput: string): void {
+    const due = new Date(dueDateInput);
+    if (Number.isNaN(due.getTime())) {
+      throw new BadRequestException('Invalid due date.');
+    }
+    const now = new Date();
+    const todayUtcMs = Date.UTC(
+      now.getUTCFullYear(),
+      now.getUTCMonth(),
+      now.getUTCDate(),
+    );
+    if (due.getTime() < todayUtcMs) {
+      throw new BadRequestException('Due date cannot be in the past.');
+    }
   }
 
   /**

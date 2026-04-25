@@ -10,6 +10,8 @@
  * All templates use the base layout for consistent branding.
  */
 
+import { escapeHtml } from '../utils/html.utils';
+
 // =====================================================
 // BRAND COLORS (from MotionHive UI)
 // =====================================================
@@ -252,8 +254,9 @@ export function welcomeTemplate(
   firstName: string,
   frontendUrl: string,
 ): string {
+  const safeFirstName = escapeHtml(firstName);
   const content = `
-    ${heading(`Welcome, ${firstName}! &#9889;`)}
+    ${heading(`Welcome, ${safeFirstName}! &#9889;`)}
     ${subheading("You're all set to start your journey towards a healthier and more active lifestyle")}
     ${paragraph("Your MotionHive account is ready. Here's what you can do:")}
 
@@ -268,7 +271,7 @@ export function welcomeTemplate(
     ${paragraph("Need help? Just reply to this email — we're happy to assist.")}
   `;
 
-  return baseLayout(content, `Welcome to MotionHive, ${firstName}!`);
+  return baseLayout(content, `Welcome to MotionHive, ${safeFirstName}!`);
 }
 
 export function passwordResetTemplate(resetLink: string): string {
@@ -290,13 +293,16 @@ export function invitationTemplate(
   acceptLink: string,
   message?: string,
 ): string {
+  const safeInviter = escapeHtml(inviterName);
+  const safeGroup = escapeHtml(groupName);
+  const safeMessage = escapeHtml(message);
   const messageBlock = message
     ? `
       <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:16px 0 24px;">
         <tr>
           <td style="background-color:#f8fafc;border-radius:8px;padding:16px 20px;border-left:4px solid ${COLORS.accent};">
             <p style="margin:0 0 4px;font-size:12px;color:${COLORS.textMuted};text-transform:uppercase;letter-spacing:0.5px;">Personal message</p>
-            <p style="margin:0;font-size:15px;color:${COLORS.textBody};font-style:italic;line-height:1.5;">"${message}"</p>
+            <p style="margin:0;font-size:15px;color:${COLORS.textBody};font-style:italic;line-height:1.5;">"${safeMessage}"</p>
           </td>
         </tr>
       </table>`
@@ -304,19 +310,19 @@ export function invitationTemplate(
 
   const content = `
     ${heading("You're invited!")}
-    ${subheading(`${inviterName} wants you to join their team`)}
-    ${paragraph(`<strong>${inviterName}</strong> has invited you to join <strong>${groupName}</strong> on MotionHive — a fitness platform for instructors and clients.`)}
+    ${subheading(`${safeInviter} wants you to join their team`)}
+    ${paragraph(`<strong>${safeInviter}</strong> has invited you to join <strong>${safeGroup}</strong> on MotionHive — a fitness platform for instructors and clients.`)}
     ${messageBlock}
     ${primaryButton('&#129309; Accept invitation', acceptLink)}
     ${divider()}
     <p style="margin:0 0 16px;font-size:14px;color:${COLORS.textBody};line-height:1.5;">
-      By accepting, you'll be added as a member of <strong>${groupName}</strong> and can start joining training sessions.
+      By accepting, you'll be added as a member of <strong>${safeGroup}</strong> and can start joining training sessions.
     </p>
     ${expiryNote('This invitation expires in <strong>7 days</strong>.')}
     ${securityNote("If you don't know the person who sent this, you can safely ignore this email.")}
   `;
 
-  return baseLayout(content, `${inviterName} invited you to join ${groupName}`);
+  return baseLayout(content, `${safeInviter} invited you to join ${safeGroup}`);
 }
 
 export function sessionCancelledTemplate(
@@ -325,6 +331,10 @@ export function sessionCancelledTemplate(
   instructorName: string,
   scheduledAt: string,
 ): string {
+  const safeParticipant = escapeHtml(participantName);
+  const safeTitle = escapeHtml(sessionTitle);
+  const safeInstructor = escapeHtml(instructorName);
+  const safeScheduled = escapeHtml(scheduledAt);
   const content = `
     ${heading('Session cancelled')}
     ${subheading(`A session you were registered for has been cancelled`)}
@@ -332,19 +342,19 @@ export function sessionCancelledTemplate(
     <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:0 0 24px;">
       <tr>
         <td style="background-color:#fef2f2;border-radius:8px;padding:20px;border-left:4px solid #ef4444;">
-          <p style="margin:0 0 8px;font-size:16px;font-weight:600;color:#991b1b;">${sessionTitle}</p>
-          <p style="margin:0 0 4px;font-size:14px;color:#7f1d1d;">Instructor: ${instructorName}</p>
-          <p style="margin:0;font-size:14px;color:#7f1d1d;">Scheduled: ${scheduledAt}</p>
+          <p style="margin:0 0 8px;font-size:16px;font-weight:600;color:#991b1b;">${safeTitle}</p>
+          <p style="margin:0 0 4px;font-size:14px;color:#7f1d1d;">Instructor: ${safeInstructor}</p>
+          <p style="margin:0;font-size:14px;color:#7f1d1d;">Scheduled: ${safeScheduled}</p>
         </td>
       </tr>
     </table>
 
-    ${paragraph(`Hi ${participantName}, the instructor has cancelled this session. We apologize for any inconvenience.`)}
+    ${paragraph(`Hi ${safeParticipant}, the instructor has cancelled this session. We apologize for any inconvenience.`)}
     ${divider()}
     ${paragraph('You can browse other available sessions on the platform.')}
   `;
 
-  return baseLayout(content, `Session "${sessionTitle}" has been cancelled`);
+  return baseLayout(content, `Session "${safeTitle}" has been cancelled`);
 }
 
 export function invitationAcceptedTemplate(
@@ -352,17 +362,20 @@ export function invitationAcceptedTemplate(
   accepterName: string,
   groupName: string,
 ): string {
+  const safeInviter = escapeHtml(inviterName);
+  const safeAccepter = escapeHtml(accepterName);
+  const safeGroup = escapeHtml(groupName);
   const content = `
     ${heading('Invitation accepted!')}
     ${subheading(`Great news — someone joined your group`)}
-    ${paragraph(`Hi ${inviterName}, <strong>${accepterName}</strong> has accepted your invitation and joined <strong>${groupName}</strong>.`)}
+    ${paragraph(`Hi ${safeInviter}, <strong>${safeAccepter}</strong> has accepted your invitation and joined <strong>${safeGroup}</strong>.`)}
     ${divider()}
     ${paragraph('You can view your group members in the MotionHive app.')}
   `;
 
   return baseLayout(
     content,
-    `${accepterName} accepted your invitation to ${groupName}`,
+    `${safeAccepter} accepted your invitation to ${safeGroup}`,
   );
 }
 
@@ -372,13 +385,20 @@ export function participantStatusTemplate(
   newStatus: string,
   scheduledAt: string,
 ): string {
+  const safeParticipant = escapeHtml(participantName);
+  const safeTitle = escapeHtml(sessionTitle);
+  const safeScheduled = escapeHtml(scheduledAt);
   const statusLabels: Record<string, string> = {
     CONFIRMED: 'confirmed',
     CANCELLED: 'cancelled',
     ATTENDED: 'marked as attended',
     NO_SHOW: 'marked as no-show',
   };
-  const statusLabel = statusLabels[newStatus] || newStatus.toLowerCase();
+  // newStatus is an internal enum, not user-controlled, but still
+  // escape as defense-in-depth.
+  const statusLabel = escapeHtml(
+    statusLabels[newStatus] || newStatus.toLowerCase(),
+  );
 
   const content = `
     ${heading('Session status update')}
@@ -387,21 +407,21 @@ export function participantStatusTemplate(
     <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:0 0 24px;">
       <tr>
         <td style="background-color:#f8fafc;border-radius:8px;padding:20px;border-left:4px solid ${COLORS.accent};">
-          <p style="margin:0 0 8px;font-size:16px;font-weight:600;color:${COLORS.textDark};">${sessionTitle}</p>
-          <p style="margin:0 0 4px;font-size:14px;color:${COLORS.textBody};">Scheduled: ${scheduledAt}</p>
+          <p style="margin:0 0 8px;font-size:16px;font-weight:600;color:${COLORS.textDark};">${safeTitle}</p>
+          <p style="margin:0 0 4px;font-size:14px;color:${COLORS.textBody};">Scheduled: ${safeScheduled}</p>
           <p style="margin:0;font-size:14px;color:${COLORS.textBody};">Status: <strong>${statusLabel}</strong></p>
         </td>
       </tr>
     </table>
 
-    ${paragraph(`Hi ${participantName}, your registration for this session has been ${statusLabel} by the instructor.`)}
+    ${paragraph(`Hi ${safeParticipant}, your registration for this session has been ${statusLabel} by the instructor.`)}
   `;
 
   return baseLayout(content, `Your session status has been updated`);
 }
 
 export function waitlistConfirmationTemplate(name?: string): string {
-  const greeting = name ? `Hi ${name},` : 'Hi there,';
+  const greeting = name ? `Hi ${escapeHtml(name)},` : 'Hi there,';
 
   const content = `
     ${heading("You're on the list! &#127881;")}
@@ -435,19 +455,21 @@ export function feedbackConfirmationTemplate(
   title: string,
   name?: string,
 ): string {
-  const greeting = name ? `Hi ${name},` : 'Hi there,';
-  const typeLabel = type.charAt(0).toUpperCase() + type.slice(1);
+  const safeTitle = escapeHtml(title);
+  const safeType = escapeHtml(type);
+  const greeting = name ? `Hi ${escapeHtml(name)},` : 'Hi there,';
+  const typeLabel = escapeHtml(type.charAt(0).toUpperCase() + type.slice(1));
 
   const content = `
     ${heading('Feedback received &#9989;')}
     ${subheading('We appreciate you taking the time to write to us')}
-    ${paragraph(`${greeting} thank you for your ${type}. Every piece of feedback helps us build a better platform.`)}
+    ${paragraph(`${greeting} thank you for your ${safeType}. Every piece of feedback helps us build a better platform.`)}
 
     <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:16px 0 24px;">
       <tr>
         <td style="background-color:${COLORS.cardBg};border:1px solid ${COLORS.cardBorder};border-radius:8px;padding:16px 20px;">
           <p style="margin:0 0 4px;font-size:12px;color:${COLORS.textMuted};text-transform:uppercase;letter-spacing:0.5px;">Your ${typeLabel}</p>
-          <p style="margin:0;font-size:15px;font-weight:600;color:${COLORS.textDark};line-height:1.4;">${title}</p>
+          <p style="margin:0;font-size:15px;font-weight:600;color:${COLORS.textDark};line-height:1.4;">${safeTitle}</p>
         </td>
       </tr>
     </table>
@@ -472,6 +494,11 @@ export function sessionReminderTemplate(
   location: string,
 ): string {
   // TODO: [JOB SYSTEM] This template is ready — wire it up when the reminder job system is built
+  const safeParticipant = escapeHtml(participantName);
+  const safeTitle = escapeHtml(sessionTitle);
+  const safeInstructor = escapeHtml(instructorName);
+  const safeScheduled = escapeHtml(scheduledAt);
+  const safeLocation = escapeHtml(location);
   const content = `
     ${heading('Session reminder')}
     ${subheading("Don't forget — your session is coming up!")}
@@ -479,20 +506,20 @@ export function sessionReminderTemplate(
     <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:0 0 24px;">
       <tr>
         <td style="background-color:#f0fdf4;border-radius:8px;padding:20px;border-left:4px solid ${COLORS.green};">
-          <p style="margin:0 0 8px;font-size:18px;font-weight:600;color:#166534;">${sessionTitle}</p>
+          <p style="margin:0 0 8px;font-size:18px;font-weight:600;color:#166534;">${safeTitle}</p>
           <table role="presentation" cellpadding="0" cellspacing="0">
-            ${featureItem('&#128197;', `<strong>When:</strong> ${scheduledAt}`)}
-            ${featureItem('&#128205;', `<strong>Where:</strong> ${location}`)}
-            ${featureItem('&#128100;', `<strong>Instructor:</strong> ${instructorName}`)}
+            ${featureItem('&#128197;', `<strong>When:</strong> ${safeScheduled}`)}
+            ${featureItem('&#128205;', `<strong>Where:</strong> ${safeLocation}`)}
+            ${featureItem('&#128100;', `<strong>Instructor:</strong> ${safeInstructor}`)}
           </table>
         </td>
       </tr>
     </table>
 
-    ${paragraph(`Hi ${participantName}, get ready for your upcoming session!`)}
+    ${paragraph(`Hi ${safeParticipant}, get ready for your upcoming session!`)}
   `;
 
-  return baseLayout(content, `Reminder: "${sessionTitle}" is coming up`);
+  return baseLayout(content, `Reminder: "${safeTitle}" is coming up`);
 }
 
 /**
@@ -523,13 +550,19 @@ export function invoiceSendTemplate(params: {
     recipientName,
   } = params;
 
-  const greeting = recipientName ? `Hi ${recipientName},` : 'Hi there,';
-  const numberLine = invoiceNumber ? ` (${invoiceNumber})` : '';
+  const safeInstructor = escapeHtml(instructorName);
+  const safeAmount = escapeHtml(amountLabel);
+  const safeDue = escapeHtml(dueDateLabel);
+  const safeNumber = escapeHtml(invoiceNumber);
+  const greeting = recipientName
+    ? `Hi ${escapeHtml(recipientName)},`
+    : 'Hi there,';
+  const numberLine = invoiceNumber ? ` (${safeNumber})` : '';
 
   const content = `
     ${heading('You have a new invoice')}
-    ${subheading(`${instructorName} sent you an invoice on MotionHive`)}
-    ${paragraph(`${greeting} ${instructorName} has issued you invoice${numberLine} for <strong>${amountLabel}</strong>${dueDateLabel ? `, due <strong>${dueDateLabel}</strong>` : ''}.`)}
+    ${subheading(`${safeInstructor} sent you an invoice on MotionHive`)}
+    ${paragraph(`${greeting} ${safeInstructor} has issued you invoice${numberLine} for <strong>${safeAmount}</strong>${dueDateLabel ? `, due <strong>${safeDue}</strong>` : ''}.`)}
 
     ${primaryButton('View &amp; pay invoice', hostedInvoiceUrl)}
 
@@ -548,7 +581,118 @@ export function invoiceSendTemplate(params: {
 
   return baseLayout(
     content,
-    `${instructorName} sent you an invoice for ${amountLabel}`,
+    `${safeInstructor} sent you an invoice for ${safeAmount}`,
     "You're receiving this because an invoice was sent to this address on MotionHive.",
+  );
+}
+
+/**
+ * Sent to a client when their trainer sets up a recurring membership.
+ *
+ * Always-confirm policy: every new subscription requires the client to
+ * explicitly confirm — even if they have a card on file from a prior
+ * one. The link points at the first invoice's Stripe-hosted page,
+ * which shows the plan name + amount + cycle and lets them confirm
+ * with a saved card or a new one. Once they pay, Stripe activates the
+ * subscription. See SECURITY_NOTES.md for the rationale.
+ */
+export function subscriptionSetupTemplate(params: {
+  instructorName: string;
+  planName: string;
+  amountLabel: string;
+  cycleLabel: string | null;
+  setupUrl: string; // kept named `setupUrl` for back-compat; this is the confirmation URL
+  recipientName?: string | null;
+}): string {
+  const {
+    instructorName,
+    planName,
+    amountLabel,
+    cycleLabel,
+    setupUrl,
+    recipientName,
+  } = params;
+
+  const safeInstructor = escapeHtml(instructorName);
+  const safePlan = escapeHtml(planName);
+  const safeAmount = escapeHtml(amountLabel);
+  const safeCycle = escapeHtml(cycleLabel);
+  const greeting = recipientName
+    ? `Hi ${escapeHtml(recipientName)},`
+    : 'Hi there,';
+  const cyclePhrase = cycleLabel ? ` ${safeCycle}` : '';
+
+  const content = `
+    ${heading('Confirm your membership')}
+    ${subheading(`${safeInstructor} set up a recurring plan for you`)}
+    ${paragraph(`${greeting} ${safeInstructor} created a <strong>${safePlan}</strong> membership for you on MotionHive.`)}
+    ${paragraph(`<strong>${safeAmount}</strong>${cyclePhrase ? `, billed ${cyclePhrase}` : ''}.`)}
+    ${paragraph("Click below to confirm and start your membership. You'll be able to use a saved card or enter a new one — and you can cancel any time from your account.")}
+
+    ${primaryButton('Confirm and start membership', setupUrl)}
+
+    ${divider()}
+    ${paragraph("If you weren't expecting this, you can ignore this email — nothing is charged until you confirm. Payment is handled securely by Stripe.")}
+  `;
+
+  return baseLayout(
+    content,
+    `${safeInstructor} set up a ${safePlan} membership — confirm to start`,
+    "You're receiving this because a trainer set up a membership for this address on MotionHive. Nothing is charged until you confirm.",
+  );
+}
+
+/**
+ * Sent to BOTH parties when a coaching collaboration ends — either the
+ * client leaves the trainer or the trainer archives the client. The
+ * `endedBy` flag picks the right copy: "you ended" vs "they ended".
+ *
+ * Active subscriptions are NOT auto-cancelled by ending the
+ * collaboration, so we mention that to set the right expectation.
+ */
+export function collaborationEndedTemplate(params: {
+  recipientName: string | null;
+  otherPartyName: string;
+  endedBy: 'self' | 'other';
+  recipientRole: 'instructor' | 'client';
+}): string {
+  const { recipientName, otherPartyName, endedBy, recipientRole } = params;
+  const safeOther = escapeHtml(otherPartyName);
+  const greeting = recipientName
+    ? `Hi ${escapeHtml(recipientName)},`
+    : 'Hi there,';
+
+  const headlineText =
+    endedBy === 'self'
+      ? `You ended your collaboration with ${safeOther}`
+      : `${safeOther} ended your collaboration`;
+
+  const bodyText =
+    endedBy === 'self'
+      ? `You ended your coaching collaboration with <strong>${safeOther}</strong> on MotionHive. They no longer appear in your ${recipientRole === 'instructor' ? 'client list' : 'coaches list'}, and they can no longer ${recipientRole === 'instructor' ? 'see your private sessions' : 'invite you to their sessions'}.`
+      : `<strong>${safeOther}</strong> ended your coaching collaboration on MotionHive. They no longer appear in your ${recipientRole === 'instructor' ? 'client list' : 'coaches list'}.`;
+
+  const subscriptionNote =
+    recipientRole === 'client'
+      ? paragraph(
+          'If you have an active membership with this trainer, it remains active until you cancel it from your billing page.',
+        )
+      : paragraph(
+          "Any active memberships this client has with you remain in place until they (or you) cancel them — ending the collaboration doesn't auto-cancel subscriptions.",
+        );
+
+  const content = `
+    ${heading('Collaboration ended')}
+    ${subheading(headlineText)}
+    ${paragraph(`${greeting} ${bodyText}`)}
+    ${subscriptionNote}
+    ${divider()}
+    ${paragraph('You can always reconnect later by sending a new invitation.')}
+  `;
+
+  return baseLayout(
+    content,
+    headlineText,
+    "You're receiving this because a coaching collaboration on your MotionHive account changed status.",
   );
 }

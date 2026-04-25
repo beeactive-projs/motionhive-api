@@ -127,7 +127,7 @@
   },
   "lint-staged": {
     "*.ts": [
-      "eslint --fix",
+      "eslint --fix --max-warnings=9999",
       "jest --bail --findRelatedTests --passWithNoTests"
     ]
   }

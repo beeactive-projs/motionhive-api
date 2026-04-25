@@ -615,8 +615,6 @@ export class GroupService {
           'specializations',
           'yearsOfExperience',
           'isAcceptingClients',
-          'locationCity',
-          'locationCountry',
           'socialLinks',
           'showSocialLinks',
           'showEmail',

@@ -256,7 +256,12 @@ export class InvitationService {
           accepterName,
           invitation.group?.name || 'your group',
         )
-        .catch(() => {});
+        .catch((err: unknown) =>
+          this.logger.warn(
+            `Failed to send invitation-accepted email to ${inviterUser.email}: ${(err as Error).message}`,
+            'InvitationService',
+          ),
+        );
     }
 
     return {

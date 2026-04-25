@@ -179,10 +179,14 @@ export class BlogService {
   }
 
   async getSitemapSlugs(): Promise<{ slug: string; updatedAt: Date }[]> {
+    // Hard cap: crawlers get at most the 10k most-recently-updated posts.
+    // An unbounded findAll on a growing table turns this public route
+    // into an easy memory/CPU exhaustion target.
     const posts = await this.blogPostModel.findAll({
       where: { isPublished: true },
       attributes: ['slug', 'updatedAt'],
       order: [['updatedAt', 'DESC']],
+      limit: 10_000,
     });
     return posts.map((p) => ({ slug: p.slug, updatedAt: p.updatedAt }));
   }

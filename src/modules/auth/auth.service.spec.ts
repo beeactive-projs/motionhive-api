@@ -13,6 +13,7 @@ import { RoleService } from '../role/role.service';
 import { ProfileService } from '../profile/profile.service';
 import { EmailService } from '../../common/services/email.service';
 import { CryptoService } from '../../common/services/crypto.service';
+import { EmailVerifierService } from '../../common/services/email-verifier.service';
 import { makeSilentLogger } from '../../../test/helpers/sequelize-mocks';
 
 // AuthService smoke tests — not exhaustive. The goal is to catch
@@ -34,7 +35,6 @@ describe('AuthService (smoke)', () => {
     getUserRoles: jest.Mock;
   };
   let profileService: {
-    createUserProfile: jest.Mock;
     createInstructorProfileInTransaction: jest.Mock;
   };
   let jwtService: { sign: jest.Mock; verify: jest.Mock };
@@ -46,6 +46,7 @@ describe('AuthService (smoke)', () => {
   let sequelizeMock: { transaction: jest.Mock };
   let cryptoService: { hashToken: jest.Mock; generateToken: jest.Mock };
   let emailService: { sendEmailVerification: jest.Mock };
+  let emailVerifier: { assertDeliverable: jest.Mock };
   let configService: { get: jest.Mock };
 
   const tx = {
@@ -71,7 +72,6 @@ describe('AuthService (smoke)', () => {
       getUserRoles: jest.fn().mockResolvedValue([{ name: 'USER' }]),
     };
     profileService = {
-      createUserProfile: jest.fn().mockResolvedValue(undefined),
       createInstructorProfileInTransaction: jest
         .fn()
         .mockResolvedValue(undefined),
@@ -94,6 +94,9 @@ describe('AuthService (smoke)', () => {
     };
     emailService = {
       sendEmailVerification: jest.fn().mockResolvedValue(undefined),
+    };
+    emailVerifier = {
+      assertDeliverable: jest.fn().mockResolvedValue(undefined),
     };
     configService = {
       get: jest.fn((key: string) => {
@@ -119,6 +122,7 @@ describe('AuthService (smoke)', () => {
         { provide: Sequelize, useValue: sequelizeMock },
         { provide: EmailService, useValue: emailService },
         { provide: CryptoService, useValue: cryptoService },
+        { provide: EmailVerifierService, useValue: emailVerifier },
         { provide: WINSTON_MODULE_NEST_PROVIDER, useValue: makeSilentLogger() },
       ],
     }).compile();
@@ -150,7 +154,6 @@ describe('AuthService (smoke)', () => {
       undefined,
       tx,
     );
-    expect(profileService.createUserProfile).toHaveBeenCalledWith('u-1', tx);
     expect(tx.commit).toHaveBeenCalled();
     expect(tx.rollback).not.toHaveBeenCalled();
     expect(result).toHaveProperty('accessToken');

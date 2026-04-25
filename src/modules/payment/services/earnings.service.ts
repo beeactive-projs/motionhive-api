@@ -45,6 +45,8 @@ export class EarningsService {
     private readonly paymentModel: typeof Payment,
     @InjectModel(StripeAccount)
     private readonly stripeAccountModel: typeof StripeAccount,
+    @InjectModel(User)
+    private readonly userModel: typeof User,
     private readonly sequelize: Sequelize,
     private readonly stripeService: StripeService,
     @Inject(WINSTON_MODULE_NEST_PROVIDER)
@@ -52,11 +54,21 @@ export class EarningsService {
   ) {}
 
   async getSummary(instructorId: string): Promise<EarningsSummary> {
-    const account = await this.stripeAccountModel.findOne({
-      where: { userId: instructorId },
-      attributes: ['stripeAccountId', 'defaultCurrency'],
-    });
-    const currency = (account?.defaultCurrency ?? 'ron').toUpperCase();
+    const [account, user] = await Promise.all([
+      this.stripeAccountModel.findOne({
+        where: { userId: instructorId },
+        attributes: ['stripeAccountId', 'defaultCurrency'],
+      }),
+      this.userModel.findByPk(instructorId, {
+        attributes: ['countryCode'],
+      }),
+    ]);
+    const currency = this.stripeService
+      .resolveCurrency({
+        accountCurrency: account?.defaultCurrency,
+        countryCode: user?.countryCode,
+      })
+      .toUpperCase();
 
     // Month-to-date revenue from our DB (source of truth for billing history).
     const now = new Date();
@@ -158,12 +170,41 @@ export class EarningsService {
           { stripeAccount: account.stripeAccountId },
         );
         const lowerCurrency = currency.toLowerCase();
-        availableBalanceCents = balance.available
-          .filter((b) => b.currency === lowerCurrency)
-          .reduce((s, b) => s + b.amount, 0);
-        pendingBalanceCents = balance.pending
-          .filter((b) => b.currency === lowerCurrency)
-          .reduce((s, b) => s + b.amount, 0);
+        // Stripe surfaces three buckets that all matter to the
+        // instructor:
+        //   - available[]: standard payout-ready funds.
+        //   - instant_available[]: funds eligible for an instant
+        //     payout (separate Stripe rail). For RO card payments
+        //     today this is where new charges land first.
+        //   - pending[]: funds in Stripe's 2-7 day rolling hold.
+        // Stripe overlaps `instant_available` with `pending` for the
+        // same money — taking the instant payout consumes funds that
+        // would otherwise become standard-available later. So:
+        //   * "Available" we show = max(available, instant_available)
+        //     i.e. the largest amount the trainer could withdraw RIGHT
+        //     NOW, whether through standard or instant rails.
+        //   * "Pending" we show = pending - instant_available (clamped
+        //     to 0). This represents funds genuinely still held for
+        //     2-7 days that are NOT also offered as instant.
+        const sumByCurrency = (
+          buckets: { amount: number; currency: string }[] | undefined,
+        ): number =>
+          (buckets ?? [])
+            .filter((b) => b.currency === lowerCurrency)
+            .reduce((s, b) => s + b.amount, 0);
+
+        const standardAvailable = sumByCurrency(balance.available);
+        const instantAvailable = sumByCurrency(
+          (
+            balance as unknown as {
+              instant_available?: typeof balance.available;
+            }
+          ).instant_available,
+        );
+        const stripePending = sumByCurrency(balance.pending);
+
+        availableBalanceCents = Math.max(standardAvailable, instantAvailable);
+        pendingBalanceCents = Math.max(0, stripePending - instantAvailable);
 
         const payouts = await this.stripeService.stripe.payouts.list(
           { limit: 1, status: 'pending' },

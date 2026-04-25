@@ -5,6 +5,8 @@ import {
   IsNumber,
   Min,
   Max,
+  MaxLength,
+  ArrayMaxSize,
 } from 'class-validator';
 import { ApiPropertyOptional } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
@@ -15,6 +17,7 @@ export class DiscoverGroupsDto {
     description: 'Search by name or description',
   })
   @IsString()
+  @MaxLength(100)
   @IsOptional()
   search?: string;
 
@@ -24,7 +27,9 @@ export class DiscoverGroupsDto {
     type: [String],
   })
   @IsArray()
+  @ArrayMaxSize(5)
   @IsString({ each: true })
+  @MaxLength(50, { each: true })
   @IsOptional()
   tags?: string[];
 
@@ -33,6 +38,7 @@ export class DiscoverGroupsDto {
     description: 'Filter by city',
   })
   @IsString()
+  @MaxLength(100)
   @IsOptional()
   city?: string;
 
@@ -41,6 +47,7 @@ export class DiscoverGroupsDto {
     description: 'Filter by country code',
   })
   @IsString()
+  @MaxLength(3)
   @IsOptional()
   country?: string;
 

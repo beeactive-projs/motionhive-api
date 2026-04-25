@@ -6,6 +6,7 @@ import { UniqueConstraintError } from 'sequelize';
 import { Waitlist } from './entities/waitlist.entity';
 import { CreateWaitlistDto } from './dto/create-waitlist.dto';
 import { EmailService } from '../../common/services/email.service';
+import { EmailVerifierService } from '../../common/services/email-verifier.service';
 
 @Injectable()
 export class WaitlistService {
@@ -13,38 +14,40 @@ export class WaitlistService {
     @InjectModel(Waitlist)
     private waitlistModel: typeof Waitlist,
     private emailService: EmailService,
+    private emailVerifier: EmailVerifierService,
     @Inject(WINSTON_MODULE_NEST_PROVIDER)
     private readonly logger: LoggerService,
   ) {}
 
   async create(dto: CreateWaitlistDto): Promise<Waitlist> {
+    // Cheap deliverability check before we burn an email send or a DB row.
+    // Throws BadRequestException on disposable domain / no-MX.
+    await this.emailVerifier.assertDeliverable(dto.email);
+
     let entry: Waitlist;
     try {
       entry = await this.waitlistModel.create({ ...dto });
     } catch (error) {
       if (error instanceof UniqueConstraintError) {
-        // Already on the waitlist — return existing entry silently
+        // Already on the waitlist — return existing entry silently.
+        // Do NOT re-send the confirmation email here: re-POSTing the
+        // same address would otherwise let an attacker use this
+        // endpoint to repeatedly email any address they pick.
         const existing = await this.waitlistModel.findOne({
           where: { email: dto.email },
         });
-
-        // Re-send confirmation email
-        const name = dto.name || existing?.name || undefined;
-        this.emailService
-          .sendWaitlistConfirmation(dto.email, name)
-          .catch((err: Error) =>
-            this.logger.error(
-              `Failed to send waitlist confirmation to ${dto.email}: ${err.message}`,
-              'WaitlistService',
-            ),
-          );
-
-        return existing!;
+        if (!existing) {
+          // Shouldn't happen — the unique constraint just fired on this
+          // exact email — but if a race or multi-column unique lands us
+          // here, surface a clean 500 rather than crash on a null deref.
+          throw error;
+        }
+        return existing;
       }
       throw error;
     }
 
-    // Send confirmation email (fire-and-forget)
+    // First-time signup — fire-and-forget confirmation.
     this.emailService
       .sendWaitlistConfirmation(dto.email, dto.name)
       .catch((err: Error) =>

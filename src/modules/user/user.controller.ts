@@ -5,6 +5,7 @@ import {
   Patch,
   Delete,
   Body,
+  Query,
   UseGuards,
   UseInterceptors,
   UploadedFile,
@@ -18,6 +19,7 @@ import { FileInterceptor } from '@nestjs/platform-express';
 import type { AuthenticatedRequest } from '../../common/types/authenticated-request';
 import { UserService } from './user.service';
 import { UpdateUserDto } from './dto/update-user.dto';
+import { SearchUsersQueryDto } from './dto/search-users.query.dto';
 import { ApiEndpoint } from '../../common/decorators/api-response.decorator';
 import { UserDocs } from '../../common/docs/user.docs';
 
@@ -58,6 +60,40 @@ export class UserController {
       roles: req.user.roles,
       createdAt: req.user.createdAt,
     };
+  }
+
+  /**
+   * Search users for pickers (e.g. "invite a client").
+   * Authenticated. Rate-limited. Never returns sensitive fields.
+   */
+  @Get('search')
+  @Throttle({ default: { limit: 60, ttl: 60_000 } })
+  @ApiEndpoint({
+    summary: 'Search users',
+    description:
+      'Partial-match search on email/first/last name. Supports optional role filter and excluding users already connected to the calling instructor.',
+    auth: true,
+    responses: [
+      { status: 200, description: 'Matching users' },
+      { status: 400, description: 'Invalid query' },
+    ],
+  })
+  async searchUsers(
+    @Request() req: AuthenticatedRequest,
+    @Query() query: SearchUsersQueryDto,
+  ) {
+    const excludeConnectedToInstructorId =
+      query.excludeConnected && req.user.roles?.includes('INSTRUCTOR')
+        ? req.user.id
+        : undefined;
+
+    return this.userService.searchUsers({
+      q: query.q,
+      role: query.role,
+      excludeUserId: req.user.id,
+      excludeConnectedToInstructorId,
+      limit: query.limit,
+    });
   }
 
   /**

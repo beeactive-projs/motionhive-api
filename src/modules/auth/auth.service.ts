@@ -27,6 +27,7 @@ import type { JwtPayload } from './types/jwt-payload';
 import { ProfileService } from '../profile/profile.service';
 import { EmailService } from '../../common/services/email.service';
 import { CryptoService } from '../../common/services/crypto.service';
+import { EmailVerifierService } from '../../common/services/email-verifier.service';
 import {
   ClientRequest,
   ClientRequestStatus,
@@ -73,14 +74,23 @@ export class AuthService {
     private sequelize: Sequelize,
     private emailService: EmailService,
     private cryptoService: CryptoService,
+    private emailVerifier: EmailVerifierService,
     @Inject(WINSTON_MODULE_NEST_PROVIDER)
     private readonly logger: LoggerService,
   ) {}
 
   /**
    * Register a new user
+   *
+   * Deliverability check runs BEFORE the DB transaction — if the email is
+   * bogus (disposable host or domain has no MX), we abort cleanly with 400
+   * and never touch the DB. OAuth register paths (registerWithGoogle /
+   * registerWithFacebook) skip this check because the provider has already
+   * proven the email belongs to the user.
    */
   async register(registerDto: RegisterDto) {
+    await this.emailVerifier.assertDeliverable(registerDto.email);
+
     const transaction = await this.sequelize.transaction();
 
     try {
@@ -93,8 +103,6 @@ export class AuthService {
         undefined,
         transaction,
       );
-
-      await this.profileService.createUserProfile(user.id, transaction);
 
       if (registerDto.isInstructor) {
         await this.profileService.createInstructorProfileInTransaction(
@@ -730,7 +738,6 @@ export class AuthService {
           undefined,
           transaction,
         );
-        await this.profileService.createUserProfile(user.id, transaction);
       }
 
       await transaction.commit();

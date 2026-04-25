@@ -102,7 +102,7 @@ Roles: `SUPER_ADMIN`, `ADMIN`, `SUPPORT`, `INSTRUCTOR`, `WRITER`, `USER`
 
 ### Database
 - PostgreSQL (Neon) via `DATABASE_URL` or individual `DB_*` vars
-- Migrations in `/migrations/` (**001–019**), run with `node migrations/run.js`
+- Migrations in `/migrations/` (**001–026**), run with `node migrations/run.js`
 - Custom enum types for status fields
 - CHAR(36) UUID primary keys everywhere
 
@@ -114,6 +114,9 @@ Roles: `SUPER_ADMIN`, `ADMIN`, `SUPPORT`, `INSTRUCTOR`, `WRITER`, `USER`
 - Platform fee: 0 bps default, configurable per-instructor via `stripe_account.platform_fee_bps`
 - 14-day refund window enforced in `RefundService`
 - EU consumer rights (OUG 34/2014) waiver recorded in `payment_consent` table
+- **Invoice lifecycle**: creation leaves the invoice in `DRAFT` (no finalize, no email) unless `sendImmediately=true`. `POST /payments/invoices/:id/send` finalizes (generates `hosted_invoice_url` + `invoice_pdf`) and emails — via Stripe native send, or via Resend when `overrideEmail` differs from the on-file email. Client list (`/payments/my/invoices`) filters to `OPEN` + `PAID` only; drafts/voids are instructor-only.
+- **Invoice line items** are not mirrored locally — fetched on demand from Stripe via `/payments/invoices/:id/line-items` (instructor) and `/payments/my/invoices/:id/line-items` (client). Errors return `[]` and log (no user-facing error).
+- **Client billing counts**: `GET /payments/my/counts` returns `{invoices: {total, open}, memberships: {total, active}}` for profile badges.
 - See `src/modules/payment/PAYMENT-FLOWS.md` for end-to-end flows
 
 ### Client Module

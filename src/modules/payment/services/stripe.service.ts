@@ -23,6 +23,7 @@ import { WINSTON_MODULE_NEST_PROVIDER } from 'nest-winston';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import StripeConstructor = require('stripe');
 import type { Stripe } from 'stripe-types';
+import { defaultCurrencyForCountry } from '../../../common/constants/countries';
 
 /**
  * StripeService — thin wrapper around the Stripe SDK.
@@ -253,5 +254,30 @@ export class StripeService implements OnModuleInit {
     operation: string,
   ): string {
     return `${resource}:${localId}:${operation}`;
+  }
+
+  /**
+   * Resolve the default settlement currency for an instructor, in order:
+   *   1. Explicit override from the caller (e.g. user typed a currency
+   *      into the product form). Lowercased and returned as-is — we
+   *      trust controller-side validation.
+   *   2. `stripe_account.default_currency` — set by Stripe when the
+   *      Connect account is created, mirrored here via webhook.
+   *   3. Country → currency map keyed on `user.countryCode`.
+   *   4. Hard fallback of `'usd'`. Shouldn't fire in practice because
+   *      onboarding rejects unknown countries.
+   *
+   * Inputs may be null: a user without a country still gets a currency
+   * rather than a crash, so product/invoice creation fails later with a
+   * clearer message ("complete onboarding first").
+   */
+  resolveCurrency(inputs: {
+    explicit?: string | null;
+    accountCurrency?: string | null;
+    countryCode?: string | null;
+  }): string {
+    if (inputs.explicit) return inputs.explicit.toLowerCase();
+    if (inputs.accountCurrency) return inputs.accountCurrency.toLowerCase();
+    return defaultCurrencyForCountry(inputs.countryCode);
   }
 }

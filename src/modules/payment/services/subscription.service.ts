@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   Inject,
   Injectable,
@@ -18,9 +19,12 @@ import {
   SubscriptionStatus,
 } from '../entities/subscription.entity';
 import { Product, ProductType } from '../entities/product.entity';
+import { User } from '../../user/entities/user.entity';
 import { StripeAccount } from '../entities/stripe-account.entity';
+import { ConfigService } from '@nestjs/config';
 import { StripeService } from './stripe.service';
 import { CustomerService } from './customer.service';
+import { EmailService } from '../../../common/services/email.service';
 import {
   NotificationService,
   NotificationType,
@@ -49,10 +53,14 @@ export class SubscriptionService {
     private readonly productModel: typeof Product,
     @InjectModel(StripeAccount)
     private readonly stripeAccountModel: typeof StripeAccount,
+    @InjectModel(User)
+    private readonly userModel: typeof User,
     private readonly sequelize: Sequelize,
     private readonly stripeService: StripeService,
     private readonly customerService: CustomerService,
+    private readonly emailService: EmailService,
     private readonly notificationService: NotificationService,
+    private readonly configService: ConfigService,
     @Inject(WINSTON_MODULE_NEST_PROVIDER)
     private readonly logger: LoggerService,
   ) {}
@@ -81,15 +89,90 @@ export class SubscriptionService {
       throw new BadRequestException('Product has no Stripe Price linked.');
     }
 
-    const tx = await this.sequelize.transaction();
-    try {
-      const customer = await this.customerService.getOrCreateForUser(
-        dto.clientUserId,
-        tx,
+    // Reject obvious duplicates with a friendly message before we
+    // hit Stripe — otherwise the user sees Stripe's idempotency-key
+    // error for an already-existing subscription.
+    const existing = await this.subscriptionModel.findOne({
+      where: {
+        instructorId,
+        clientId: dto.clientUserId,
+        productId: dto.productId,
+        status: {
+          [Op.in]: [
+            SubscriptionStatus.TRIALING,
+            SubscriptionStatus.ACTIVE,
+            SubscriptionStatus.PAST_DUE,
+            SubscriptionStatus.UNPAID,
+            SubscriptionStatus.INCOMPLETE,
+          ],
+        },
+      },
+    });
+    if (existing) {
+      throw new ConflictException(
+        'This client already has an active subscription to this plan. ' +
+          'Cancel it first, or pick another plan.',
       );
+    }
 
+    // Two-phase save: insert the local row, commit, then call Stripe
+    // OUTSIDE a DB transaction so we don't pin a Postgres connection
+    // across an external HTTP call. The local row id seeds the
+    // idempotency key, making each create attempt unique by design —
+    // a second click reuses the same row id and Stripe's idempotency
+    // cache returns the existing subscription.
+    const customer = await this.customerService.getOrCreateForUser(
+      dto.clientUserId,
+    );
+
+    const placeholder = await this.subscriptionModel.create({
+      instructorId,
+      clientId: dto.clientUserId,
+      stripeCustomerId: customer.stripeCustomerId,
+      productId: dto.productId,
+      // We don't have the Stripe IDs yet; backfill below. Schema
+      // requires them to be NOT NULL, so write the local row id as a
+      // temporary placeholder — guaranteed unique, and overwritten
+      // before any consumer reads this row (no controller returns
+      // until after the Stripe call).
+      stripeSubscriptionId: '',
+      stripePriceId: product.stripePriceId,
+      status: SubscriptionStatus.INCOMPLETE,
+      currentPeriodStart: null,
+      currentPeriodEnd: null,
+      cancelAt: null,
+      canceledAt: null,
+      cancelAtPeriodEnd: false,
+      trialStart: null,
+      trialEnd: null,
+      amountCents: product.amountCents,
+      currency: product.currency,
+    });
+
+    try {
       const feeBps = account.platformFeeBps ?? 0;
+      const inTrial = !!dto.trialDays && dto.trialDays > 0;
 
+      // Always-confirm policy (consent-first):
+      //
+      // Every paid subscription is created with
+      // `payment_behavior: 'default_incomplete'` regardless of whether
+      // the client already has a card on file. The client must then
+      // confirm by clicking through the first invoice's hosted page
+      // (which shows the actual plan name + amount + cycle) and either
+      // pick their saved card or enter a new one.
+      //
+      // Why: saving a card for one subscription is NOT blanket consent
+      // to be charged for any future subscription the trainer creates.
+      // PSD2/SCA, GDPR Art.6, and the EU Consumer Rights Directive all
+      // require fresh consent per recurring service. Beyond compliance,
+      // silent re-billing is the #1 dispute trigger on Stripe Connect
+      // and trashes platform reputation. See SECURITY_NOTES.md §"Why
+      // every new subscription requires client confirmation".
+      //
+      // Trial subscriptions are exempt because they defer payment —
+      // there's no charge today to consent to. Stripe demands a card
+      // before the trial ends; that's a separate reminder flow.
       const subParams: Record<string, unknown> = {
         customer: customer.stripeCustomerId,
         items: [{ price: product.stripePriceId }],
@@ -101,14 +184,23 @@ export class SubscriptionService {
         trial_settings: {
           end_behavior: { missing_payment_method: 'cancel' },
         },
+        // Expand so we can read latest_invoice.hosted_invoice_url right
+        // after create — that URL is the consent surface we email the
+        // client.
+        expand: ['latest_invoice'],
         metadata: {
+          beeactive_subscription_id: placeholder.id,
           beeactive_instructor_id: instructorId,
           beeactive_client_id: dto.clientUserId,
           beeactive_product_id: dto.productId,
         },
       };
 
-      if (dto.trialDays && dto.trialDays > 0) {
+      if (!inTrial) {
+        subParams.payment_behavior = 'default_incomplete';
+      }
+
+      if (inTrial) {
         subParams.trial_period_days = dto.trialDays;
       }
 
@@ -121,63 +213,204 @@ export class SubscriptionService {
         {
           idempotencyKey: this.stripeService.buildIdempotencyKey(
             'subscription',
-            `${instructorId}:${dto.clientUserId}:${dto.productId}`,
+            placeholder.id,
             'create',
           ),
         },
       );
 
-      const row = await this.subscriptionModel.create(
-        {
-          instructorId,
-          clientId: dto.clientUserId,
-          stripeCustomerId: customer.stripeCustomerId,
-          productId: dto.productId,
-          stripeSubscriptionId: stripeSub.id,
-          stripePriceId: product.stripePriceId,
-          status: stripeSub.status as SubscriptionStatus,
-          currentPeriodStart: subTs(
-            stripeSub as unknown as SubRaw,
-            'current_period_start',
-          ),
-          currentPeriodEnd: subTs(
-            stripeSub as unknown as SubRaw,
-            'current_period_end',
-          ),
-          cancelAt: null,
-          canceledAt: null,
-          cancelAtPeriodEnd: false,
-          trialStart: subTs(stripeSub as unknown as SubRaw, 'trial_start'),
-          trialEnd: subTs(stripeSub as unknown as SubRaw, 'trial_end'),
-          amountCents: product.amountCents,
-          currency: product.currency,
-        },
-        { transaction: tx },
+      placeholder.stripeSubscriptionId = stripeSub.id;
+      placeholder.status = stripeSub.status as SubscriptionStatus;
+      placeholder.currentPeriodStart = subTs(
+        stripeSub as unknown as SubRaw,
+        'current_period_start',
       );
-
-      await tx.commit();
+      placeholder.currentPeriodEnd = subTs(
+        stripeSub as unknown as SubRaw,
+        'current_period_end',
+      );
+      placeholder.trialStart = subTs(
+        stripeSub as unknown as SubRaw,
+        'trial_start',
+      );
+      placeholder.trialEnd = subTs(stripeSub as unknown as SubRaw, 'trial_end');
+      await placeholder.save();
 
       await this.notificationService.notify({
         userId: dto.clientUserId,
         type: NotificationType.SUBSCRIPTION_CREATED,
         title: 'New subscription',
         body: `You have been subscribed to ${product.name}.`,
-        data: { screen: 'client-subscriptions', entityId: row.id },
+        data: { screen: 'client-subscriptions', entityId: placeholder.id },
       });
 
       this.logger.log(
-        `Subscription ${row.id} (stripe ${stripeSub.id}) created`,
+        `Subscription ${placeholder.id} (stripe ${stripeSub.id}) created (status=${stripeSub.status})`,
         'SubscriptionService',
       );
-      return row;
-    } catch (err) {
-      try {
-        await tx.rollback();
-      } catch {
-        // ignore
+
+      // Pull the hosted invoice URL from the just-created subscription.
+      // For incomplete subs (the default path now), Stripe creates the
+      // first invoice in 'open' status and exposes a hosted_invoice_url
+      // we can send the client. They land on a Stripe-branded page
+      // showing plan/amount/cycle — that's their explicit consent.
+      let pendingConfirmationUrl: string | null = null;
+      if (stripeSub.status === 'incomplete') {
+        const latestInvoice = (
+          stripeSub as unknown as {
+            latest_invoice?: Stripe.Invoice | string | null;
+          }
+        ).latest_invoice;
+        if (
+          latestInvoice &&
+          typeof latestInvoice === 'object' &&
+          latestInvoice.hosted_invoice_url
+        ) {
+          pendingConfirmationUrl = latestInvoice.hosted_invoice_url;
+        }
+
+        if (pendingConfirmationUrl) {
+          try {
+            await this.sendConfirmationEmailIfPossible(
+              placeholder,
+              instructorId,
+              product,
+              pendingConfirmationUrl,
+            );
+          } catch (mailErr) {
+            // Do NOT fail the subscription create on email failure.
+            // The instructor can resend the link from the detail page.
+            this.logger.warn(
+              `Failed to send confirmation email for subscription ${placeholder.id}: ${(mailErr as Error).message}`,
+              'SubscriptionService',
+            );
+          }
+        } else {
+          this.logger.warn(
+            `Subscription ${placeholder.id} is incomplete but Stripe didn't return a hosted_invoice_url; the instructor will need to resend manually`,
+            'SubscriptionService',
+          );
+        }
       }
+
+      // Transient response field — UI uses it for the immediate post-
+      // create toast. Re-mintable on demand via getConfirmationLink.
+      const result = placeholder as Subscription & {
+        pendingConfirmationUrl?: string | null;
+      };
+      result.pendingConfirmationUrl = pendingConfirmationUrl;
+      return result;
+    } catch (err) {
+      // Stripe failed: drop the placeholder so the instructor can
+      // retry cleanly without seeing a phantom INCOMPLETE row.
+      await placeholder.destroy().catch((cleanupErr: unknown) => {
+        this.logger.warn(
+          `Failed to clean up orphaned subscription placeholder ${placeholder.id}: ${(cleanupErr as Error).message}`,
+          'SubscriptionService',
+        );
+      });
       throw err;
     }
+  }
+
+  /**
+   * Email the client the membership-confirmation link. Best-effort —
+   * failures are logged but never throw the create call. The email
+   * names the plan, amount, and cycle so the click-through is
+   * informed consent, not a generic "click here".
+   */
+  private async sendConfirmationEmailIfPossible(
+    sub: Subscription,
+    instructorId: string,
+    product: Product,
+    confirmationUrl: string,
+  ): Promise<void> {
+    if (!sub.clientId) return; // guests don't apply here yet
+    const [client, instructor] = await Promise.all([
+      this.userModel.findByPk(sub.clientId),
+      this.userModel.findByPk(instructorId),
+    ]);
+    if (!client?.email) return;
+    const instructorName =
+      [instructor?.firstName, instructor?.lastName]
+        .filter((s): s is string => !!s)
+        .join(' ') || 'Your trainer';
+    const cycleLabel = product.interval
+      ? product.intervalCount && product.intervalCount > 1
+        ? `every ${product.intervalCount} ${product.interval}s`
+        : `${product.interval}ly`
+      : null;
+    const amountLabel = `${(product.amountCents / 100).toFixed(2)} ${product.currency.toUpperCase()}`;
+    await this.emailService.sendSubscriptionSetupEmail({
+      to: client.email,
+      instructorName,
+      planName: product.name,
+      amountLabel,
+      cycleLabel,
+      setupUrl: confirmationUrl,
+      recipientName: client.firstName,
+    });
+  }
+
+  /**
+   * Re-mint a confirmation URL for a subscription that's still
+   * INCOMPLETE — the instructor uses this from the detail page when
+   * the original email got lost. We pull the subscription's
+   * `latest_invoice.hosted_invoice_url` from Stripe (NOT a setup-mode
+   * Checkout — see the always-confirm policy in `create()`).
+   *
+   * Returns `{ url: null }` if the subscription is past INCOMPLETE
+   * (no confirmation needed).
+   */
+  async getConfirmationLink(
+    instructorId: string,
+    subscriptionId: string,
+  ): Promise<{ url: string | null; status: SubscriptionStatus }> {
+    const sub = await this.getOneForInstructor(instructorId, subscriptionId);
+    if (sub.status !== SubscriptionStatus.INCOMPLETE) {
+      return { url: null, status: sub.status };
+    }
+    const stripeSub = (await this.stripeService.stripe.subscriptions.retrieve(
+      sub.stripeSubscriptionId,
+      { expand: ['latest_invoice'] },
+    )) as Stripe.Subscription & {
+      latest_invoice?: Stripe.Invoice | string | null;
+    };
+    const inv = stripeSub.latest_invoice;
+    const url =
+      inv && typeof inv === 'object' && inv.hosted_invoice_url
+        ? inv.hosted_invoice_url
+        : null;
+    return { url, status: sub.status };
+  }
+
+  /**
+   * Single-subscription lookup for the instructor view. Includes the
+   * same client + plan eager-loads as the list so the detail page can
+   * render names without an extra round-trip.
+   */
+  async getOneForInstructor(
+    instructorId: string,
+    subscriptionId: string,
+  ): Promise<Subscription> {
+    const sub = await this.subscriptionModel.findByPk(subscriptionId, {
+      include: [
+        {
+          model: User,
+          as: 'client',
+          attributes: ['id', 'firstName', 'lastName', 'email', 'avatarUrl'],
+        },
+        {
+          model: Product,
+          attributes: ['id', 'name', 'interval', 'intervalCount'],
+        },
+      ],
+    });
+    if (!sub) throw new NotFoundException('Subscription not found.');
+    if (sub.instructorId !== instructorId) {
+      throw new ForbiddenException('You do not own this subscription.');
+    }
+    return sub;
   }
 
   async listForInstructor(
@@ -188,11 +421,26 @@ export class SubscriptionService {
   ): Promise<PaginatedResponse<Subscription>> {
     const where: Record<string, unknown> = { instructorId };
     if (status) where.status = status;
+    // Enrich with client + plan info so the table can render names
+    // and emails instead of opaque UUIDs. `findAndCountAll` with
+    // includes uses `distinct: true` to keep the count accurate.
     const { rows, count } = await this.subscriptionModel.findAndCountAll({
       where,
+      include: [
+        {
+          model: User,
+          as: 'client',
+          attributes: ['id', 'firstName', 'lastName', 'email', 'avatarUrl'],
+        },
+        {
+          model: Product,
+          attributes: ['id', 'name', 'interval', 'intervalCount'],
+        },
+      ],
       order: [['createdAt', 'DESC']],
       limit,
       offset: getOffset(page, limit),
+      distinct: true,
     });
     return buildPaginatedResponse(rows, count, page, limit);
   }
@@ -202,11 +450,22 @@ export class SubscriptionService {
     page: number,
     limit: number,
   ): Promise<PaginatedResponse<Subscription>> {
+    // Eager-load the plan snapshot so the client UI can render plan
+    // names instead of opaque UUIDs. We do NOT include the User join
+    // here — the row already belongs to this client; rendering their
+    // own name back at them is noise.
     const { rows, count } = await this.subscriptionModel.findAndCountAll({
       where: { clientId },
+      include: [
+        {
+          model: Product,
+          attributes: ['id', 'name', 'interval', 'intervalCount'],
+        },
+      ],
       order: [['createdAt', 'DESC']],
       limit,
       offset: getOffset(page, limit),
+      distinct: true,
     });
     return buildPaginatedResponse(rows, count, page, limit);
   }
@@ -276,9 +535,71 @@ export class SubscriptionService {
     return sub;
   }
 
+  /**
+   * Client-initiated cancellation. Always at-period-end — clients
+   * already paid for the current cycle, so taking access away
+   * immediately would feel punitive and is non-standard SaaS behavior.
+   * Stripe Customer Portal does the same thing.
+   *
+   * Ownership: caller must be the subscription's client. Instructors
+   * cancel through `cancel()` above.
+   */
+  async cancelByClient(
+    clientId: string,
+    subscriptionId: string,
+  ): Promise<Subscription> {
+    const sub = await this.subscriptionModel.findByPk(subscriptionId);
+    if (!sub) throw new NotFoundException('Subscription not found.');
+    if (sub.clientId !== clientId) {
+      throw new ForbiddenException('You do not own this subscription.');
+    }
+    if (sub.status === SubscriptionStatus.CANCELED) {
+      return sub;
+    }
+    if (sub.cancelAtPeriodEnd) {
+      // Already scheduled — idempotent.
+      return sub;
+    }
+
+    await this.stripeService.stripe.subscriptions.update(
+      sub.stripeSubscriptionId,
+      { cancel_at_period_end: true },
+    );
+    sub.cancelAtPeriodEnd = true;
+    sub.cancelAt = sub.currentPeriodEnd;
+    await sub.save();
+
+    // Notify both parties so the instructor sees the pending cancel
+    // alongside their other memberships without having to hunt for it.
+    await this.notificationService.notify({
+      userId: clientId,
+      type: NotificationType.SUBSCRIPTION_CANCELED,
+      title: 'Membership will cancel',
+      body: 'Your membership will end at the close of the current period.',
+      data: { screen: 'client-subscriptions', entityId: sub.id },
+    });
+    await this.notificationService.notify({
+      userId: sub.instructorId,
+      type: NotificationType.SUBSCRIPTION_CANCELED,
+      title: 'Membership cancelled by client',
+      body: 'A client cancelled their membership; access ends at period close.',
+      data: { screen: 'instructor-subscriptions', entityId: sub.id },
+    });
+
+    return sub;
+  }
+
   // =====================================================================
   // WEBHOOK SYNC
   // =====================================================================
+
+  // (NOTE: the previous push-model used `setup_intent.succeeded` to
+  // attach a PM after Checkout setup-mode and retry the open invoice.
+  // The always-confirm policy uses the invoice's hosted_invoice_url
+  // directly, so Stripe handles the entire pay-and-activate cycle and
+  // we just react to the resulting `invoice.paid` +
+  // `customer.subscription.updated` webhooks via syncFromWebhook below.
+  // No SetupIntent handler needed.)
 
   async syncFromWebhook(
     stripeSub: Stripe.Subscription,

@@ -23,7 +23,11 @@ export class OnboardingStartDto {
   })
   @IsOptional()
   @IsString()
-  @IsUrl({ require_tld: false, require_protocol: true })
+  @IsUrl({
+    protocols: ['http', 'https'],
+    require_protocol: true,
+    require_tld: false,
+  })
   @MaxLength(2048)
   returnUrl?: string;
 
@@ -35,7 +39,11 @@ export class OnboardingStartDto {
   })
   @IsOptional()
   @IsString()
-  @IsUrl({ require_tld: false, require_protocol: true })
+  @IsUrl({
+    protocols: ['http', 'https'],
+    require_protocol: true,
+    require_tld: false,
+  })
   @MaxLength(2048)
   refreshUrl?: string;
 }

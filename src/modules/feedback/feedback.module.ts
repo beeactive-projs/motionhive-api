@@ -5,10 +5,9 @@ import { FeedbackController } from './feedback.controller';
 import { FeedbackService } from './feedback.service';
 import { RoleModule } from '../role/role.module';
 import { EmailService } from '../../common/services/email.service';
-import { UserModule } from '../user/user.module';
 
 @Module({
-  imports: [SequelizeModule.forFeature([Feedback]), RoleModule, UserModule],
+  imports: [SequelizeModule.forFeature([Feedback]), RoleModule],
   controllers: [FeedbackController],
   providers: [FeedbackService, EmailService],
   exports: [FeedbackService],

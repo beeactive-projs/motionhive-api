@@ -97,16 +97,17 @@ export class CryptoService {
   } {
     const token = this.generateToken();
     const hashedToken = this.hashToken(token);
-    // Expiry calculation:
-    // We want "hoursValid from now" regardless of server/DB timezone handling.
+    // Expiry is "now + hoursValid", full stop.
     //
-    // Note: In some environments, Sequelize/Postgres can normalize timestamps in a
-    // way that effectively shifts stored values by the local timezone offset.
-    // To keep the effective validity window correct, we compensate using the
-    // current timezone offset.
+    // (We previously subtracted `getTimezoneOffset()` here as a
+    // workaround for a problem that turned out not to exist on this
+    // stack: Sequelize stores `DataType.DATE` as Postgres TIMESTAMPTZ,
+    // which round-trips JS `Date` objects correctly through UTC. The
+    // "compensation" actually drifted expiries by 1–3h depending on
+    // the server's local TZ + DST, so password-reset / verification
+    // links lived longer than advertised. Fixed.)
     const ttlMs = hoursValid * 60 * 60 * 1000;
-    const tzOffsetMs = new Date().getTimezoneOffset() * 60 * 1000;
-    const expiresAt = new Date(Date.now() + ttlMs - tzOffsetMs);
+    const expiresAt = new Date(Date.now() + ttlMs);
 
     return { token, hashedToken, expiresAt };
   }

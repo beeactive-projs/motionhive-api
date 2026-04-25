@@ -39,6 +39,7 @@ export class UpdateInstructorProfileDto {
   })
   @IsString()
   @IsOptional()
+  @MaxLength(4000)
   bio?: string;
 
   @ApiPropertyOptional({
@@ -98,16 +99,4 @@ export class UpdateInstructorProfileDto {
   @IsBoolean()
   @IsOptional()
   showPhone?: boolean;
-
-  @ApiPropertyOptional({ example: 'Bucharest' })
-  @IsString()
-  @MaxLength(100)
-  @IsOptional()
-  locationCity?: string;
-
-  @ApiPropertyOptional({ example: 'RO' })
-  @IsString()
-  @MaxLength(5)
-  @IsOptional()
-  locationCountry?: string;
 }

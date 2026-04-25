@@ -33,6 +33,7 @@ import { OnboardingStartDto } from './dto/onboarding-start.dto';
 import { CreateProductDto } from './dto/create-product.dto';
 import { UpdateProductDto } from './dto/update-product.dto';
 import { CreateInvoiceDto } from './dto/create-invoice.dto';
+import { UpdateInvoiceDto } from './dto/update-invoice.dto';
 import { SendInvoiceDto } from './dto/send-invoice.dto';
 import { ListSubscriptionsQueryDto } from './dto/list-subscriptions.query.dto';
 import {
@@ -99,6 +100,24 @@ export class PaymentController {
   @ApiEndpoint(PaymentDocs.onboardingStatus)
   async getOnboardingStatus(@Request() req: AuthenticatedRequest) {
     return this.connectService.getStatus(req.user.id);
+  }
+
+  /**
+   * POST /payments/onboarding/refresh-status
+   *
+   * Manual reconciliation — pulls the live account from Stripe and
+   * mirrors it into the local row. Needed when a webhook was missed
+   * (localhost dev without `stripe listen`, or a dropped production
+   * delivery) and the UI is stuck on a stale state. Rate-limited so
+   * a stuck client can't DOS Stripe via this endpoint.
+   */
+  @Post('onboarding/refresh-status')
+  @UseGuards(RolesGuard)
+  @Roles('INSTRUCTOR')
+  @Throttle({ default: { limit: 10, ttl: 3_600_000 } })
+  @ApiEndpoint(PaymentDocs.onboardingStatus)
+  async refreshOnboardingStatus(@Request() req: AuthenticatedRequest) {
+    return this.connectService.refreshStatus(req.user.id);
   }
 
   @Post('onboarding/dashboard-link')
@@ -222,6 +241,23 @@ export class PaymentController {
     return this.invoiceService.getLineItemsForUser(id, req.user.id);
   }
 
+  /**
+   * Edit a DRAFT invoice. The service rejects any non-DRAFT status —
+   * once an invoice is finalized, line items are immutable on Stripe.
+   */
+  @Patch('invoices/:id')
+  @UseGuards(RolesGuard)
+  @Roles('INSTRUCTOR')
+  @Throttle({ default: { limit: 30, ttl: 3_600_000 } })
+  @ApiEndpoint({ ...PaymentDocs.updateInvoice, body: UpdateInvoiceDto })
+  async updateInvoice(
+    @Request() req: AuthenticatedRequest,
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Body() dto: UpdateInvoiceDto,
+  ) {
+    return this.invoiceService.updateDraft(req.user.id, id, dto);
+  }
+
   @Post('invoices/:id/send')
   @UseGuards(RolesGuard)
   @Roles('INSTRUCTOR')
@@ -290,6 +326,40 @@ export class PaymentController {
       query.limit ?? 20,
       query.status,
     );
+  }
+
+  @Get('subscriptions/:id')
+  @UseGuards(RolesGuard)
+  @Roles('INSTRUCTOR')
+  @ApiEndpoint(PaymentDocs.getSubscription)
+  async getSubscription(
+    @Request() req: AuthenticatedRequest,
+    @Param('id', new ParseUUIDPipe()) id: string,
+  ) {
+    return this.subscriptionService.getOneForInstructor(req.user.id, id);
+  }
+
+  /**
+   * Mint a fresh Stripe-hosted membership-confirmation URL for an
+   * INCOMPLETE subscription so the instructor can re-share / re-send
+   * it to the client. The URL points at the subscription's first
+   * invoice's hosted page — the client confirms by paying it (with a
+   * saved card or a new one). Returns `{ url: null, status }` when
+   * the subscription is past INCOMPLETE.
+   *
+   * URL kept as `/setup-link` for back-compat with the UI; the
+   * underlying behavior changed (see SubscriptionService docstrings).
+   */
+  @Post('subscriptions/:id/setup-link')
+  @UseGuards(RolesGuard)
+  @Roles('INSTRUCTOR')
+  @Throttle({ default: { limit: 10, ttl: 3_600_000 } })
+  @ApiEndpoint(PaymentDocs.getSubscriptionSetupLink)
+  async getSubscriptionSetupLink(
+    @Request() req: AuthenticatedRequest,
+    @Param('id', new ParseUUIDPipe()) id: string,
+  ) {
+    return this.subscriptionService.getConfirmationLink(req.user.id, id);
   }
 
   @Post('subscriptions/:id/cancel')

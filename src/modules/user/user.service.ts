@@ -1,5 +1,6 @@
 import {
   Injectable,
+  BadRequestException,
   ConflictException,
   NotFoundException,
   Inject,
@@ -8,7 +9,8 @@ import type { LoggerService } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectModel } from '@nestjs/sequelize';
 import { WINSTON_MODULE_NEST_PROVIDER } from 'nest-winston';
-import { Op, Transaction } from 'sequelize';
+import { Op, QueryTypes, Transaction, literal } from 'sequelize';
+import { Sequelize } from 'sequelize-typescript';
 import { User } from './entities/user.entity';
 import {
   SocialAccount,
@@ -19,12 +21,26 @@ import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { CryptoService } from '../../common/services';
 import { CloudinaryService } from '../../common/services/cloudinary.service';
-import { UserProfile } from '../profile/entities/user-profile.entity';
 import { InstructorProfile } from '../profile/entities/instructor-profile.entity';
 import { GroupMember } from '../group/entities/group-member.entity';
 import { SessionParticipant } from '../session/entities/session-participant.entity';
-import { InstructorClient } from '../client/entities/instructor-client.entity';
+import {
+  InstructorClient,
+  InstructorClientStatus,
+} from '../client/entities/instructor-client.entity';
+import {
+  ClientRequest,
+  ClientRequestStatus,
+} from '../client/entities/client-request.entity';
 import { Invitation } from '../invitation/entities/invitation.entity';
+import { Role } from '../role/entities/role.entity';
+
+/**
+ * Roles that must never appear in user-picker search results, regardless of
+ * any other role the account carries. Even if someone is both ADMIN and USER,
+ * they are not an invitable "client".
+ */
+const SEARCH_HIDDEN_ROLES = ['SUPER_ADMIN', 'ADMIN', 'SUPPORT'] as const;
 
 export interface OAuthProfile {
   providerUserId: string;
@@ -44,7 +60,6 @@ export interface UserDataExport {
   exportedAt: string;
   user: Record<string, unknown>;
   socialAccounts: Record<string, unknown>[];
-  userProfile: Record<string, unknown> | null;
   instructorProfile: Record<string, unknown> | null;
   groupMemberships: Record<string, unknown>[];
   sessionParticipations: Record<string, unknown>[];
@@ -72,6 +87,7 @@ export class UserService {
     private userModel: typeof User,
     @InjectModel(SocialAccount)
     private socialAccountModel: typeof SocialAccount,
+    private sequelize: Sequelize,
     private configService: ConfigService,
     private cryptoService: CryptoService,
     private readonly cloudinaryService: CloudinaryService,
@@ -103,6 +119,130 @@ export class UserService {
    */
   async findById(id: string): Promise<User | null> {
     return this.userModel.findByPk(id);
+  }
+
+  /**
+   * Search active users by partial match on email, first name, or last name.
+   * Intended for pickers like "invite a client" — always case-insensitive,
+   * always capped at 20 results, never returns sensitive fields.
+   *
+   * @param params.q - Partial match (min 2 chars). Matched via ILIKE.
+   * @param params.role - Optional role name filter (e.g. 'USER').
+   * @param params.excludeUserId - Caller's own id, excluded from results.
+   * @param params.excludeConnectedToInstructorId - When set, excludes users
+   *   who already have an ACTIVE or PENDING instructor_client row with that
+   *   instructor, or a PENDING client_request in either direction.
+   * @param params.limit - 1–20, default 10.
+   */
+  async searchUsers(params: {
+    q: string;
+    role?: string;
+    excludeUserId?: string;
+    excludeConnectedToInstructorId?: string;
+    limit?: number;
+  }): Promise<
+    Array<{
+      id: string;
+      email: string;
+      firstName: string | null;
+      lastName: string | null;
+      avatarUrl: string | null;
+    }>
+  > {
+    const limit = Math.min(Math.max(params.limit ?? 10, 1), 20);
+    const term = params.q.trim();
+    if (term.length < 2) return [];
+    const like = `%${term}%`;
+
+    const notInUserIds: string[] = [];
+    if (params.excludeUserId) notInUserIds.push(params.excludeUserId);
+
+    if (params.excludeConnectedToInstructorId) {
+      const instructorId = params.excludeConnectedToInstructorId;
+      const [connections, pendingRequests] = await Promise.all([
+        InstructorClient.findAll({
+          where: {
+            instructorId,
+            status: {
+              [Op.in]: [
+                InstructorClientStatus.ACTIVE,
+                InstructorClientStatus.PENDING,
+              ],
+            },
+          },
+          attributes: ['clientId'],
+        }),
+        ClientRequest.findAll({
+          where: {
+            status: ClientRequestStatus.PENDING,
+            expiresAt: { [Op.gt]: new Date() },
+            [Op.or]: [{ fromUserId: instructorId }, { toUserId: instructorId }],
+          },
+          attributes: ['fromUserId', 'toUserId'],
+        }),
+      ]);
+
+      for (const row of connections) notInUserIds.push(row.clientId);
+      for (const row of pendingRequests) {
+        if (row.fromUserId && row.fromUserId !== instructorId)
+          notInUserIds.push(row.fromUserId);
+        if (row.toUserId && row.toUserId !== instructorId)
+          notInUserIds.push(row.toUserId);
+      }
+    }
+
+    const where: Record<string, unknown> = {
+      isActive: true,
+      [Op.or]: [
+        { email: { [Op.iLike]: like } },
+        { firstName: { [Op.iLike]: like } },
+        { lastName: { [Op.iLike]: like } },
+      ],
+      // Hard block: users with staff roles (admin/super/support) never appear
+      // in pickers, regardless of any other role they carry.
+      [Op.and]: literal(
+        `NOT EXISTS (
+          SELECT 1 FROM user_role ur_hide
+          JOIN role r_hide ON r_hide.id = ur_hide.role_id
+          WHERE ur_hide.user_id = "User"."id"
+            AND r_hide.name IN (${SEARCH_HIDDEN_ROLES.map((r) => `'${r}'`).join(', ')})
+        )`,
+      ),
+    };
+    if (notInUserIds.length > 0) {
+      where.id = { [Op.notIn]: Array.from(new Set(notInUserIds)) };
+    }
+
+    const include = params.role
+      ? [
+          {
+            model: Role,
+            through: { attributes: [] },
+            where: { name: params.role },
+            required: true,
+            attributes: [],
+          },
+        ]
+      : undefined;
+
+    const rows = await this.userModel.findAll({
+      where,
+      include,
+      attributes: ['id', 'email', 'firstName', 'lastName', 'avatarUrl'],
+      limit,
+      order: [
+        ['firstName', 'ASC'],
+        ['lastName', 'ASC'],
+      ],
+    });
+
+    return rows.map((u) => ({
+      id: u.id,
+      email: u.email,
+      firstName: u.firstName,
+      lastName: u.lastName,
+      avatarUrl: u.avatarUrl,
+    }));
   }
 
   /**
@@ -265,12 +405,38 @@ export class UserService {
    * @returns The updated User record
    * @throws NotFoundException if no user exists with that ID
    */
-  async updateUser(userId: string, dto: UpdateUserDto): Promise<User> {
-    const user = await this.findById(userId);
+  async updateUser(
+    userId: string,
+    dto: UpdateUserDto,
+    transaction?: Transaction,
+  ): Promise<User> {
+    const user = await this.userModel.findByPk(userId, { transaction });
     if (!user) {
       throw new NotFoundException('User not found');
     }
-    await user.update(dto);
+
+    // Lock countryCode once a Stripe Connect account exists. Stripe does
+    // not allow country changes on an account; letting the user re-type
+    // theirs would cause a silent mismatch between profile and Stripe.
+    // Raw query avoids a cross-module entity import.
+    if (dto.countryCode !== undefined && dto.countryCode !== user.countryCode) {
+      const [row] = await this.sequelize.query<{ id: string }>(
+        'SELECT id FROM stripe_account WHERE user_id = :userId LIMIT 1',
+        {
+          replacements: { userId },
+          type: QueryTypes.SELECT,
+          transaction,
+        },
+      );
+      if (row) {
+        throw new BadRequestException(
+          'Country cannot be changed once payments are set up. ' +
+            'Contact support to migrate your Stripe account.',
+        );
+      }
+    }
+
+    await user.update(dto, { transaction });
     return user;
   }
 
@@ -375,7 +541,6 @@ export class UserService {
 
     const [
       socialAccounts,
-      userProfile,
       instructorProfile,
       groupMemberships,
       sessionParticipations,
@@ -386,7 +551,6 @@ export class UserService {
         where: { userId },
         attributes: ['provider', 'providerEmail', 'createdAt'],
       }),
-      UserProfile.findOne({ where: { userId } }),
       InstructorProfile.findOne({ where: { userId } }),
       GroupMember.findAll({
         where: { userId },
@@ -412,7 +576,6 @@ export class UserService {
       exportedAt: new Date().toISOString(),
       user: user.toJSON(),
       socialAccounts: socialAccounts.map((s) => s.toJSON()),
-      userProfile: userProfile?.toJSON() || null,
       instructorProfile: instructorProfile?.toJSON() || null,
       groupMemberships: groupMemberships.map((m) => m.toJSON()),
       sessionParticipations: sessionParticipations.map((p) => p.toJSON()),
@@ -591,24 +754,12 @@ export class UserService {
     user.passwordResetExpires = expiresAt;
     await user.save();
 
-    // Dev-only debugging: helps verify FE/BE token alignment.
-    // The token is still hashed in DB; this only logs to local console.
-    if (this.configService.get('NODE_ENV') !== 'production') {
-      const reloaded = await this.userModel.findByPk(user.id, {
-        attributes: [
-          'id',
-          'email',
-          'passwordResetToken',
-          'passwordResetExpires',
-        ],
-      });
-      this.logger.debug?.(
-        `Password reset token generated for ${user.email}: token=${token} hashed=${hashedToken} expiresAt=${expiresAt.toISOString()} stored=${reloaded?.passwordResetToken} storedExpires=${reloaded?.passwordResetExpires?.toISOString()}`,
-        'UserService',
-      );
-    }
-
-    return token; // Return plain token to send via email
+    // Never log the plain token — even at DEBUG. Any log sink with a
+    // 'debug' floor (Datadog, Sentry breadcrumbs, Railway log drain)
+    // would turn this into an account-takeover primitive. Token
+    // delivery goes via email; anyone debugging mismatches should
+    // read the email or the stored hash, not the plaintext.
+    return token;
   }
 
   /**

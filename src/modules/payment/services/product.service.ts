@@ -15,6 +15,8 @@ import {
   ProductInterval,
   ProductType,
 } from '../entities/product.entity';
+import { StripeAccount } from '../entities/stripe-account.entity';
+import { User } from '../../user/entities/user.entity';
 import { StripeService } from './stripe.service';
 import {
   buildPaginatedResponse,
@@ -37,6 +39,10 @@ export class ProductService {
   constructor(
     @InjectModel(Product)
     private readonly productModel: typeof Product,
+    @InjectModel(StripeAccount)
+    private readonly stripeAccountModel: typeof StripeAccount,
+    @InjectModel(User)
+    private readonly userModel: typeof User,
     private readonly sequelize: Sequelize,
     private readonly stripeService: StripeService,
     @Inject(WINSTON_MODULE_NEST_PROVIDER)
@@ -52,29 +58,46 @@ export class ProductService {
         'Subscription products require interval and intervalCount.',
       );
     }
-    const currency = (dto.currency ?? 'RON').toLowerCase();
+    const [account, user] = await Promise.all([
+      this.stripeAccountModel.findOne({ where: { userId: instructorId } }),
+      this.userModel.findByPk(instructorId),
+    ]);
+    const currency = this.stripeService.resolveCurrency({
+      explicit: dto.currency,
+      accountCurrency: account?.defaultCurrency,
+      countryCode: user?.countryCode,
+    });
 
-    const tx = await this.sequelize.transaction();
+    // Two-phase save: insert the local row in a short transaction,
+    // commit, then hit Stripe OUTSIDE a DB transaction. Holding a
+    // pooled Postgres connection open across a Stripe HTTP round
+    // trip was causing pool exhaustion under concurrent load.
+    //
+    // Safety of the split:
+    //   - Stripe create uses `buildIdempotencyKey(product, row.id, …)`
+    //     so retries never duplicate remote objects.
+    //   - If Stripe fails, we delete the orphaned local row — no
+    //     subsequent "looks half-created" state is visible.
+    //   - If the final update fails after Stripe succeeded, the
+    //     instructor's next `create` retry will re-use the same
+    //     idempotency keys and return the same Stripe ids, and the
+    //     `update` step will converge state.
+    const row = await this.productModel.create({
+      instructorId,
+      name: dto.name,
+      description: dto.description ?? null,
+      type: dto.type,
+      amountCents: dto.amountCents,
+      currency: currency.toUpperCase(),
+      interval: dto.interval ?? null,
+      intervalCount: dto.intervalCount ?? null,
+      stripeProductId: null,
+      stripePriceId: null,
+      isActive: true,
+      showOnProfile: dto.showOnProfile ?? false,
+    });
+
     try {
-      // Insert local row first so we have a stable id for the idempotency key.
-      const row = await this.productModel.create(
-        {
-          instructorId,
-          name: dto.name,
-          description: dto.description ?? null,
-          type: dto.type,
-          amountCents: dto.amountCents,
-          currency: currency.toUpperCase(),
-          interval: dto.interval ?? null,
-          intervalCount: dto.intervalCount ?? null,
-          stripeProductId: null,
-          stripePriceId: null,
-          isActive: true,
-          showOnProfile: dto.showOnProfile ?? false,
-        },
-        { transaction: tx },
-      );
-
       const stripeProduct = await this.stripeService.stripe.products.create(
         {
           name: dto.name,
@@ -116,16 +139,17 @@ export class ProductService {
 
       row.stripeProductId = stripeProduct.id;
       row.stripePriceId = stripePrice.id;
-      await row.save({ transaction: tx });
-
-      await tx.commit();
+      await row.save();
       return row;
     } catch (err) {
-      try {
-        await tx.rollback();
-      } catch {
-        // ignore
-      }
+      // Stripe failed: drop the orphan local row so the instructor
+      // can retry cleanly from the UI.
+      await row.destroy().catch((cleanupErr: unknown) => {
+        this.logger.warn(
+          `Failed to clean up orphaned local product ${row.id} after Stripe error: ${(cleanupErr as Error).message}`,
+          'ProductService',
+        );
+      });
       throw err;
     }
   }

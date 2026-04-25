@@ -55,12 +55,34 @@ export class BlogController {
     private readonly configService: ConfigService,
   ) {}
 
+  // Process-local sitemap cache. Regenerated at most once per hour.
+  // Prevents attackers from forcing a fresh 10k-row scan + XML build on
+  // every request (the global 100 req/60s throttle alone allowed ~6k
+  // regenerations per hour, which is both expensive and pointless —
+  // the sitemap barely changes).
+  private sitemapCache: { xml: string; expiresAt: number } | null = null;
+  private static readonly SITEMAP_TTL_MS = 60 * 60 * 1000;
+
   // =====================================================
   // PUBLIC (no auth)
   // =====================================================
 
   @Get('sitemap.xml')
   async sitemap(@Res() res: Response) {
+    const now = Date.now();
+    if (!this.sitemapCache || this.sitemapCache.expiresAt <= now) {
+      this.sitemapCache = {
+        xml: await this.buildSitemapXml(),
+        expiresAt: now + BlogController.SITEMAP_TTL_MS,
+      };
+    }
+
+    res.setHeader('Content-Type', 'application/xml');
+    res.setHeader('Cache-Control', 'public, max-age=3600');
+    res.send(this.sitemapCache.xml);
+  }
+
+  private async buildSitemapXml(): Promise<string> {
     const posts = await this.blogService.getSitemapSlugs();
     const BASE = this.configService.get<string>(
       'FRONTEND_URL',
@@ -104,15 +126,11 @@ export class BlogController {
       )
       .join('\n');
 
-    const xml = `<?xml version="1.0" encoding="UTF-8"?>
+    return `<?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
 ${staticXml}
 ${blogXml}
 </urlset>`;
-
-    res.setHeader('Content-Type', 'application/xml');
-    res.setHeader('Cache-Control', 'public, max-age=3600');
-    res.send(xml);
   }
 
   @Get()

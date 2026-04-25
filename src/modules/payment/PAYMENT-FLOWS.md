@@ -25,7 +25,7 @@ file to remember why something works the way it does.
 
 ---
 
-## Flow 1 — Webhook reception (Phase 1, live)
+## Flow 1 — Webhook reception
 
 ```
 Stripe         BeeActive API              Postgres
@@ -65,7 +65,7 @@ Stripe         BeeActive API              Postgres
 
 ---
 
-## Flow 2 — Instructor onboarding (Phase 2, pending)
+## Flow 2 — Instructor onboarding
 
 ```
 Browser           API                 Stripe
@@ -104,44 +104,64 @@ Browser           API                 Stripe
 
 ---
 
-## Flow 3 — Create a one-off invoice (Phase 3, pending)
+## Flow 3 — Create a one-off invoice
 
 ```
 Instructor       API              Stripe           Client
   │               │                 │                │
   │ POST /payments/invoices          │                │
-  │ { clientUserId | guestEmail, lineItems, due }     │
+  │ { clientUserId | guestEmail, lineItems, due, sendImmediately? }
   ├──────────────▶│                 │                 │
   │               │ 1. Check charges_enabled          │
-  │               │ 2. Resolve stripe_customer        │
-  │               │    - lookup by user_id            │
-  │               │    - OR lazy-create (registered)  │
-  │               │    - OR lazy-create (guest, user_id=null)
-  │               │ 3. Stripe: invoices.create        │
+  │               │ 2. [TX] Resolve stripe_customer   │
+  │               │        - lookup by user_id        │
+  │               │        - OR lazy-create (registered)
+  │               │        - OR lazy-create (guest, user_id=null)
+  │               │    [TX] INSERT invoice (status='draft', stripeInvoiceId=NULL)
+  │               │    TX commits — stable local id for idempotency keys
+  │               │ 3. Stripe: invoices.create (outside TX)
   │               ├────────────────▶│                 │
   │               │◀────────────────┤ in_...          │
   │               │ 4. Stripe: invoiceItems.create * N
   │               ├────────────────▶│                 │
-  │               │ 5. Stripe: invoices.finalizeInvoice (sends email)
-  │               ├────────────────▶│                 │
-  │               │◀────────────────┤ hosted_invoice_url, invoice_pdf
-  │               │ 6. INSERT invoice (status='open')
+  │               │ 5. UPDATE invoice.stripeInvoiceId = in_...
+  │               │                 │                 │
+  │               │ 6. If sendImmediately=true → call sendInvoice() (see below)
+  │               │    Else → return DRAFT            │
   │               │                 │                 │
   │ 201 {...}     │                 │                 │
   │◀──────────────┤                 │                 │
-  │               │                 │                 │
-  │               │                 │   Stripe emails │
-  │               │                 ├────────────────▶│
-  │               │                 │                 │
-  │               │  ┌─ async ──────┤ invoice.finalized webhook
-  │               │◀─┘ Notify both parties: INVOICE_CREATED
 ```
+
+**Key points:**
+- Creation leaves the invoice in `DRAFT`. No finalize, no email. Stripe-hosted URL and PDF don't exist until finalization.
+- If Stripe step 3 fails: local row is marked `VOID` (audit trail), never deleted. Reconciliation sweep can identify failed attempts by empty `stripeInvoiceId`.
+- Idempotency keys are `invoice:<row.id>:create` and `invoice_item:<row.id>:line_<N>` — deterministic on the local id, safe to retry.
 
 **Picker UX:** instructor can either pick a registered client (autocomplete from `instructor_client` JOIN `user`) or type an external email + name (guest flow).
 
+### Flow 3b — Finalize & send an invoice
+
+```
+Instructor       API              Stripe / Resend
+  │               │                 │
+  │ POST /payments/invoices/:id/send { overrideEmail? }
+  ├──────────────▶│                 │
+  │               │ 1. Ownership check
+  │               │ 2. If DRAFT → Stripe: invoices.finalizeInvoice
+  │               │    → sets status='open', generates hosted_invoice_url + invoice_pdf
+  │               │ 3. Determine email transport:
+  │               │      - overrideEmail differs from on-file? → send via Resend (our transport)
+  │               │      - otherwise → Stripe: invoices.sendInvoice (Stripe native send)
+  │ 200 {...}     │                 │
+  │◀──────────────┤                 │
+```
+
+Idempotent: calling on an already-`OPEN` invoice re-emails only (no double-finalize).
+
 ---
 
-## Flow 4 — Client pays via Checkout (Phase 3, pending)
+## Flow 4 — Client pays via Checkout
 
 ```
 Client           API              Stripe
@@ -175,7 +195,7 @@ Client           API              Stripe
 
 ---
 
-## Flow 5 — Mark invoice paid out of band (Phase 3, pending)
+## Flow 5 — Mark invoice paid out of band
 
 ```
 Instructor       API              Stripe
@@ -198,7 +218,7 @@ Instructor is responsible for having received the money out-of-band.
 
 ---
 
-## Flow 6 — Subscription lifecycle (Phase 4, pending)
+## Flow 6 — Subscription lifecycle
 
 Statuses mirrored from Stripe (all 9):
 ```
@@ -221,7 +241,7 @@ paused (not used in v1)
 
 ---
 
-## Flow 7 — Refund (Phase 5, pending)
+## Flow 7 — Refund
 
 ```
 Instructor       API              Stripe

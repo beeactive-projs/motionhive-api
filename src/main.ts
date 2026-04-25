@@ -1,5 +1,6 @@
 import { NestFactory } from '@nestjs/core';
 import { ValidationPipe, Logger, LoggerService } from '@nestjs/common';
+import type { NestExpressApplication } from '@nestjs/platform-express';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { WINSTON_MODULE_NEST_PROVIDER } from 'nest-winston';
 import { AppModule } from './app.module';
@@ -22,13 +23,32 @@ import { HttpExceptionFilter } from './common/filters/http-exception.filter';
  */
 async function bootstrap() {
   // Create NestJS application
-  const app = await NestFactory.create(AppModule, {
+  const app = await NestFactory.create<NestExpressApplication>(AppModule, {
     bufferLogs: true, // Buffer logs until logger is ready
   });
 
   // Replace default logger with Winston
   const logger = app.get<LoggerService>(WINSTON_MODULE_NEST_PROVIDER);
   app.useLogger(logger);
+
+  // ===================================================================
+  // ✅ SECURITY: Trust exactly ONE proxy hop (Railway's edge).
+  // ===================================================================
+  // Without this, Express reports `req.ip` as the load-balancer IP, so
+  // every rate limit (@Throttle, ThrottlerGuard) collapses onto a single
+  // shared bucket — three bad actors burn the quota for everyone else.
+  //
+  // `1` means: trust the IP the LAST upstream proxy wrote into
+  // X-Forwarded-For, and ignore anything further left in the chain. That
+  // defeats header spoofing — an attacker-controlled XFF value is
+  // overwritten by Railway before it reaches us.
+  //
+  // Do NOT use `true` here: it trusts the leftmost XFF entry, which an
+  // attacker CAN set directly, reopening the spoofing hole.
+  //
+  // If a second proxy is ever added in front of Railway (e.g. Cloudflare
+  // in strict proxy mode), bump this to `2`.
+  app.set('trust proxy', 1);
 
   // ✅ SECURITY: Apply global exception filter
   // Catches all errors and formats them consistently
@@ -221,17 +241,19 @@ A comprehensive REST API for managing fitness training sessions, trainers, and c
   // ✅ SECURITY: CORS configuration
   // In development: allow common localhost ports
   // In production: allow FRONTEND_URL + Railway/Vercel preview domains + DEV_ORIGINS
-  const productionOrigins = [
-    process.env.FRONTEND_URL,
-    'https://motionhive.fit',
-    'https://www.motionhive.fit',
-    'https://app.motionhive.fit',
-    'https://dev.motionhive.fit',
-    'https://app-dev.motionhive.fit',
-    /\.vercel\.app$/,
-    /\.railway\.app$/,
-    /\.netlify\.app$/,
-  ].filter(Boolean);
+  const productionOrigins = (
+    [
+      process.env.FRONTEND_URL,
+      'https://motionhive.fit',
+      'https://www.motionhive.fit',
+      'https://app.motionhive.fit',
+      'https://dev.motionhive.fit',
+      'https://app-dev.motionhive.fit',
+      /\.vercel\.app$/,
+      /\.railway\.app$/,
+      /\.netlify\.app$/,
+    ] as (string | RegExp | undefined)[]
+  ).filter((o): o is string | RegExp => Boolean(o));
 
   const developmentOrigins = [
     'http://localhost:4200', // Angular default

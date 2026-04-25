@@ -127,18 +127,6 @@ export class InstructorProfile extends Model {
   declare showPhone: boolean;
 
   @Column({
-    type: DataType.STRING(100),
-    allowNull: true,
-  })
-  declare locationCity: string;
-
-  @Column({
-    type: DataType.STRING(5),
-    allowNull: true,
-  })
-  declare locationCountry: string;
-
-  @Column({
     type: DataType.BOOLEAN,
     defaultValue: false,
   })

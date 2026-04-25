@@ -9,15 +9,18 @@ import {
   Query,
   UseGuards,
   Request,
+  BadRequestException,
 } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
 import { ApiTags } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
 import type { AuthenticatedRequest } from '../../common/types/authenticated-request';
 import { ClientService } from './client.service';
+import { AcceptByTokenDto } from './dto/accept-by-token.dto';
 import { CreateClientRequestDto } from './dto/create-client-request.dto';
-import { UpdateClientDto } from './dto/update-client.dto';
 import { ListClientsDto } from './dto/list-clients.dto';
+import { RequestClientDto } from './dto/request-client.dto';
+import { UpdateClientDto } from './dto/update-client.dto';
 import { ApiEndpoint } from '../../common/decorators/api-response.decorator';
 import { ClientDocs } from '../../common/docs/client.docs';
 import { Roles } from '../../common/decorators/roles.decorator';
@@ -78,6 +81,30 @@ export class ClientController {
   }
 
   /**
+   * DELETE /clients/my-instructors/:instructorId
+   * Client-initiated: end the relationship with the given instructor.
+   * Archives the instructor_client row.
+   */
+  @Delete('my-instructors/:instructorId')
+  @UseGuards(AuthGuard('jwt'))
+  @ApiEndpoint({
+    summary: 'Leave instructor',
+    description:
+      'End the relationship with the given instructor. Archives the relationship on both sides.',
+    auth: true,
+    responses: [
+      { status: 200, description: 'Relationship archived' },
+      { status: 404, description: 'Relationship not found' },
+    ],
+  })
+  async leaveInstructor(
+    @Request() req: AuthenticatedRequest,
+    @Param('instructorId') instructorId: string,
+  ) {
+    return this.clientService.leaveInstructor(req.user.id, instructorId);
+  }
+
+  /**
    * GET /clients/requests/pending
    * List pending incoming requests for the authenticated user.
    */
@@ -133,6 +160,17 @@ export class ClientController {
     @Request() req: AuthenticatedRequest,
     @Body() dto: CreateClientRequestDto,
   ) {
+    if (dto.userId) {
+      const request = await this.clientService.sendClientInvitation(
+        req.user.id,
+        dto.userId,
+        dto.message,
+      );
+      return { message: 'Invitation sent to existing user', request };
+    }
+    if (!dto.email) {
+      throw new BadRequestException('Provide either userId or email.');
+    }
     return this.clientService.sendClientInvitationByEmail(
       req.user.id,
       dto.email,
@@ -168,7 +206,7 @@ export class ClientController {
   async requestToBeClient(
     @Request() req: AuthenticatedRequest,
     @Param('instructorId') instructorId: string,
-    @Body() dto: { message?: string },
+    @Body() dto: RequestClientDto,
   ) {
     return this.clientService.requestToBeClient(
       req.user.id,
@@ -187,7 +225,7 @@ export class ClientController {
   @ApiEndpoint(ClientDocs.acceptByToken)
   async acceptByToken(
     @Request() req: AuthenticatedRequest,
-    @Body() dto: { token: string },
+    @Body() dto: AcceptByTokenDto,
   ) {
     return this.clientService.acceptByToken(dto.token, req.user.id);
   }

@@ -36,13 +36,38 @@ class CertificationDto {
  * submit bare usernames that break the link on the public profile.
  */
 class SocialLinksDto {
-  @IsOptional() @IsUrl() instagram?: string;
-  @IsOptional() @IsUrl() facebook?: string;
-  @IsOptional() @IsUrl() twitter?: string;
-  @IsOptional() @IsUrl() youtube?: string;
-  @IsOptional() @IsUrl() tiktok?: string;
-  @IsOptional() @IsUrl() linkedin?: string;
-  @IsOptional() @IsUrl() website?: string;
+  // Lock to http/https so stored links can't smuggle `javascript:` or
+  // `data:` URIs into any consumer that forwards the raw value into
+  // an `<a href>`, email body, or Slack card. Cap at 500 chars —
+  // Instagram/TikTok URLs easily fit under that.
+  @IsOptional()
+  @IsUrl({ protocols: ['http', 'https'], require_protocol: true })
+  @MaxLength(500)
+  instagram?: string;
+  @IsOptional()
+  @IsUrl({ protocols: ['http', 'https'], require_protocol: true })
+  @MaxLength(500)
+  facebook?: string;
+  @IsOptional()
+  @IsUrl({ protocols: ['http', 'https'], require_protocol: true })
+  @MaxLength(500)
+  twitter?: string;
+  @IsOptional()
+  @IsUrl({ protocols: ['http', 'https'], require_protocol: true })
+  @MaxLength(500)
+  youtube?: string;
+  @IsOptional()
+  @IsUrl({ protocols: ['http', 'https'], require_protocol: true })
+  @MaxLength(500)
+  tiktok?: string;
+  @IsOptional()
+  @IsUrl({ protocols: ['http', 'https'], require_protocol: true })
+  @MaxLength(500)
+  linkedin?: string;
+  @IsOptional()
+  @IsUrl({ protocols: ['http', 'https'], require_protocol: true })
+  @MaxLength(500)
+  website?: string;
 }
 export { SocialLinksDto };
 
@@ -61,6 +86,7 @@ export class CreateInstructorProfileDto {
   })
   @IsString()
   @IsOptional()
+  @MaxLength(4000)
   bio?: string;
 
   @ApiPropertyOptional({
@@ -125,16 +151,4 @@ export class CreateInstructorProfileDto {
   @IsBoolean()
   @IsOptional()
   showPhone?: boolean;
-
-  @ApiPropertyOptional({ example: 'Bucharest' })
-  @IsString()
-  @MaxLength(100)
-  @IsOptional()
-  locationCity?: string;
-
-  @ApiPropertyOptional({ example: 'RO' })
-  @IsString()
-  @MaxLength(5)
-  @IsOptional()
-  locationCountry?: string;
 }

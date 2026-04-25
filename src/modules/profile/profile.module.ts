@@ -1,6 +1,5 @@
 import { Module } from '@nestjs/common';
 import { SequelizeModule } from '@nestjs/sequelize';
-import { UserProfile } from './entities/user-profile.entity';
 import { InstructorProfile } from './entities/instructor-profile.entity';
 import { ProfileService } from './profile.service';
 import { ProfileController } from './profile.controller';
@@ -10,16 +9,16 @@ import { UserModule } from '../user/user.module';
 /**
  * Profile Module
  *
- * Manages user and instructor profiles.
- * Depends on RoleModule for assigning INSTRUCTOR role when activating.
- * Depends on UserModule for unified profile updates.
+ * Manages the instructor profile. User location (country, city) and
+ * identity (name, email) live on `user`. The legacy `user_profile`
+ * (fitness/health) table was dropped in migration 027.
  *
- * Exports ProfileService so AuthModule can create user profiles
- * during registration.
+ * Depends on RoleModule for assigning INSTRUCTOR role when activating,
+ * and UserModule for unified profile updates.
  */
 @Module({
   imports: [
-    SequelizeModule.forFeature([UserProfile, InstructorProfile]),
+    SequelizeModule.forFeature([InstructorProfile]),
     RoleModule,
     UserModule,
   ],

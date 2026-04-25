@@ -23,4 +23,24 @@ describe('CryptoService', () => {
     const b = service.hashToken('two');
     expect(a).not.toBe(b);
   });
+
+  it('generateTokenWithExpiry sets expiresAt exactly hoursValid in the future', () => {
+    // Pin time so the assertion is deterministic regardless of CI clock
+    // skew. The previous implementation drifted expiry by the local
+    // timezone offset; this guards against that regression for good.
+    jest.useFakeTimers().setSystemTime(new Date('2026-04-25T12:00:00.000Z'));
+    try {
+      const out24 = service.generateTokenWithExpiry(24);
+      expect(out24.expiresAt.toISOString()).toBe('2026-04-26T12:00:00.000Z');
+
+      const out1 = service.generateTokenWithExpiry(1);
+      expect(out1.expiresAt.toISOString()).toBe('2026-04-25T13:00:00.000Z');
+
+      // Token + hash relationship is intact.
+      expect(out24.token).toMatch(/^[0-9a-f]{64}$/);
+      expect(out24.hashedToken).toBe(service.hashToken(out24.token));
+    } finally {
+      jest.useRealTimers();
+    }
+  });
 });

@@ -5,7 +5,6 @@ import { WINSTON_MODULE_NEST_PROVIDER } from 'nest-winston';
 import { Feedback } from './entities/feedback.entity';
 import { CreateFeedbackDto } from './dto/create-feedback.dto';
 import { EmailService } from '../../common/services/email.service';
-import { UserService } from '../user/user.service';
 
 @Injectable()
 export class FeedbackService {
@@ -13,44 +12,39 @@ export class FeedbackService {
     @InjectModel(Feedback)
     private feedbackModel: typeof Feedback,
     private emailService: EmailService,
-    private userService: UserService,
     @Inject(WINSTON_MODULE_NEST_PROVIDER)
     private readonly logger: LoggerService,
   ) {}
 
-  async create(dto: CreateFeedbackDto): Promise<Feedback> {
-    const entry = await this.feedbackModel.create({ ...dto });
+  /**
+   * Store a feedback entry and optionally send a confirmation email.
+   *
+   * The confirmation only goes to the `email` the submitter entered
+   * (NOT to an arbitrary user id looked up server-side). This closes
+   * a previous amplification vector where an attacker could POST with
+   * any `userId` and trigger a MotionHive-branded mail to that user.
+   *
+   * `userId` is attached server-side by the controller when the
+   * request is authenticated — never from the request body.
+   */
+  async create(
+    dto: CreateFeedbackDto,
+    userId: string | null,
+  ): Promise<Feedback> {
+    const entry = await this.feedbackModel.create({
+      type: dto.type,
+      title: dto.title,
+      message: dto.message,
+      email: dto.email ?? null,
+      userId,
+    });
 
-    // Resolve email: direct email → userId lookup → skip
-    let recipientEmail = dto.email;
-    let recipientName: string | undefined;
-
-    if (!recipientEmail && dto.userId) {
-      try {
-        const user = await this.userService.findById(dto.userId);
-        if (user) {
-          recipientEmail = user.email;
-          recipientName = user.firstName;
-        }
-      } catch (err) {
-        this.logger.warn(
-          `Could not look up user ${dto.userId} for feedback confirmation: ${(err as Error).message}`,
-          'FeedbackService',
-        );
-      }
-    }
-
-    if (recipientEmail) {
+    if (dto.email) {
       this.emailService
-        .sendFeedbackConfirmation(
-          recipientEmail,
-          dto.type,
-          dto.title,
-          recipientName,
-        )
-        .catch((err) =>
+        .sendFeedbackConfirmation(dto.email, dto.type, dto.title)
+        .catch((err: unknown) =>
           this.logger.error(
-            `Failed to send feedback confirmation to ${recipientEmail}: ${err.message}`,
+            `Failed to send feedback confirmation to ${dto.email}: ${(err as Error).message}`,
             'FeedbackService',
           ),
         );

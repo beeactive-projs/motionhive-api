@@ -177,6 +177,26 @@ export class User extends Model {
   })
   declare lastLoginAt: Date;
 
+  /**
+   * ISO 3166-1 alpha-2 country code (uppercase, e.g. 'RO').
+   *
+   * Source of truth for the user's country — feeds Stripe Connect
+   * onboarding (instructors) and display. Nullable so signup doesn't
+   * force it; service-layer validation enforces presence before
+   * Stripe onboarding.
+   */
+  @Column({
+    type: DataType.CHAR(2),
+    allowNull: true,
+  })
+  declare countryCode: string | null;
+
+  @Column({
+    type: DataType.STRING(100),
+    allowNull: true,
+  })
+  declare city: string | null;
+
   @CreatedAt
   declare createdAt: Date;
 

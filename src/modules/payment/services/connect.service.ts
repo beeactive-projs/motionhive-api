@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Injectable,
   Inject,
   NotFoundException,
@@ -15,6 +16,8 @@ import type { Stripe } from 'stripe-types';
 
 import { StripeAccount } from '../entities/stripe-account.entity';
 import { StripeService } from './stripe.service';
+import { User } from '../../user/entities/user.entity';
+import { isStripeSupportedCountry } from '../../../common/constants/countries';
 import {
   NotificationService,
   NotificationType,
@@ -36,8 +39,10 @@ import {
  * thin SDK wrapper. Anything that touches local DB tables, fires
  * notifications, or runs business rules belongs here.
  *
- * Country policy: Romania-only for v1 (`country: 'RO'`). When BeeActive expands,
- * derive country from the instructor profile's `locationCountry` field.
+ * Country policy: derived from `user.countryCode` (ISO 3166-1 alpha-2)
+ * validated against the Stripe Connect Express whitelist in
+ * `common/constants/countries.ts`. A user without a country set gets
+ * a 400 Bad Request until they complete their profile.
  *
  * Race-safety: `getOrCreateAccount` accepts an optional `tx` so callers
  * already inside a transaction (e.g. invoice creation auto-onboarding flow,
@@ -48,6 +53,8 @@ export class ConnectService {
   constructor(
     @InjectModel(StripeAccount)
     private readonly stripeAccountModel: typeof StripeAccount,
+    @InjectModel(User)
+    private readonly userModel: typeof User,
     private readonly sequelize: Sequelize,
     private readonly stripeService: StripeService,
     private readonly configService: ConfigService,
@@ -79,10 +86,26 @@ export class ConnectService {
     });
     if (existing) return existing;
 
+    const user = await this.userModel.findByPk(userId, { transaction: tx });
+    if (!user) {
+      throw new NotFoundException('User not found.');
+    }
+    const countryCode = user.countryCode;
+    if (!countryCode) {
+      throw new BadRequestException(
+        'Set your country on your profile before connecting payments.',
+      );
+    }
+    if (!isStripeSupportedCountry(countryCode)) {
+      throw new BadRequestException(
+        `Stripe Connect is not available in ${countryCode} yet.`,
+      );
+    }
+
     const stripeAccount = await this.stripeService.stripe.accounts.create(
       {
         type: 'express',
-        country: 'RO',
+        country: countryCode,
         capabilities: {
           card_payments: { requested: true },
           transfers: { requested: true },
@@ -190,6 +213,38 @@ export class ConnectService {
       account,
       canIssueInvoices: account?.chargesEnabled === true,
     };
+  }
+
+  /**
+   * Force a fresh pull from Stripe and reconcile the local row. Used
+   * as an escape hatch when webhooks are missed (localhost dev without
+   * `stripe listen`, or a dropped delivery in prod). Returns the same
+   * shape as `getStatus`, so the FE can swap the signal atomically.
+   *
+   * No-op — but not an error — when the user has no local Stripe row
+   * yet: nothing to refresh, the FE should show the "Set up payments"
+   * flow instead.
+   */
+  async refreshStatus(userId: string): Promise<{
+    account: StripeAccount | null;
+    canIssueInvoices: boolean;
+  }> {
+    const local = await this.stripeAccountModel.findOne({
+      where: { userId },
+    });
+    if (!local) {
+      return { account: null, canIssueInvoices: false };
+    }
+
+    const live = await this.stripeService.stripe.accounts.retrieve(
+      local.stripeAccountId,
+    );
+
+    await this.sequelize.transaction((tx) =>
+      this.syncAccountFromWebhook(live, tx),
+    );
+
+    return this.getStatus(userId);
   }
 
   /**

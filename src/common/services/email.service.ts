@@ -3,6 +3,7 @@ import type { LoggerService } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { WINSTON_MODULE_NEST_PROVIDER } from 'nest-winston';
 import { Resend } from 'resend';
+import { escapeHtml } from '../utils/html.utils';
 import {
   emailVerificationTemplate,
   welcomeTemplate,
@@ -14,6 +15,8 @@ import {
   waitlistConfirmationTemplate,
   feedbackConfirmationTemplate,
   invoiceSendTemplate,
+  subscriptionSetupTemplate,
+  collaborationEndedTemplate,
 } from './email-templates';
 
 /**
@@ -158,7 +161,9 @@ export class EmailService {
   // =====================================================
 
   /**
-   * Send client invitation email (for users not yet on the platform)
+   * Send client invitation email to a recipient who does NOT yet have an
+   * account. The signup link carries a token that auto-accepts the
+   * invitation once registration completes.
    */
   async sendClientInvitationEmail(
     email: string,
@@ -170,15 +175,130 @@ export class EmailService {
       ? `${this.frontendUrl}/auth/signup?token=${token}`
       : `${this.frontendUrl}/auth/signup?ref=client-invite`;
 
+    const safeInstructor = escapeHtml(instructorName);
+    const safeMessage = escapeHtml(message);
     const subject = `${instructorName} invited you to MotionHive`;
     const html = `
       <div style="font-family: sans-serif; max-width: 600px; margin: 0 auto;">
         <h2>You've been invited!</h2>
-        <p><strong>${instructorName}</strong> would like you to join MotionHive as their client.</p>
-        ${message ? `<p style="padding: 12px; background: #f5f5f5; border-radius: 8px; font-style: italic;">"${message}"</p>` : ''}
+        <p><strong>${safeInstructor}</strong> would like you to join MotionHive as their client.</p>
+        ${message ? `<p style="padding: 12px; background: #f5f5f5; border-radius: 8px; font-style: italic;">"${safeMessage}"</p>` : ''}
         <p>Create your account to get started:</p>
         <a href="${signUpLink}" style="display: inline-block; padding: 12px 24px; background: #f59e0b; color: #fff; text-decoration: none; border-radius: 8px; font-weight: bold;">Join MotionHive</a>
         <p style="margin-top: 24px; color: #666; font-size: 14px;">If you already have an account, just log in and the invitation will be waiting for you.</p>
+      </div>
+    `;
+
+    await this.send(email, subject, html);
+  }
+
+  /**
+   * Notify an instructor that a user has requested to become their client.
+   * CTA deep-links to the instructor's Clients page.
+   */
+  async sendClientRequestToInstructorEmail(
+    email: string,
+    instructorFirstName: string | null,
+    clientName: string,
+    requestId: string,
+    message?: string,
+  ): Promise<void> {
+    const safeFirst = escapeHtml(instructorFirstName);
+    const safeClient = escapeHtml(clientName);
+    const safeMessage = escapeHtml(message);
+    const greeting = instructorFirstName ? `Hi ${safeFirst},` : 'Hi,';
+    const link = `${this.frontendUrl}/coaching/clients?requestId=${encodeURIComponent(requestId)}`;
+    const subject = `${clientName} wants to work with you on MotionHive`;
+    const html = `
+      <div style="font-family: sans-serif; max-width: 600px; margin: 0 auto;">
+        <p>${greeting}</p>
+        <h2 style="margin: 0 0 12px;">New client request</h2>
+        <p><strong>${safeClient}</strong> wants to work with you as a client.</p>
+        ${message ? `<p style="padding: 12px; background: #f5f5f5; border-radius: 8px; font-style: italic;">"${safeMessage}"</p>` : ''}
+        <p>Log in to accept or decline:</p>
+        <a href="${link}" style="display: inline-block; padding: 12px 24px; background: #f59e0b; color: #fff; text-decoration: none; border-radius: 8px; font-weight: bold;">Review request</a>
+      </div>
+    `;
+    await this.send(email, subject, html);
+  }
+
+  /**
+   * Notify the request sender that their client request was accepted.
+   * `responderName` is the user who accepted; `recipientFirstName` is
+   * the sender's first name for the greeting.
+   */
+  async sendClientRequestAcceptedEmail(
+    email: string,
+    recipientFirstName: string | null,
+    responderName: string,
+  ): Promise<void> {
+    const safeFirst = escapeHtml(recipientFirstName);
+    const safeResponder = escapeHtml(responderName);
+    const greeting = recipientFirstName ? `Hi ${safeFirst},` : 'Hi,';
+    const link = `${this.frontendUrl}/profile?tab=coaches`;
+    const subject = `${responderName} accepted your request on MotionHive`;
+    const html = `
+      <div style="font-family: sans-serif; max-width: 600px; margin: 0 auto;">
+        <p>${greeting}</p>
+        <h2 style="margin: 0 0 12px;">Request accepted</h2>
+        <p><strong>${safeResponder}</strong> accepted your request. You can now coordinate sessions, memberships and invoices together.</p>
+        <a href="${link}" style="display: inline-block; padding: 12px 24px; background: #f59e0b; color: #fff; text-decoration: none; border-radius: 8px; font-weight: bold;">Open MotionHive</a>
+      </div>
+    `;
+    await this.send(email, subject, html);
+  }
+
+  /**
+   * Notify the request sender that their client request was declined.
+   * Kept intentionally brief and non-punishing.
+   */
+  async sendClientRequestDeclinedEmail(
+    email: string,
+    recipientFirstName: string | null,
+    responderName: string,
+  ): Promise<void> {
+    const safeFirst = escapeHtml(recipientFirstName);
+    const safeResponder = escapeHtml(responderName);
+    const greeting = recipientFirstName ? `Hi ${safeFirst},` : 'Hi,';
+    const subject = `Update on your request on MotionHive`;
+    const html = `
+      <div style="font-family: sans-serif; max-width: 600px; margin: 0 auto;">
+        <p>${greeting}</p>
+        <p><strong>${safeResponder}</strong> isn't able to take on your request at this time.</p>
+        <p style="color: #666; font-size: 14px;">You can explore other options on MotionHive whenever you're ready.</p>
+      </div>
+    `;
+    await this.send(email, subject, html);
+  }
+
+  /**
+   * Send client invitation email to a recipient who already has a
+   * MotionHive account. The CTA deep-links into the in-app incoming
+   * requests page (auth-gated) where they can accept or decline.
+   */
+  async sendExistingUserClientInvitationEmail(
+    email: string,
+    recipientFirstName: string | null,
+    instructorName: string,
+    requestId: string,
+    message?: string,
+  ): Promise<void> {
+    const safeFirst = escapeHtml(recipientFirstName);
+    const safeInstructor = escapeHtml(instructorName);
+    const safeMessage = escapeHtml(message);
+    const greeting = recipientFirstName ? `Hi ${safeFirst},` : 'Hi,';
+    const acceptLink = `${this.frontendUrl}/profile?tab=coaches&requestId=${encodeURIComponent(requestId)}`;
+
+    const subject = `${instructorName} wants to add you as a client on MotionHive`;
+    const html = `
+      <div style="font-family: sans-serif; max-width: 600px; margin: 0 auto;">
+        <p>${greeting}</p>
+        <h2 style="margin: 0 0 12px;">${safeInstructor} sent you a client request</h2>
+        <p><strong>${safeInstructor}</strong> wants to add you as a client on MotionHive. Accept to start coordinating sessions, memberships and invoices together.</p>
+        ${message ? `<p style="padding: 12px; background: #f5f5f5; border-radius: 8px; font-style: italic;">"${safeMessage}"</p>` : ''}
+        <p>Log in to accept or decline:</p>
+        <a href="${acceptLink}" style="display: inline-block; padding: 12px 24px; background: #f59e0b; color: #fff; text-decoration: none; border-radius: 8px; font-weight: bold;">Review request</a>
+        <p style="margin-top: 24px; color: #666; font-size: 14px;">If you weren't expecting this, you can safely ignore the email or decline from your account.</p>
       </div>
     `;
 
@@ -348,6 +468,71 @@ export class EmailService {
       recipientName,
     });
 
+    await this.send(to, subject, html);
+  }
+
+  /**
+   * Sent to a client when their trainer creates a subscription for them
+   * but they have no payment method on file. Links to a Stripe-hosted
+   * setup page (Checkout in `setup` mode); once the card is saved Stripe
+   * sets it as their default and the subscription auto-activates.
+   */
+  async sendSubscriptionSetupEmail(params: {
+    to: string;
+    instructorName: string;
+    planName: string;
+    amountLabel: string;
+    cycleLabel: string | null;
+    setupUrl: string;
+    recipientName?: string | null;
+  }): Promise<void> {
+    const {
+      to,
+      instructorName,
+      planName,
+      amountLabel,
+      cycleLabel,
+      setupUrl,
+      recipientName,
+    } = params;
+    // Subject leans into the consent ask, not "you got a subscription" —
+    // the client hasn't gotten anything until they click confirm.
+    const subject = `${instructorName} set up a ${planName} membership — confirm to start`;
+    const html = subscriptionSetupTemplate({
+      instructorName,
+      planName,
+      amountLabel,
+      cycleLabel,
+      setupUrl,
+      recipientName,
+    });
+    await this.send(to, subject, html);
+  }
+
+  /**
+   * Sent to both parties when a coaching collaboration ends. The
+   * `endedBy` flag selects the right copy ("you ended..." vs "they
+   * ended..."), so the same method serves both recipients.
+   */
+  async sendCollaborationEndedEmail(params: {
+    to: string;
+    recipientName: string | null;
+    otherPartyName: string;
+    endedBy: 'self' | 'other';
+    recipientRole: 'instructor' | 'client';
+  }): Promise<void> {
+    const { to, recipientName, otherPartyName, endedBy, recipientRole } =
+      params;
+    const subject =
+      endedBy === 'self'
+        ? `You ended your collaboration with ${otherPartyName}`
+        : `${otherPartyName} ended your collaboration`;
+    const html = collaborationEndedTemplate({
+      recipientName,
+      otherPartyName,
+      endedBy,
+      recipientRole,
+    });
     await this.send(to, subject, html);
   }
 

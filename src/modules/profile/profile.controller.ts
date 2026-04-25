@@ -13,7 +13,6 @@ import { AuthGuard } from '@nestjs/passport';
 import { ApiTags } from '@nestjs/swagger';
 import type { AuthenticatedRequest } from '../../common/types/authenticated-request';
 import { ProfileService } from './profile.service';
-import { UpdateUserProfileDto } from './dto/update-user-profile.dto';
 import { CreateInstructorProfileDto } from './dto/create-instructor-profile.dto';
 import { UpdateInstructorProfileDto } from './dto/update-instructor-profile.dto';
 import { UpdateFullProfileDto } from './dto/update-full-profile.dto';
@@ -30,10 +29,8 @@ import { ProfileDocs } from '../../common/docs/profile.docs';
  * - GET    /profile/instructors/discover → Browse/search public instructors
  *
  * Authenticated:
- * - GET    /profile/me              → Full profile overview (roles + both profiles)
- * - PATCH  /profile/me              → Unified profile update
- * - GET    /profile/user-profile    → Get user profile
- * - PATCH  /profile/user-profile    → Update user profile
+ * - GET    /profile/me              → Full profile overview (roles + instructor profile)
+ * - PATCH  /profile/me              → Unified profile update (account + instructor)
  * - POST   /profile/instructor      → Activate instructor profile ("I want to instruct")
  * - GET    /profile/instructor      → Get instructor profile
  * - PATCH  /profile/instructor      → Update instructor profile
@@ -87,30 +84,6 @@ export class ProfileController {
     @Body() dto: UpdateFullProfileDto,
   ) {
     return this.profileService.updateFullProfile(req.user.id, dto);
-  }
-
-  // =====================================================
-  // USER PROFILE
-  // =====================================================
-
-  @Get('user-profile')
-  @UseGuards(AuthGuard('jwt'))
-  @ApiEndpoint(ProfileDocs.getParticipantProfile)
-  async getUserProfile(@Request() req: AuthenticatedRequest) {
-    return this.profileService.getUserProfile(req.user.id);
-  }
-
-  @Patch('user-profile')
-  @UseGuards(AuthGuard('jwt'))
-  @ApiEndpoint({
-    ...ProfileDocs.updateParticipantProfile,
-    body: UpdateUserProfileDto,
-  })
-  async updateUserProfile(
-    @Request() req: AuthenticatedRequest,
-    @Body() dto: UpdateUserProfileDto,
-  ) {
-    return this.profileService.updateUserProfile(req.user.id, dto);
   }
 
   // =====================================================

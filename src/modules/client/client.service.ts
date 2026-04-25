@@ -435,14 +435,7 @@ export class ClientService {
     if (instructorIds.length > 0) {
       const profiles = await this.instructorProfileModel.findAll({
         where: { userId: { [Op.in]: instructorIds } },
-        attributes: [
-          'userId',
-          'displayName',
-          'specializations',
-          'bio',
-          'locationCity',
-          'locationCountry',
-        ],
+        attributes: ['userId', 'displayName', 'specializations', 'bio'],
       });
 
       const profileMap = new Map(
@@ -662,7 +655,13 @@ export class ClientService {
       : 'An instructor';
 
     this.emailService
-      .sendClientInvitationEmail(targetUser.email, instructorName, message)
+      .sendExistingUserClientInvitationEmail(
+        targetUser.email,
+        targetUser.firstName,
+        instructorName,
+        result.id,
+        message,
+      )
       .catch((err: Error) =>
         this.logger.error(
           `Failed to send client invitation email: ${err.message}`,
@@ -745,6 +744,33 @@ export class ClientService {
       status: ClientRequestStatus.PENDING,
       expiresAt,
     });
+
+    // Notify instructor by email (fire-and-forget)
+    const sender = await User.findByPk(userId, {
+      attributes: ['email', 'firstName', 'lastName'],
+    });
+    const instructorEmail = await User.findByPk(instructorId, {
+      attributes: ['email'],
+    });
+    if (sender && instructorEmail) {
+      const clientName =
+        `${sender.firstName ?? ''} ${sender.lastName ?? ''}`.trim() ||
+        sender.email;
+      this.emailService
+        .sendClientRequestToInstructorEmail(
+          instructorEmail.email,
+          instructor.firstName,
+          clientName,
+          request.id,
+          message,
+        )
+        .catch((err: Error) =>
+          this.logger.error(
+            `Failed to email instructor on new client request: ${err.message}`,
+            'ClientService',
+          ),
+        );
+    }
 
     this.logger.log(
       `User ${userId} requested to become client of instructor ${instructorId}`,
@@ -834,6 +860,33 @@ export class ClientService {
       }
     });
 
+    // Notify the request sender (fire-and-forget)
+    const [sender, responder] = await Promise.all([
+      User.findByPk(request.fromUserId, {
+        attributes: ['email', 'firstName'],
+      }),
+      User.findByPk(userId, {
+        attributes: ['firstName', 'lastName', 'email'],
+      }),
+    ]);
+    if (sender && responder) {
+      const responderName =
+        `${responder.firstName ?? ''} ${responder.lastName ?? ''}`.trim() ||
+        responder.email;
+      this.emailService
+        .sendClientRequestAcceptedEmail(
+          sender.email,
+          sender.firstName,
+          responderName,
+        )
+        .catch((err: Error) =>
+          this.logger.error(
+            `Failed to email request sender on accept: ${err.message}`,
+            'ClientService',
+          ),
+        );
+    }
+
     this.logger.log(
       `Client request ${requestId} accepted by user ${userId}`,
       'ClientService',
@@ -886,6 +939,33 @@ export class ClientService {
         status: InstructorClientStatus.PENDING,
       },
     });
+
+    // Notify the request sender (fire-and-forget)
+    const [sender, responder] = await Promise.all([
+      User.findByPk(request.fromUserId, {
+        attributes: ['email', 'firstName'],
+      }),
+      User.findByPk(userId, {
+        attributes: ['firstName', 'lastName', 'email'],
+      }),
+    ]);
+    if (sender && responder) {
+      const responderName =
+        `${responder.firstName ?? ''} ${responder.lastName ?? ''}`.trim() ||
+        responder.email;
+      this.emailService
+        .sendClientRequestDeclinedEmail(
+          sender.email,
+          sender.firstName,
+          responderName,
+        )
+        .catch((err: Error) =>
+          this.logger.error(
+            `Failed to email request sender on decline: ${err.message}`,
+            'ClientService',
+          ),
+        );
+    }
 
     this.logger.log(
       `Client request ${requestId} declined by user ${userId}`,
@@ -1012,19 +1092,27 @@ export class ClientService {
     const recipientEmail = request.invitedEmail ?? request.toUser?.email;
 
     if (recipientEmail) {
-      this.emailService
-        .sendClientInvitationEmail(
-          recipientEmail,
-          instructorName,
-          request.message ?? undefined,
-          newToken ?? undefined,
-        )
-        .catch((err: Error) =>
-          this.logger.error(
-            `Failed to resend client invitation email to ${recipientEmail}: ${err.message}`,
-            'ClientService',
-          ),
-        );
+      const sendPromise = request.toUserId
+        ? this.emailService.sendExistingUserClientInvitationEmail(
+            recipientEmail,
+            request.toUser?.firstName ?? null,
+            instructorName,
+            request.id,
+            request.message ?? undefined,
+          )
+        : this.emailService.sendClientInvitationEmail(
+            recipientEmail,
+            instructorName,
+            request.message ?? undefined,
+            newToken ?? undefined,
+          );
+
+      sendPromise.catch((err: Error) =>
+        this.logger.error(
+          `Failed to resend client invitation email to ${recipientEmail}: ${err.message}`,
+          'ClientService',
+        ),
+      );
     }
 
     this.logger.log(
@@ -1055,11 +1143,25 @@ export class ClientService {
   ): Promise<InstructorClient> {
     const relationship = await this.instructorClientModel.findOne({
       where: { instructorId, clientId },
+      include: [
+        {
+          model: User,
+          as: 'instructor',
+          attributes: ['id', 'firstName', 'lastName', 'email'],
+        },
+        {
+          model: User,
+          as: 'client',
+          attributes: ['id', 'firstName', 'lastName', 'email'],
+        },
+      ],
     });
 
     if (!relationship) {
       throw new NotFoundException('Client relationship not found');
     }
+
+    const previousStatus = relationship.status;
 
     const updateData: Partial<Pick<InstructorClient, 'notes' | 'status'>> = {};
 
@@ -1078,7 +1180,134 @@ export class ClientService {
       'ClientService',
     );
 
+    // Notify both parties when the instructor archives the
+    // collaboration. Only fires on the actual transition, so toggling
+    // an already-archived row a second time doesn't re-spam emails.
+    if (
+      updates.status === InstructorClientStatus.ARCHIVED &&
+      previousStatus !== InstructorClientStatus.ARCHIVED
+    ) {
+      this.notifyCollaborationEnded(relationship, 'instructor').catch(
+        (err: unknown) =>
+          this.logger.warn(
+            `Failed to send collaboration-ended emails for ${relationship.id}: ${(err as Error).message}`,
+            'ClientService',
+          ),
+      );
+    }
+
     return relationship;
+  }
+
+  /**
+   * Client-initiated removal of an instructor relationship.
+   * Sets the instructor_client row to ARCHIVED — same terminal state the
+   * instructor-side `archiveClient` uses. Caller must own the client side
+   * of the relationship.
+   *
+   * Notification: emails BOTH parties so they each get a record of the
+   * change. Active subscriptions are not auto-cancelled by ending the
+   * collaboration; the email copy makes that clear so neither party is
+   * surprised by the next charge.
+   */
+  async leaveInstructor(
+    clientId: string,
+    instructorId: string,
+  ): Promise<InstructorClient> {
+    // Eager-load both sides' User rows so we can send the emails after
+    // the status change without a second round-trip.
+    const relationship = await this.instructorClientModel.findOne({
+      where: { instructorId, clientId },
+      include: [
+        {
+          model: User,
+          as: 'instructor',
+          attributes: ['id', 'firstName', 'lastName', 'email'],
+        },
+        {
+          model: User,
+          as: 'client',
+          attributes: ['id', 'firstName', 'lastName', 'email'],
+        },
+      ],
+    });
+
+    if (!relationship) {
+      throw new NotFoundException('Instructor relationship not found');
+    }
+
+    if (relationship.status === InstructorClientStatus.ARCHIVED) {
+      throw new BadRequestException('Relationship is already archived');
+    }
+
+    await relationship.update({ status: InstructorClientStatus.ARCHIVED });
+
+    this.logger.log(
+      `Client ${clientId} left instructor ${instructorId}`,
+      'ClientService',
+    );
+
+    // Fire-and-forget — email failures should never roll back the
+    // archive. Both helpers no-op when the email is missing.
+    this.notifyCollaborationEnded(relationship, 'client').catch(
+      (err: unknown) =>
+        this.logger.warn(
+          `Failed to send collaboration-ended emails for ${relationship.id}: ${(err as Error).message}`,
+          'ClientService',
+        ),
+    );
+
+    return relationship;
+  }
+
+  /**
+   * Send the "collaboration ended" email to both parties. `endedBy`
+   * names which side initiated, so each recipient sees the right copy
+   * ("you ended" vs "they ended"). Silently skips a recipient with no
+   * email on file (shouldn't happen for active accounts but cheap to
+   * guard).
+   */
+  private async notifyCollaborationEnded(
+    relationship: InstructorClient,
+    endedBy: 'instructor' | 'client',
+  ): Promise<void> {
+    const instructor = relationship.instructor;
+    const client = relationship.client;
+    if (!instructor || !client) return;
+
+    const instructorName =
+      [instructor.firstName, instructor.lastName]
+        .filter((s): s is string => !!s)
+        .join(' ') || 'Your trainer';
+    const clientName =
+      [client.firstName, client.lastName]
+        .filter((s): s is string => !!s)
+        .join(' ') || 'Your client';
+
+    const sends: Promise<void>[] = [];
+    if (client.email) {
+      sends.push(
+        this.emailService.sendCollaborationEndedEmail({
+          to: client.email,
+          recipientName: client.firstName ?? null,
+          otherPartyName: instructorName,
+          endedBy: endedBy === 'client' ? 'self' : 'other',
+          recipientRole: 'client',
+        }),
+      );
+    }
+    if (instructor.email) {
+      sends.push(
+        this.emailService.sendCollaborationEndedEmail({
+          to: instructor.email,
+          recipientName: instructor.firstName ?? null,
+          otherPartyName: clientName,
+          endedBy: endedBy === 'instructor' ? 'self' : 'other',
+          recipientRole: 'instructor',
+        }),
+      );
+    }
+    await Promise.all(sends);
   }
 
   // =====================================================
