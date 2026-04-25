@@ -18,6 +18,7 @@ import { RoleService } from '../role/role.service';
 import { UserService } from '../user/user.service';
 import { User } from '../user/entities/user.entity';
 import { buildSearchTerm } from '../../common/utils/search.utils';
+import { SearchIndexService } from '../search/search-index.service';
 
 /**
  * Profile Service
@@ -41,6 +42,7 @@ export class ProfileService {
     private userService: UserService,
     @Inject(WINSTON_MODULE_NEST_PROVIDER)
     private readonly logger: LoggerService,
+    private readonly searchIndexService: SearchIndexService,
   ) {}
 
   // =====================================================
@@ -85,6 +87,8 @@ export class ProfileService {
       undefined,
       transaction,
     );
+
+    await this.searchIndexService.upsertInstructor(userId, transaction);
 
     return profile;
   }
@@ -135,6 +139,8 @@ export class ProfileService {
         transaction,
       );
 
+      await this.searchIndexService.upsertInstructor(userId, transaction);
+
       await transaction.commit();
 
       this.logger.log(
@@ -174,6 +180,7 @@ export class ProfileService {
     }
 
     await profile.update(dto, { transaction });
+    await this.searchIndexService.upsertInstructor(userId, transaction);
     return profile;
   }
 

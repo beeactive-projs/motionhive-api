@@ -5,6 +5,7 @@ import { ProfileService } from './profile.service';
 import { ProfileController } from './profile.controller';
 import { RoleModule } from '../role/role.module';
 import { UserModule } from '../user/user.module';
+import { SearchModule } from '../search/search.module';
 
 /**
  * Profile Module
@@ -21,6 +22,7 @@ import { UserModule } from '../user/user.module';
     SequelizeModule.forFeature([InstructorProfile]),
     RoleModule,
     UserModule,
+    SearchModule,
   ],
   controllers: [ProfileController],
   providers: [ProfileService],

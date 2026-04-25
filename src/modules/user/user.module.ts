@@ -6,6 +6,7 @@ import { UserService } from './user.service';
 import { UserController } from './user.controller';
 import { CryptoService } from '../../common/services';
 import { CloudinaryService } from '../../common/services/cloudinary.service';
+import { SearchModule } from '../search/search.module';
 
 /**
  * User Module
@@ -20,7 +21,7 @@ import { CloudinaryService } from '../../common/services/cloudinary.service';
  * - exports: What other modules can use
  */
 @Module({
-  imports: [SequelizeModule.forFeature([User, SocialAccount])],
+  imports: [SequelizeModule.forFeature([User, SocialAccount]), SearchModule],
   controllers: [UserController],
   providers: [
     UserService,

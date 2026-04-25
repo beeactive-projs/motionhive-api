@@ -8,6 +8,7 @@ import { RoleModule } from '../role/role.module';
 import { GroupMember } from '../group/entities/group-member.entity';
 import { InstructorClient } from '../client/entities/instructor-client.entity';
 import { EmailService } from '../../common/services/email.service';
+import { SearchModule } from '../search/search.module';
 
 /**
  * Session Module
@@ -29,6 +30,7 @@ import { EmailService } from '../../common/services/email.service';
       InstructorClient,
     ]),
     RoleModule,
+    SearchModule,
   ],
   controllers: [SessionController],
   providers: [SessionService, EmailService],

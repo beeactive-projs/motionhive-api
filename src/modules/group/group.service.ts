@@ -26,6 +26,7 @@ import { EmailService } from '../../common/services/email.service';
 import { CryptoService } from '../../common/services/crypto.service';
 import { buildPaginatedResponse } from '../../common/dto/pagination.dto';
 import { buildSearchTerm } from '../../common/utils/search.utils';
+import { SearchIndexService } from '../search/search-index.service';
 
 /**
  * Group Service
@@ -68,6 +69,7 @@ export class GroupService {
     private cryptoService: CryptoService,
     @Inject(WINSTON_MODULE_NEST_PROVIDER)
     private readonly logger: LoggerService,
+    private readonly searchIndexService: SearchIndexService,
   ) {}
 
   // =====================================================
@@ -171,6 +173,10 @@ export class GroupService {
         );
 
         await transaction.commit();
+
+        // After commit so a search-index failure can't roll back the
+        // user-visible group create.
+        await this.searchIndexService.upsertGroup(group.id);
 
         this.logger.log(
           `Group created: ${group.name} (${group.id}) by instructor ${userId}`,
@@ -277,6 +283,7 @@ export class GroupService {
     }
 
     await group.update(updatePayload);
+    await this.searchIndexService.upsertGroup(group.id);
     return group;
   }
 
@@ -287,6 +294,7 @@ export class GroupService {
     const group = await this.assertOwnerAndGet(groupId, userId);
 
     await group.destroy(); // Soft delete (paranoid: true sets deletedAt)
+    await this.searchIndexService.removeIfExists('group', group.id);
 
     this.logger.log(
       `Group deleted: ${group.name} (${group.id}) by user ${userId}`,

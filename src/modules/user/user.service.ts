@@ -34,6 +34,7 @@ import {
 } from '../client/entities/client-request.entity';
 import { Invitation } from '../invitation/entities/invitation.entity';
 import { Role } from '../role/entities/role.entity';
+import { SearchIndexService } from '../search/search-index.service';
 
 /**
  * Roles that must never appear in user-picker search results, regardless of
@@ -93,6 +94,7 @@ export class UserService {
     private readonly cloudinaryService: CloudinaryService,
     @Inject(WINSTON_MODULE_NEST_PROVIDER)
     private readonly logger: LoggerService,
+    private readonly searchIndexService: SearchIndexService,
   ) {}
 
   /**
@@ -289,6 +291,8 @@ export class UserService {
       { transaction },
     );
 
+    await this.searchIndexService.upsertUser(user.id, transaction);
+
     return user;
   }
 
@@ -383,7 +387,7 @@ export class UserService {
     if (existingUser) {
       throw new ConflictException('User with this email already exists');
     }
-    return this.userModel.create(
+    const user = await this.userModel.create(
       {
         email: profile.email,
         passwordHash: null,
@@ -393,6 +397,8 @@ export class UserService {
       },
       { transaction },
     );
+    await this.searchIndexService.upsertUser(user.id, transaction);
+    return user;
   }
 
   /**
@@ -437,6 +443,7 @@ export class UserService {
     }
 
     await user.update(dto, { transaction });
+    await this.searchIndexService.upsertUser(user.id, transaction);
     return user;
   }
 
@@ -504,6 +511,13 @@ export class UserService {
     user.isActive = false;
     await user.save();
     await user.destroy(); // Soft delete (paranoid: true)
+
+    // Pull the user out of the search index. We also remove the
+    // matching instructor row (keyed on userId) since they share an
+    // entity_id space — the upsertInstructor call from any future
+    // profile reactivation will put it back.
+    await this.searchIndexService.removeIfExists('user', userId);
+    await this.searchIndexService.removeIfExists('instructor', userId);
 
     this.logger.log(`Account deleted (soft): ${userId}`, 'UserService');
   }

@@ -8,6 +8,7 @@ import { RoleModule } from '../role/role.module';
 import { InstructorClient } from '../client/entities/instructor-client.entity';
 import { EmailService } from '../../common/services/email.service';
 import { CryptoService } from '../../common/services/crypto.service';
+import { SearchModule } from '../search/search.module';
 
 /**
  * Group Module
@@ -26,6 +27,7 @@ import { CryptoService } from '../../common/services/crypto.service';
   imports: [
     SequelizeModule.forFeature([Group, GroupMember, InstructorClient]),
     RoleModule,
+    SearchModule,
   ],
   controllers: [GroupController],
   providers: [GroupService, EmailService, CryptoService],

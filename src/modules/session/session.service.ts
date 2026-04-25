@@ -21,6 +21,7 @@ import { User } from '../user/entities/user.entity';
 import { GroupMember } from '../group/entities/group-member.entity';
 import { InstructorClient } from '../client/entities/instructor-client.entity';
 import { EmailService } from '../../common/services/email.service';
+import { SearchIndexService } from '../search/search-index.service';
 
 /**
  * Session Service
@@ -57,6 +58,7 @@ export class SessionService {
     private emailService: EmailService,
     @Inject(WINSTON_MODULE_NEST_PROVIDER)
     private readonly logger: LoggerService,
+    private readonly searchIndexService: SearchIndexService,
   ) {}
 
   // =====================================================
@@ -116,6 +118,8 @@ export class SessionService {
       isRecurring: dto.isRecurring ?? false,
       recurringRule: dto.recurringRule ?? null,
     });
+
+    await this.searchIndexService.upsertSession(session.id);
 
     this.logger.log(
       `Session created: "${session.title}" by user ${userId}`,
@@ -367,6 +371,10 @@ export class SessionService {
       );
     }
 
+    // Refresh the search index. The service handles status changes
+    // (DRAFT/CANCELLED → removed; PUBLISHED → upserted) internally.
+    await this.searchIndexService.upsertSession(session.id);
+
     return session;
   }
 
@@ -407,6 +415,7 @@ export class SessionService {
     );
 
     await session.destroy(); // Soft delete (paranoid: true)
+    await this.searchIndexService.removeIfExists('session', session.id);
 
     this.logger.log(
       `Session deleted: "${session.title}" by user ${userId}`,
