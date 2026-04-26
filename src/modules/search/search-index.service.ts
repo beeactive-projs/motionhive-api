@@ -361,25 +361,31 @@ export class SearchIndexService {
     //   - setweight B  → tags + subtitle
     //   - setweight C  → body
     //   - search_text  → lowercase concat for trigram similarity()
+    //
+    // Uses positional `bind` ($1, $2, …) instead of `replacements`
+    // because Sequelize's replacement engine string-joins JS arrays and
+    // an empty array becomes literally nothing — producing the broken
+    // SQL "VALUES (..., ,...)". The `pg` driver's native parameter
+    // binding handles text[] arrays correctly, including empty ones.
     await this._sequelize.query(
       `INSERT INTO search_doc
          (entity_type, entity_id, title, subtitle, body, tags, city,
           is_public, owner_id, avatar_url,
           search_vector, search_text, updated_at)
        VALUES (
-         :entityType, :entityId, :title, :subtitle, :body, :tags, :city,
-         :isPublic, :ownerId, :avatarUrl,
+         $1, $2, $3, $4, $5, $6, $7,
+         $8, $9, $10,
          (
-           setweight(to_tsvector('simple', coalesce(:title::text, '')),    'A') ||
-           setweight(to_tsvector('simple', array_to_string(coalesce(:tags::text[], '{}'::text[]), ' ')), 'B') ||
-           setweight(to_tsvector('simple', coalesce(:subtitle::text, '')), 'B') ||
-           setweight(to_tsvector('simple', coalesce(:body::text, '')),     'C')
+           setweight(to_tsvector('simple', coalesce($3::text, '')),    'A') ||
+           setweight(to_tsvector('simple', array_to_string(coalesce($6::text[], '{}'::text[]), ' ')), 'B') ||
+           setweight(to_tsvector('simple', coalesce($4::text, '')), 'B') ||
+           setweight(to_tsvector('simple', coalesce($5::text, '')),     'C')
          ),
          lower(
-           coalesce(:title::text, '') || ' ' ||
-           coalesce(:subtitle::text, '') || ' ' ||
-           coalesce(:body::text, '') || ' ' ||
-           array_to_string(coalesce(:tags::text[], '{}'::text[]), ' ')
+           coalesce($3::text, '') || ' ' ||
+           coalesce($4::text, '') || ' ' ||
+           coalesce($5::text, '') || ' ' ||
+           array_to_string(coalesce($6::text[], '{}'::text[]), ' ')
          ),
          NOW()
        )
@@ -396,18 +402,18 @@ export class SearchIndexService {
          search_text   = EXCLUDED.search_text,
          updated_at    = NOW()`,
       {
-        replacements: {
-          entityType: payload.entityType,
-          entityId: payload.entityId,
-          title: payload.title,
-          subtitle: payload.subtitle,
-          body: payload.body,
-          tags: payload.tags,
-          city: payload.city,
-          isPublic: payload.isPublic,
-          ownerId: payload.ownerId,
-          avatarUrl: payload.avatarUrl,
-        },
+        bind: [
+          payload.entityType,
+          payload.entityId,
+          payload.title,
+          payload.subtitle,
+          payload.body,
+          payload.tags ?? [],
+          payload.city,
+          payload.isPublic,
+          payload.ownerId,
+          payload.avatarUrl,
+        ],
         transaction: tx,
         type: QueryTypes.INSERT,
       },
