@@ -326,12 +326,7 @@ literal(`tags::jsonb @> '${JSON.stringify([tag])}'::jsonb`)
 - **Logic**: Set `status = ARCHIVED` → send notification to both parties → add optional reason/note
 - **Why**: No formal "end relationship" flow exists
 
-### 10.2 Health data consent per instructor
-- **Current**: `sharedHealthInfo` is on `group_member` (per-group, not per-instructor)
-- **Fix**: Add `healthConsentGrantedAt` to `instructor_client` entity
-- **Logic**: Instructor can only view client health data if consent is explicitly granted for that relationship
-
-### 10.3 Fix declineRequest cleanup for CLIENT_TO_INSTRUCTOR type
+### 10.2 Fix declineRequest cleanup for CLIENT_TO_INSTRUCTOR type
 - **File**: `src/modules/client/client.service.ts:609-625`
 - **Issue**: Tries to destroy `instructor_client` with `status: PENDING` but this row doesn't exist for `CLIENT_TO_INSTRUCTOR` requests
 - **Fix**: Guard with check: only destroy if request `type === 'INSTRUCTOR_TO_CLIENT'`
