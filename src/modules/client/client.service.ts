@@ -1,38 +1,40 @@
+import type { LoggerService } from '@nestjs/common';
 import {
-  Injectable,
-  NotFoundException,
-  ForbiddenException,
   BadRequestException,
   ConflictException,
+  ForbiddenException,
   GoneException,
   Inject,
+  Injectable,
+  NotFoundException,
 } from '@nestjs/common';
-import type { LoggerService } from '@nestjs/common';
 import { InjectModel } from '@nestjs/sequelize';
-import { Sequelize } from 'sequelize-typescript';
-import { Op } from 'sequelize';
 import { randomBytes } from 'crypto';
 import { WINSTON_MODULE_NEST_PROVIDER } from 'nest-winston';
-import {
-  InstructorClient,
-  InstructorClientStatus,
-  InitiatedBy,
-} from './entities/instructor-client.entity';
-import {
-  ClientRequest,
-  ClientRequestType,
-  ClientRequestStatus,
-} from './entities/client-request.entity';
-import { InstructorProfile } from '../profile/entities/instructor-profile.entity';
-import { User } from '../user/entities/user.entity';
-import { GroupMember } from '../group/entities/group-member.entity';
-import { Group } from '../group/entities/group.entity';
-import { RoleService } from '../role/role.service';
-import { EmailService } from '../../common/services/email.service';
+import { Op } from 'sequelize';
+import { Sequelize } from 'sequelize-typescript';
+import { FilterSettingsDto } from '../../common/dto/filter-settings.dto';
 import {
   buildPaginatedResponse,
   PaginatedResponse,
 } from '../../common/dto/pagination.dto';
+import { EmailService } from '../../common/services/email.service';
+import { buildFilterOptions } from '../../common/utils/filter.utils';
+import { GroupMember } from '../group/entities/group-member.entity';
+import { Group } from '../group/entities/group.entity';
+import { InstructorProfile } from '../profile/entities/instructor-profile.entity';
+import { RoleService } from '../role/role.service';
+import { User } from '../user/entities/user.entity';
+import {
+  ClientRequest,
+  ClientRequestStatus,
+  ClientRequestType,
+} from './entities/client-request.entity';
+import {
+  InitiatedBy,
+  InstructorClient,
+  InstructorClientStatus,
+} from './entities/instructor-client.entity';
 
 // ---------------------------------------------------------------------------
 // Local shape types for getMyClients / enrichWithGroupMemberships
@@ -50,6 +52,26 @@ export interface GroupMembershipSnapshot {
   groupId: string;
   groupName: string;
 }
+
+/**
+ * Lean row shape for the instructor's PrimeNG client management table.
+ * Omits groupMemberships (expensive per-row join) — fetch those on demand.
+ * Covers instructor_client rows only (ACTIVE / ARCHIVED / PENDING from that table).
+ *
+ * Filterable fields: status, initiatedBy, startedAt, createdAt, notes,
+ *   client.firstName, client.lastName, client.email
+ */
+// export interface ClientTableRow {
+//   id: string;
+//   clientId: string;
+//   status: InstructorClientStatus;
+//   initiatedBy: InitiatedBy;
+//   notes: string | null;
+//   startedAt: Date | null;
+//   createdAt: Date;
+//   updatedAt: Date;
+//   client: ClientUserSnapshot | null;
+// }
 
 export interface ClientRow {
   id: string;
@@ -163,6 +185,69 @@ export class ClientService {
     );
 
     return buildPaginatedResponse(data, totalItems, page, limit);
+  }
+
+  /**
+   * Server-side filtered + sorted + paginated client list for a PrimeNG table.
+   *
+   * Queries instructor_client only (ACTIVE / ARCHIVED rows).
+   * PENDING items live in client_request and are not included here.
+   *
+   * Allowed filter fields:
+   *   status, initiatedBy, startedAt, createdAt, notes,
+   *   client.firstName, client.lastName, client.email
+   */
+  async filterClients(
+    instructorId: string,
+    dto: FilterSettingsDto,
+  ): Promise<PaginatedResponse<ClientRow>> {
+    const page = Math.floor(dto.first / dto.rows) + 1;
+    const opts = buildFilterOptions(dto, {
+      allowedFields: [
+        'status',
+        'initiatedBy',
+        'startedAt',
+        'createdAt',
+        'notes',
+        'client.firstName',
+        'client.lastName',
+        'client.email',
+      ],
+      defaultSortField: 'createdAt',
+    });
+
+    const where = { [Op.and]: [{ instructorId }, opts.where] };
+    const include = [
+      {
+        model: User,
+        as: 'client',
+        attributes: ['id', 'firstName', 'lastName', 'email', 'avatarId'],
+      },
+    ];
+
+    // findAndCountAll forwards ALL options (including subQuery:false) to its
+    // internal count() call. With subQuery:false Sequelize 6 generates a COUNT
+    // query that mixes aggregate + column selects, which PostgreSQL rejects
+    // without GROUP BY. Separate the two queries so only the data fetch uses
+    // subQuery:false while the count runs with Sequelize's default strategy.
+    const [count, rows] = await Promise.all([
+      this.instructorClientModel.count({ where, include }),
+      this.instructorClientModel.findAll({
+        where,
+        include,
+        order: opts.order,
+        limit: opts.limit,
+        offset: opts.offset,
+        subQuery: opts.subQuery,
+      }),
+    ]);
+
+    return buildPaginatedResponse(
+      rows.map((row) => this.toClientRow(row)),
+      count,
+      page,
+      dto.rows,
+    );
   }
 
   private clientUserInclude() {

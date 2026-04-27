@@ -1,19 +1,24 @@
 import {
-  Controller,
-  Get,
-  Post,
-  Patch,
-  Delete,
-  Body,
-  Param,
-  Query,
-  UseGuards,
-  Request,
   BadRequestException,
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Param,
+  Patch,
+  Post,
+  Query,
+  Request,
+  UseGuards,
 } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
 import { ApiTags } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
+import { ApiEndpoint } from '../../common/decorators/api-response.decorator';
+import { Roles } from '../../common/decorators/roles.decorator';
+import { ClientDocs } from '../../common/docs/client.docs';
+import { FilterSettingsDto } from '../../common/dto/filter-settings.dto';
+import { RolesGuard } from '../../common/guards/roles.guard';
 import type { AuthenticatedRequest } from '../../common/types/authenticated-request';
 import { ClientService } from './client.service';
 import { AcceptByTokenDto } from './dto/accept-by-token.dto';
@@ -21,16 +26,13 @@ import { CreateClientRequestDto } from './dto/create-client-request.dto';
 import { ListClientsDto } from './dto/list-clients.dto';
 import { RequestClientDto } from './dto/request-client.dto';
 import { UpdateClientDto } from './dto/update-client.dto';
-import { ApiEndpoint } from '../../common/decorators/api-response.decorator';
-import { ClientDocs } from '../../common/docs/client.docs';
-import { Roles } from '../../common/decorators/roles.decorator';
-import { RolesGuard } from '../../common/guards/roles.guard';
 import { InstructorClientStatus } from './entities/instructor-client.entity';
 
 /**
  * Client Controller
  *
  * Manages instructor-client relationships:
+ * - POST   /clients/filter                            → PrimeNG server-side filter (INSTRUCTOR)
  * - GET    /clients                                  → List my clients (INSTRUCTOR)
  * - GET    /clients/my-instructors                   → List instructors I'm a client of
  * - GET    /clients/requests/pending                 → List my pending incoming requests
@@ -49,6 +51,22 @@ import { InstructorClientStatus } from './entities/instructor-client.entity';
 @Controller('clients')
 export class ClientController {
   constructor(private readonly clientService: ClientService) {}
+
+  /**
+   * POST /clients/filter
+   * PrimeNG server-side filtered, sorted, and paginated client table.
+   * Accepts the full TableLazyLoadEvent as the request body.
+   */
+  @Post('filter')
+  @UseGuards(AuthGuard('jwt'), RolesGuard)
+  @Roles('INSTRUCTOR', 'ADMIN', 'SUPER_ADMIN')
+  @ApiEndpoint(ClientDocs.filterClients)
+  filterClients(
+    @Request() req: AuthenticatedRequest,
+    @Body() dto: FilterSettingsDto,
+  ) {
+    return this.clientService.filterClients(req.user.id, dto);
+  }
 
   /**
    * GET /clients
