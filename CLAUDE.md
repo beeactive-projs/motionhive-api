@@ -69,6 +69,7 @@ src/
     ├── venue/        # Where instructors deliver sessions (gym/studio/park/online/client-home/other)
     ├── feedback/     # Public feedback (no userId from body — JWT-derived; submitter-supplied email)
     ├── waitlist/     # Landing-page email capture (NOT session overflow waitlist — that still doesn't exist)
+    ├── search/       # Global search (search_doc index + GET /search) — see migration 029
     └── health/       # Terminus health checks, app config (controller-only, no service)
 ```
 
@@ -106,7 +107,7 @@ Roles: `SUPER_ADMIN`, `ADMIN`, `SUPPORT`, `INSTRUCTOR`, `WRITER`, `USER`
 
 ### Database
 - PostgreSQL (Neon) via `DATABASE_URL` or individual `DB_*` vars
-- Migrations in `/migrations/` (**001–027**), run with `node migrations/run.js`
+- Migrations in `/migrations/` (numbered `NNN_<snake>.sql` — read the directory; this list goes stale), run with `node migrations/run.js`
 - Custom enum types for status fields (e.g. `venue_kind`, `meeting_provider`)
 - CHAR(36) UUID primary keys everywhere
 - **Migration 027** dropped `user_profile` (was unused), added `user.country_code` + `user.city`, dropped `instructor_profile.location_*` (location now lives on `user`), and created the `venue` table

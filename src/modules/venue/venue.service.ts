@@ -3,13 +3,13 @@ import {
   ForbiddenException,
   Inject,
   Injectable,
-  NotFoundException,
 } from '@nestjs/common';
 import type { LoggerService } from '@nestjs/common';
 import { InjectModel } from '@nestjs/sequelize';
 import { Sequelize } from 'sequelize-typescript';
 import { Transaction } from 'sequelize';
 import { WINSTON_MODULE_NEST_PROVIDER } from 'nest-winston';
+import { assertOwned } from '../../common/utils/ownership.utils';
 import { InstructorProfile } from '../profile/entities/instructor-profile.entity';
 import { MeetingProvider, Venue, VenueKind } from './entities/venue.entity';
 import { CreateVenueDto } from './dto/create-venue.dto';
@@ -247,13 +247,10 @@ export class VenueService {
     venue: Venue | null,
     instructorId: string,
   ): asserts venue is Venue {
-    if (!venue) {
-      throw new NotFoundException('Venue not found.');
-    }
-    if (venue.instructorId !== instructorId) {
-      // Throw NotFound rather than Forbidden — don't leak existence
-      // of venues owned by other instructors.
-      throw new NotFoundException('Venue not found.');
-    }
+    // `onMismatch: 'hide'` so a cross-instructor lookup can't probe existence.
+    assertOwned(venue, instructorId, (v) => v.instructorId, {
+      notFoundMessage: 'Venue not found.',
+      onMismatch: 'hide',
+    });
   }
 }
