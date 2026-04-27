@@ -6,6 +6,7 @@ import {
   ForeignKey,
   BelongsTo,
   CreatedAt,
+  UpdatedAt,
 } from 'sequelize-typescript';
 import { User } from '../../user/entities/user.entity';
 
@@ -47,7 +48,7 @@ export enum ClientRequestStatus {
  */
 @Table({
   tableName: 'client_request',
-  timestamps: false,
+  timestamps: true,
   underscored: true,
 })
 export class ClientRequest extends Model {
@@ -121,6 +122,13 @@ export class ClientRequest extends Model {
     allowNull: false,
   })
   declare createdAt: Date;
+
+  @UpdatedAt
+  @Column({
+    type: DataType.DATE,
+    allowNull: false,
+  })
+  declare updatedAt: Date;
 
   // Relationships
   @BelongsTo(() => User, 'fromUserId')

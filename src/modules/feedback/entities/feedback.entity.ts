@@ -5,7 +5,10 @@ import {
   DataType,
   CreatedAt,
   UpdatedAt,
+  ForeignKey,
+  BelongsTo,
 } from 'sequelize-typescript';
+import { User } from '../../user/entities/user.entity';
 
 @Table({
   tableName: 'feedback',
@@ -38,6 +41,7 @@ export class Feedback extends Model {
   })
   declare message: string;
 
+  @ForeignKey(() => User)
   @Column({
     type: DataType.CHAR(36),
     allowNull: true,
@@ -55,4 +59,7 @@ export class Feedback extends Model {
 
   @UpdatedAt
   declare updatedAt: Date;
+
+  @BelongsTo(() => User)
+  declare user?: User;
 }

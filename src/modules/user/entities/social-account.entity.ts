@@ -48,15 +48,6 @@ export class SocialAccount extends Model {
   @Column({ type: DataType.STRING(255), allowNull: true })
   declare providerEmail: string | null;
 
-  @Column({ type: DataType.TEXT, allowNull: true })
-  declare accessToken: string | null;
-
-  @Column({ type: DataType.TEXT, allowNull: true })
-  declare refreshToken: string | null;
-
-  @Column({ type: DataType.DATE, allowNull: true })
-  declare tokenExpiresAt: Date | null;
-
   @CreatedAt
   declare createdAt: Date;
 

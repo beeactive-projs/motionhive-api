@@ -146,7 +146,7 @@ export class Session extends Model {
   declare isRecurring: boolean;
 
   @Column({
-    type: DataType.JSON,
+    type: DataType.JSONB,
     allowNull: true,
   })
   declare recurringRule: RecurringRule | null;

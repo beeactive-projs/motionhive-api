@@ -7,6 +7,7 @@ import {
   BelongsTo,
   CreatedAt,
   UpdatedAt,
+  DeletedAt,
 } from 'sequelize-typescript';
 import { User } from '../../user/entities/user.entity';
 
@@ -48,6 +49,7 @@ export interface SocialLinks {
 @Table({
   tableName: 'instructor_profile',
   timestamps: true,
+  paranoid: true,
   underscored: true,
 })
 export class InstructorProfile extends Model {
@@ -137,6 +139,9 @@ export class InstructorProfile extends Model {
 
   @UpdatedAt
   declare updatedAt: Date;
+
+  @DeletedAt
+  declare deletedAt: Date | null;
 
   // Relationships
   @BelongsTo(() => User)
