@@ -11,6 +11,7 @@ import { UserModule } from '../user/user.module';
 import { getJwtConfig } from '../../config/jwt.config';
 import { RoleModule } from '../role/role.module';
 import { ProfileModule } from '../profile/profile.module';
+import { PaymentModule } from '../payment/payment.module';
 import { EmailService } from '../../common/services/email.service';
 import { CryptoService } from '../../common/services/crypto.service';
 import { EmailVerifierService } from '../../common/services/email-verifier.service';
@@ -21,6 +22,10 @@ import { EmailVerifierService } from '../../common/services/email-verifier.servi
     PassportModule,
     RoleModule,
     ProfileModule,
+    // PaymentModule exports CustomerService — used by AuthService to
+    // link any guest stripe_customer rows to a newly-registered user
+    // on every signup path (email/password, Google, Facebook).
+    PaymentModule,
     SequelizeModule.forFeature([RefreshToken]),
     JwtModule.registerAsync({
       imports: [ConfigModule],

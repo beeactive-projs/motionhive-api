@@ -9,6 +9,7 @@ import {
 } from 'sequelize-typescript';
 import { User } from '../../user/entities/user.entity';
 import { Invoice } from './invoice.entity';
+import { Subscription } from './subscription.entity';
 
 /**
  * Consent types. Extend this enum if new consent flavors are needed
@@ -56,12 +57,29 @@ export class PaymentConsent extends Model {
   })
   declare id: string;
 
+  /**
+   * Either invoiceId OR subscriptionId must be set (XOR — enforced by
+   * `payment_consent_target_xor` CHECK in migration 032). One row =
+   * one consent for one billable artefact.
+   */
   @ForeignKey(() => Invoice)
   @Column({
     type: DataType.CHAR(36),
-    allowNull: false,
+    allowNull: true,
   })
-  declare invoiceId: string;
+  declare invoiceId: string | null;
+
+  /**
+   * Subscription-level waiver. Set when the consent is given at
+   * subscription create time (no invoice exists yet). XOR with
+   * invoiceId — see CHECK above.
+   */
+  @ForeignKey(() => Subscription)
+  @Column({
+    type: DataType.CHAR(36),
+    allowNull: true,
+  })
+  declare subscriptionId: string | null;
 
   /**
    * Nullable — a guest checking out without an account has no userId,
@@ -112,7 +130,10 @@ export class PaymentConsent extends Model {
 
   // Relationships
   @BelongsTo(() => Invoice, 'invoiceId')
-  declare invoice: Invoice;
+  declare invoice: Invoice | null;
+
+  @BelongsTo(() => Subscription, 'subscriptionId')
+  declare subscription: Subscription | null;
 
   @BelongsTo(() => User, 'userId')
   declare user: User | null;

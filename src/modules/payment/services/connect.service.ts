@@ -16,6 +16,7 @@ import type { Stripe } from 'stripe-types';
 
 import { StripeAccount } from '../entities/stripe-account.entity';
 import { StripeService } from './stripe.service';
+import { SubscriptionService } from './subscription.service';
 import { User } from '../../user/entities/user.entity';
 import { isStripeSupportedCountry } from '../../../common/constants/countries';
 import {
@@ -57,6 +58,7 @@ export class ConnectService {
     private readonly userModel: typeof User,
     private readonly sequelize: Sequelize,
     private readonly stripeService: StripeService,
+    private readonly subscriptionService: SubscriptionService,
     private readonly configService: ConfigService,
     private readonly notificationService: NotificationService,
     @Inject(WINSTON_MODULE_NEST_PROVIDER)
@@ -352,11 +354,32 @@ export class ConnectService {
   }
 
   /**
-   * Handle `account.application.deauthorized` — the instructor revoked our
-   * OAuth grant via the Stripe Express Dashboard. We mark the account as
-   * disconnected and refuse new charges, but we DO NOT auto-cancel active
-   * subscriptions: those are owned by the platform account and continue to
-   * run. A support agent + the instructor must manually resolve.
+   * Handle `account.application.deauthorized` — the instructor revoked
+   * our OAuth grant (or Stripe terminated their account).
+   *
+   * Two behaviours, in order:
+   *
+   *   1. Cancel-at-period-end every active subscription for this
+   *      instructor. The current cycle continues to run (clients keep
+   *      access for what they already paid for) but no future renewal
+   *      attempts. Without this, Stripe would silently fail to transfer
+   *      money to the deauthorized Connect account on the next renewal
+   *      and the client would still be charged. See
+   *      docs/research/jobs-system/11-payment-parked-items.md for the
+   *      notification fan-out (parked for jobs sprint).
+   *
+   *   2. Delete the local stripe_account row. The Stripe account id is
+   *      dead to us once Stripe revokes our OAuth grant — any future
+   *      Stripe call against it will fail. Keeping a soft-flagged row
+   *      breaks `getOrCreateAccount` (it short-circuits on an existing
+   *      row and returns the dead id). Deleting lets reconnect work
+   *      cleanly: the next "Set up payments" click creates a brand-new
+   *      Stripe Connect account.
+   *
+   *      Trade-off: we lose the historical link from instructor →
+   *      former Stripe account id. Acceptable: invoices/payments/subs
+   *      retain `instructor_id` directly, and Stripe's records are the
+   *      legal source of truth for past charges.
    */
   async handleDeauthorized(
     stripeAccountId: string,
@@ -373,18 +396,34 @@ export class ConnectService {
       );
       return;
     }
-    local.disconnectedAt = new Date();
-    local.chargesEnabled = false;
-    local.payoutsEnabled = false;
-    await local.save({ transaction: tx });
 
+    const instructorId = local.userId;
+
+    // 1) Stop billing future cycles on every active subscription.
+    const cancelled =
+      await this.subscriptionService.cancelAllActiveAtPeriodEndForInstructor(
+        instructorId,
+        tx,
+      );
+
+    // 2) Delete the dead row so reconnect works cleanly.
+    await local.destroy({ transaction: tx });
+
+    this.logger.log(
+      `Stripe account ${stripeAccountId} (instructor ${instructorId}) deauthorized: ${cancelled} subscription(s) cancelled-at-period-end, local row deleted.`,
+      'ConnectService',
+    );
+
+    // Best-effort instructor notification. Per-client notifications +
+    // emails are queued for the jobs sprint.
     await this.notificationService.notify({
-      userId: local.userId,
+      userId: instructorId,
       type: NotificationType.STRIPE_ACCOUNT_RESTRICTED,
       title: 'Stripe account disconnected',
       body:
-        'Your Stripe account was disconnected from BeeActive. Existing ' +
-        'subscriptions still run on the platform. Contact support to reconnect.',
+        cancelled > 0
+          ? `Your Stripe account was disconnected. ${cancelled} active subscription${cancelled === 1 ? '' : 's'} will end at the current billing period — no future charges. You can reconnect from the payments page.`
+          : 'Your Stripe account was disconnected. You can reconnect from the payments page.',
       data: { screen: 'instructor-payments' },
     });
   }

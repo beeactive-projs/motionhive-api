@@ -53,23 +53,24 @@ export class CreateBlogPostDto {
   @MaxLength(500)
   coverImage?: string;
 
-  @ApiProperty({ example: 'Sarah Johnson' })
+  /**
+   * Byline for guest contributors who don't have a registered account.
+   * Leave undefined / null when the post is authored by the logged-in
+   * user — the backend uses `req.user.id` to set `authorUserId` and
+   * derives the byline from the user record at read time. Setting both
+   * is rejected by the DB CHECK (`blog_post_author_xor`).
+   */
+  @ApiPropertyOptional({
+    example: 'Sarah Johnson',
+    description:
+      'Byline for guest authors (no MotionHive account). Omit for posts ' +
+      'written by the logged-in user — the byline is derived from the ' +
+      'user record automatically.',
+  })
   @IsString()
-  @IsNotEmpty()
+  @IsOptional()
   @MaxLength(100)
-  authorName: string;
-
-  @ApiProperty({ example: 'SJ' })
-  @IsString()
-  @IsNotEmpty()
-  @MaxLength(10)
-  authorInitials: string;
-
-  @ApiProperty({ example: 'Certified Trainer' })
-  @IsString()
-  @IsNotEmpty()
-  @MaxLength(100)
-  authorRole: string;
+  guestAuthorName?: string;
 
   @ApiPropertyOptional({
     example: 5,

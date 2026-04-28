@@ -25,6 +25,7 @@ import { ResendVerificationDto } from './dto/resend-verification.dto';
 import { RoleService } from '../role/role.service';
 import type { JwtPayload } from './types/jwt-payload';
 import { ProfileService } from '../profile/profile.service';
+import { CustomerService } from '../payment/services/customer.service';
 import { EmailService } from '../../common/services/email.service';
 import { CryptoService } from '../../common/services/crypto.service';
 import { EmailVerifierService } from '../../common/services/email-verifier.service';
@@ -70,6 +71,7 @@ export class AuthService {
     private jwtService: JwtService,
     private roleService: RoleService,
     private profileService: ProfileService,
+    private customerService: CustomerService,
     private configService: ConfigService,
     private sequelize: Sequelize,
     private emailService: EmailService,
@@ -144,11 +146,35 @@ export class AuthService {
         ),
       );
 
+      this.linkGuestStripeCustomers(user.id, user.email);
+
       return this.buildAuthResponse(user, tokens, roleNames);
     } catch (error) {
       await transaction.rollback();
       throw error;
     }
+  }
+
+  /**
+   * Attach any guest stripe_customer rows that match this user's email
+   * (created when an instructor invoiced them by email before they had
+   * an account). Idempotent — safe to call on every registration path.
+   *
+   * Fire-and-forget: if it fails the registration response still goes
+   * through. A daily backfill (jobs sprint) catches anything missed
+   * here.
+   */
+  private linkGuestStripeCustomers(userId: string, email: string): void {
+    this.customerService
+      .linkGuestToUser(userId, email)
+      .catch((err: unknown) =>
+        this.logger.error(
+          `Failed to link guest stripe_customer rows for user ${userId}: ${
+            (err as Error).message
+          }`,
+          'AuthService',
+        ),
+      );
   }
 
   /**
@@ -741,6 +767,13 @@ export class AuthService {
       }
 
       await transaction.commit();
+
+      // Link any pre-existing guest stripe_customer rows. Only on the
+      // new-user path — existing users have either already been linked
+      // at first signup OR are covered by the one-time backfill.
+      if (isNewUser) {
+        this.linkGuestStripeCustomers(user.id, user.email);
+      }
 
       const tokens = await this.generateAndStoreTokens(user.id, user.email);
       const roles = await this.roleService.getUserRoles(user.id);

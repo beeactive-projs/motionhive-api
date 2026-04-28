@@ -192,7 +192,10 @@ ${blogXml}
     @Body() dto: CreateBlogPostDto,
     @Request() req: AuthenticatedRequest,
   ) {
-    return this.blogService.create(dto, req.user.id);
+    return this.blogService.create(dto, req.user.id, {
+      userId: req.user.id,
+      roles: req.user.roles,
+    });
   }
 
   @Patch(':id')

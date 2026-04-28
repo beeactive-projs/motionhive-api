@@ -175,6 +175,7 @@ EventKind.notifications → [NotificationJob] → ChannelAdapter
 | 08 | [Idempotency & reliability](./08-idempotency-and-reliability.md) | Outbox pattern for transactional enqueue (very relevant to Stripe webhook → email flow), at-least-once vs exactly-once, dedup via job IDs, poison-message handling. |
 | 09 | [Cost analysis](./09-cost-analysis.md) | MVP ~$5–10/mo, growth ~$60–120/mo, scale ~$300–500/mo for self-hosted. SaaS (Inngest/Knock/Novu Cloud) is 4–10x more expensive at every scale. |
 | 10 | [Recommendations summary](./10-recommendations-summary.md) | **Synthesis**: BullMQ + Redis + DIY notifications + SSE + Bull Board + outbox for Stripe. Same-process workers day 1, split out at growth. The 3 decisions that matter most. |
+| 11 | [Payment items parked for the jobs sprint](./11-payment-parked-items.md) | Output of the 2026-04-28 pre-ship Stripe audit. Items that depend on the jobs/notifications module: orphaned webhook reconciliation, deauth-driven sub cancellation + notify, payout.failed alerts, webhook payload PII purger, linkGuestToUser backfill, multi-currency dashboard, and the 403→404 ownership sweep. |
 
 ---
 

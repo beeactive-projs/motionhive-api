@@ -22,6 +22,7 @@ import { Subscription } from '../entities/subscription.entity';
 import { User } from '../../user/entities/user.entity';
 import { StripeService } from './stripe.service';
 import { CustomerService } from './customer.service';
+import { OrphanedWebhookError } from './webhook-errors';
 import { EmailService } from '../../../common/services/email.service';
 import {
   NotificationService,
@@ -428,7 +429,13 @@ export class InvoiceService {
         limit: 100,
       });
       for (const item of existing.data) {
-        await this.stripeService.stripe.invoiceItems.del(item.id);
+        await this.stripeService.stripe.invoiceItems.del(item.id, {
+          idempotencyKey: this.stripeService.buildIdempotencyKey(
+            'invoice_item',
+            invoice.id,
+            `edit_${editVersion}_del_${item.id}`,
+          ),
+        });
       }
 
       const currency = invoice.currency.toLowerCase();
@@ -483,6 +490,13 @@ export class InvoiceService {
     await this.stripeService.stripe.invoices.update(
       stripeInvoiceId,
       updateParams,
+      {
+        idempotencyKey: this.stripeService.buildIdempotencyKey(
+          'invoice',
+          invoice.id,
+          `update_${editVersion}`,
+        ),
+      },
     );
 
     // 3. Sync local row from the truth on Stripe. We re-fetch instead of
@@ -514,10 +528,22 @@ export class InvoiceService {
     instructorId: string,
     page: number,
     limit: number,
-    status?: InvoiceStatus,
+    filters: {
+      status?: InvoiceStatus;
+      clientId?: string;
+      fromDate?: string;
+      toDate?: string;
+    } = {},
   ): Promise<PaginatedResponse<InvoiceResponse>> {
     const where: Record<string, unknown> = { instructorId };
-    if (status) where.status = status;
+    if (filters.status) where.status = filters.status;
+    if (filters.clientId) where.clientId = filters.clientId;
+    if (filters.fromDate || filters.toDate) {
+      const range: Record<symbol, Date> = {};
+      if (filters.fromDate) range[Op.gte] = new Date(filters.fromDate);
+      if (filters.toDate) range[Op.lte] = new Date(filters.toDate);
+      where.createdAt = range;
+    }
     const { rows, count } = await this.invoiceModel.findAndCountAll({
       where,
       order: [['createdAt', 'DESC']],
@@ -812,6 +838,17 @@ export class InvoiceService {
   /**
    * Cash / bank transfer mark-paid. Uses Stripe's `paid_out_of_band=true`
    * so the invoice flips to PAID without a real charge or fees.
+   *
+   * EU waiver gate: an invoice that requires the 14-day cooling-off
+   * waiver (Romanian OUG 34/2014) must have a corresponding
+   * `payment_consent` row before it can be marked paid. The Checkout
+   * flow writes this row when the client ticks the box on our hosted
+   * page — but mark-paid-out-of-band bypasses Checkout entirely. If we
+   * let the instructor flip the invoice to PAID without consent, the
+   * client never waived their right and we have no audit trail. Refuse
+   * with a clear error so the instructor either (a) clears the waiver
+   * flag (admit it wasn't needed) or (b) routes the client through
+   * normal Checkout first.
    */
   async markPaidOutOfBand(
     instructorId: string,
@@ -827,6 +864,14 @@ export class InvoiceService {
     ) {
       throw new BadRequestException(
         `Cannot mark-paid an invoice in status ${invoice.status}.`,
+      );
+    }
+    if (invoice.requiresImmediateAccessWaiver && !invoice.waiverAcceptedAt) {
+      throw new BadRequestException(
+        'This invoice requires the client to accept the 14-day cooling-off ' +
+          'waiver before it can be marked paid. Either clear the waiver ' +
+          'requirement on the invoice or have the client pay via the ' +
+          'normal checkout flow.',
       );
     }
 
@@ -1257,13 +1302,13 @@ export class InvoiceService {
     }
 
     if (!localInvoice) {
-      // Race: invoice row not in DB yet. Log and return — reconciliation
-      // sweep (jobs module) will revisit. See project_jobs_module_pending.
-      this.logger.warn(
-        `payment_intent ${intent.id} arrived before invoice row exists`,
-        'InvoiceService',
-      );
-      return;
+      // Race: invoice row not in DB yet (originating createOneOff hasn't
+      // committed) OR the activity happened directly in Stripe Dashboard.
+      // Throw OrphanedWebhookError — dispatcher stamps the audit row as
+      // 'orphaned' and the reconciliation worker (jobs sprint) sweeps
+      // these later. Don't 500 — Stripe shouldn't retry-spam us for a
+      // transient race.
+      throw new OrphanedWebhookError('payment_intent', intent.id);
     }
 
     await this.paymentModel.create(
@@ -1284,8 +1329,13 @@ export class InvoiceService {
           intent.status === 'succeeded'
             ? PaymentStatus.SUCCEEDED
             : PaymentStatus.FAILED,
+        // Use the charge's actually-used method type when expanded.
+        // `intent.payment_method_types` is the configured allow-list, NOT
+        // what the client used; reading [0] mis-reports for any intent
+        // that allows multiple methods.
         paymentMethodType:
-          (intent.payment_method_types && intent.payment_method_types[0]) ??
+          (typeof intent.latest_charge === 'object' &&
+            intent.latest_charge?.payment_method_details?.type) ||
           null,
         failureCode: intent.last_payment_error?.code ?? null,
         failureMessage: intent.last_payment_error?.message ?? null,

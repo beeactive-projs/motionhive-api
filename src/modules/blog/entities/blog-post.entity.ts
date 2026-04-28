@@ -62,23 +62,21 @@ export class BlogPost extends Model {
   })
   declare coverImage: string | null;
 
+  /**
+   * Byline for posts written by someone WITHOUT a registered account
+   * (guest contributors). Mutually exclusive with `authorUserId` —
+   * exactly one is set per row, enforced by the
+   * `blog_post_author_xor` CHECK in migration 033.
+   *
+   * For posts with `authorUserId`, the byline is derived from the
+   * `author` relation at read time (firstName + lastName); leave
+   * `guestAuthorName` NULL.
+   */
   @Column({
     type: DataType.STRING(100),
-    allowNull: false,
+    allowNull: true,
   })
-  declare authorName: string;
-
-  @Column({
-    type: DataType.STRING(10),
-    allowNull: false,
-  })
-  declare authorInitials: string;
-
-  @Column({
-    type: DataType.STRING(100),
-    allowNull: false,
-  })
-  declare authorRole: string;
+  declare guestAuthorName: string | null;
 
   @Column({
     type: DataType.INTEGER,

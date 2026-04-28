@@ -11,6 +11,7 @@ import { RefreshToken } from './entities/refresh-token.entity';
 import { UserService } from '../user/user.service';
 import { RoleService } from '../role/role.service';
 import { ProfileService } from '../profile/profile.service';
+import { CustomerService } from '../payment/services/customer.service';
 import { EmailService } from '../../common/services/email.service';
 import { CryptoService } from '../../common/services/crypto.service';
 import { EmailVerifierService } from '../../common/services/email-verifier.service';
@@ -118,6 +119,15 @@ describe('AuthService (smoke)', () => {
         { provide: JwtService, useValue: jwtService },
         { provide: RoleService, useValue: roleService },
         { provide: ProfileService, useValue: profileService },
+        {
+          provide: CustomerService,
+          useValue: {
+            // Stubbed: real call lives in payment-module integration; here
+            // we only assert AuthService swallows errors via its
+            // fire-and-forget wrapper.
+            linkGuestToUser: jest.fn().mockResolvedValue(0),
+          },
+        },
         { provide: ConfigService, useValue: configService },
         { provide: Sequelize, useValue: sequelizeMock },
         { provide: EmailService, useValue: emailService },

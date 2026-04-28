@@ -246,6 +246,47 @@ describe('WebhookHandlerService', () => {
     expect(logger.error).toHaveBeenCalled();
   });
 
+  it('OrphanedWebhookError marks the row ORPHANED and returns 200 (no rethrow)', async () => {
+    // Use require to bypass the otherwise-circular import in tests; the
+    // production handler uses a top-level import which is fine because
+    // the cycle is broken at module load time.
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { OrphanedWebhookError } = require('./webhook-errors') as {
+      OrphanedWebhookError: new (
+        type: 'invoice' | 'charge' | 'payment_intent' | 'subscription',
+        id: string,
+      ) => Error;
+    };
+
+    const event = makeStripeEvent('payment_intent.succeeded');
+    stripeMock.verifyWebhookSignature.mockReturnValue(event);
+
+    const auditRow = makeAuditRow();
+    model.create.mockResolvedValue(auditRow);
+
+    const orphan = new OrphanedWebhookError('payment_intent', 'pi_unknown');
+    sequelizeMock.transaction.mockImplementation(
+      async (cb: (tx: typeof fakeTx) => unknown) => {
+        await cb(fakeTx);
+        throw orphan;
+      },
+    );
+
+    // Spec: dispatcher catches OrphanedWebhookError, stamps status, and
+    // RESOLVES (does not rethrow). Stripe should see 200 and not retry.
+    const result = await service.handleIncomingEvent(
+      Buffer.from('raw'),
+      't=1,v1=sig',
+    );
+
+    expect(result.status).toBe(WebhookEventStatus.ORPHANED);
+    expect(auditRow.status).toBe(WebhookEventStatus.ORPHANED);
+    expect(auditRow.error).toContain('pi_unknown');
+    // FAILED-path logger.error must NOT have fired — orphans use warn.
+    expect(logger.error).not.toHaveBeenCalled();
+    expect(logger.warn).toHaveBeenCalled();
+  });
+
   it('signature verification failure bubbles and never touches the DB', async () => {
     const sigErr = new Error('Invalid stripe signature');
     sigErr.name = 'StripeSignatureVerificationError';

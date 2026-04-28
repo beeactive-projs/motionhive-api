@@ -13,6 +13,7 @@ import type { Stripe } from 'stripe-types';
 
 import { Payment, PaymentStatus } from '../entities/payment.entity';
 import { StripeService } from './stripe.service';
+import { OrphanedWebhookError } from './webhook-errors';
 import {
   NotificationService,
   NotificationType,
@@ -133,11 +134,10 @@ export class RefundService {
       transaction: tx,
     });
     if (!payment) {
-      this.logger.warn(
-        `charge.refunded for unknown charge ${charge.id}`,
-        'RefundService',
-      );
-      return;
+      // Race or out-of-band: no local payment row. Throw orphan; the
+      // dispatcher stamps the audit row 'orphaned' and the
+      // reconciliation worker (jobs sprint) revisits.
+      throw new OrphanedWebhookError('charge', charge.id);
     }
     payment.amountRefundedCents = charge.amount_refunded;
     if (charge.amount_refunded >= charge.amount) {
