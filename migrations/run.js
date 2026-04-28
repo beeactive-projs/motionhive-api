@@ -218,14 +218,27 @@ async function runMigrations() {
       )
     `);
 
+    // Track the highest already-applied migration number so we can
+    // distinguish "old seed migration obsoleted by a later structural
+    // change" (safe to skip) from "new migration with a real bug"
+    // (must fail loudly). Computed regardless of mode so it can be
+    // referenced by the catch block below.
+    const appliedRows = await client.query('SELECT name FROM _migrations');
+    const appliedSet = new Set(appliedRows.rows.map((r) => r.name));
+    const numericPrefix = (n) => {
+      const m = /^(\d+)_/.exec(n);
+      return m ? parseInt(m[1], 10) : -1;
+    };
+    const highestApplied = appliedRows.rows.reduce(
+      (max, r) => Math.max(max, numericPrefix(r.name)),
+      -1,
+    );
+
     // SAFE mode: skip already-run migrations AND the drop migration.
     // This is the default — bare `npm run migrate` lands here.
     if (mode === 'SAFE') {
-      const result = await client.query('SELECT name FROM _migrations');
-      const alreadyRun = new Set(result.rows.map((r) => r.name));
-
       migrations = migrations.filter(
-        (m) => !alreadyRun.has(m) && m !== '000_drop_existing_schema.sql',
+        (m) => !appliedSet.has(m) && m !== '000_drop_existing_schema.sql',
       );
 
       if (migrations.length === 0) {
@@ -274,25 +287,37 @@ async function runMigrations() {
           }
         }
       } catch (err) {
-        // In SAFE mode, certain errors mean "this migration is no
-        // longer applicable to the current schema" — either:
-        //   1. The objects it tries to create already exist
-        //      ("already exists", "duplicate key").
-        //   2. A LATER migration changed the schema in a way that
-        //      breaks this earlier seed migration ("column ... does
-        //      not exist", "relation ... does not exist"). Old seed
-        //      migrations (e.g. 009 inserting `author_name`) get
-        //      obsoleted by structural changes (033 dropping it). We
-        //      record them as "applied" so SAFE never re-tries them.
-        // In FRESH/SURGICAL modes, failures surface as failures
-        // because there the user explicitly intends to run the file.
+        // In SAFE mode there are two flavours of "expected failure"
+        // for which we record the migration as applied and move on:
+        //
+        //   A) Idempotent re-run of a file that was actually applied
+        //      before tracking existed. Identified by "already exists"
+        //      / "duplicate key" / "could not create unique index".
+        //      Safe regardless of the migration's position in history.
+        //
+        //   B) Old seed migration that has been obsoleted by a later
+        //      structural change (e.g. 009 inserts author_name; 033
+        //      drops the column). Identified by "does not exist". We
+        //      ONLY accept this for migrations whose number is BELOW
+        //      the highest already-applied migration — otherwise a
+        //      brand-new buggy migration that references a missing
+        //      table would silently be marked applied. New migrations
+        //      must fail loudly.
+        //
+        // FRESH and SURGICAL modes always fail loudly — the operator
+        // explicitly chose to run the file.
         const msg = err.message || '';
+        const fileNum = numericPrefix(file);
+        const looksReRun =
+          msg.includes('already exists') ||
+          msg.includes('duplicate key') ||
+          msg.includes('could not create unique index');
+        const looksObsoleted =
+          msg.includes('does not exist') &&
+          fileNum >= 0 &&
+          fileNum <= highestApplied;
         const isAlreadyApplied =
-          mode === 'SAFE' &&
-          (msg.includes('already exists') ||
-            msg.includes('duplicate key') ||
-            msg.includes('does not exist') ||
-            msg.includes('could not create unique index'));
+          mode === 'SAFE' && (looksReRun || looksObsoleted);
 
         if (isAlreadyApplied) {
           console.log('SKIP (already applied)');
