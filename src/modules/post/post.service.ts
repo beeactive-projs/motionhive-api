@@ -8,7 +8,7 @@ import {
 import type { LoggerService } from '@nestjs/common';
 import { InjectModel } from '@nestjs/sequelize';
 import { WINSTON_MODULE_NEST_PROVIDER } from 'nest-winston';
-import { Op, Transaction, UniqueConstraintError } from 'sequelize';
+import { Op, UniqueConstraintError } from 'sequelize';
 import { Post } from './entities/post.entity';
 import {
   PostAudience,
@@ -176,14 +176,12 @@ export class PostService {
 
     // After commit: search index + approval-flow notifications.
     // Failures here log but never roll back the user-visible write.
-    await this.searchIndexService
-      .upsertPost(createdPostId)
-      .catch((err) =>
-        this.logger.error(
-          `[posts] search index upsert failed for ${createdPostId}: ${(err as Error).message}`,
-          'PostService',
-        ),
+    await this.searchIndexService.upsertPost(createdPostId).catch((err) => {
+      this.logger.error(
+        `[posts] search index upsert failed for ${createdPostId}: ${(err as Error).message}`,
+        'PostService',
       );
+    });
 
     const pendingGroupIds = audienceSpecs
       .filter((s) => s.approvalState === PostAudienceApproval.PENDING)
@@ -305,14 +303,12 @@ export class PostService {
 
     await post.update(updates);
 
-    await this.searchIndexService
-      .upsertPost(postId)
-      .catch((err) =>
-        this.logger.error(
-          `[posts] search index upsert failed for ${postId}: ${(err as Error).message}`,
-          'PostService',
-        ),
+    await this.searchIndexService.upsertPost(postId).catch((err) => {
+      this.logger.error(
+        `[posts] search index upsert failed for ${postId}: ${(err as Error).message}`,
+        'PostService',
       );
+    });
 
     return this.hydrateSingle(postId, userId);
   }
