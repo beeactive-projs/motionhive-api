@@ -167,10 +167,21 @@ export class SearchIndexService {
       is_public: boolean;
       member_count: number;
     }>(
-      `SELECT id, instructor_id, name, description, tags, city, logo_url,
-              is_active, is_public, member_count
-         FROM "group"
-        WHERE id = :id AND deleted_at IS NULL`,
+      `SELECT g.id,
+              g.instructor_id,
+              g.name,
+              g.description,
+              g.tags,
+              g.city,
+              g.logo_url,
+              g.is_active,
+              g.is_public,
+              (SELECT COUNT(*)::int
+                 FROM group_member gm
+                WHERE gm.group_id = g.id
+                  AND gm.left_at IS NULL) AS member_count
+         FROM "group" g
+        WHERE g.id = :id AND g.deleted_at IS NULL`,
       {
         replacements: { id: groupId },
         transaction: tx,

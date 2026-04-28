@@ -23,19 +23,6 @@ export enum JoinPolicy {
 }
 
 /**
- * Shape of the `settings` JSON column. Nothing is read off this yet —
- * the schema exists as a hook for group-level preferences (approval
- * gating, notification policy, default durations). Keep optional so
- * the entity works with `null` or a partial object.
- */
-export interface GroupSettings {
-  allowMemberInvites?: boolean;
-  requireApproval?: boolean;
-  notifyOnJoin?: boolean;
-  defaultSessionDurationMinutes?: number;
-}
-
-/**
  * Group Entity
  *
  * Represents a training group created by an instructor.
@@ -100,12 +87,6 @@ export class Group extends Model {
   declare timezone: string;
 
   @Column({
-    type: DataType.JSON,
-    allowNull: true,
-  })
-  declare settings: GroupSettings | null;
-
-  @Column({
     type: DataType.BOOLEAN,
     defaultValue: true,
   })
@@ -163,13 +144,6 @@ export class Group extends Model {
     allowNull: true,
   })
   declare country: string | null;
-
-  @Column({
-    type: DataType.INTEGER,
-    defaultValue: 0,
-    comment: 'Denormalized member count for sorting/display',
-  })
-  declare memberCount: number;
 
   // -- Join link fields --
 

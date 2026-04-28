@@ -10,7 +10,7 @@ import { InjectModel } from '@nestjs/sequelize';
 import { WINSTON_MODULE_NEST_PROVIDER } from 'nest-winston';
 import { Op, Sequelize, Transaction, WhereOptions, literal } from 'sequelize';
 import { Group, JoinPolicy } from './entities/group.entity';
-import { GroupMember } from './entities/group-member.entity';
+import { GroupMember, GroupMemberRole } from './entities/group-member.entity';
 import { CreateGroupDto } from './dto/create-group.dto';
 import { UpdateGroupDto } from './dto/update-group.dto';
 import { UpdateMemberDto } from './dto/update-member.dto';
@@ -157,7 +157,6 @@ export class GroupService {
             address: dto.address,
             city: dto.city,
             country: dto.country,
-            memberCount: 1, // Owner counts as first member
           },
           { transaction },
         );
@@ -167,7 +166,7 @@ export class GroupService {
           {
             groupId: group.id,
             userId: userId,
-            isOwner: true,
+            role: GroupMemberRole.OWNER,
           },
           { transaction },
         );
@@ -306,7 +305,6 @@ export class GroupService {
    * Leave a group voluntarily
    *
    * Owners cannot leave -- they must transfer ownership first or delete the group.
-   * Uses a transaction to ensure member update + count decrement are atomic.
    */
   async leaveGroup(groupId: string, userId: string): Promise<void> {
     const member = await this.memberModel.findOne({
@@ -323,25 +321,9 @@ export class GroupService {
       );
     }
 
-    const sequelize = this.groupModel.sequelize!;
-    const transaction = await sequelize.transaction();
+    await member.update({ leftAt: new Date() });
 
-    try {
-      await member.update({ leftAt: new Date() }, { transaction });
-
-      // Decrement denormalized member count
-      await this.groupModel.decrement('memberCount', {
-        where: { id: groupId },
-        transaction,
-      });
-
-      await transaction.commit();
-
-      this.logger.log(`User ${userId} left group ${groupId}`, 'GroupService');
-    } catch (error) {
-      await transaction.rollback();
-      throw error;
-    }
+    this.logger.log(`User ${userId} left group ${groupId}`, 'GroupService');
   }
 
   // =====================================================
@@ -420,6 +402,8 @@ export class GroupService {
         email: member.user.email,
         avatarId: member.user.avatarId,
       },
+      role: member.role,
+      // Kept for backwards compat with FE that hasn't migrated to `role`.
       isOwner: member.isOwner,
       nickname: member.nickname,
       sharedHealthInfo: member.sharedHealthInfo,
@@ -474,27 +458,12 @@ export class GroupService {
       throw new ForbiddenException('Cannot remove the group owner');
     }
 
-    const sequelize = this.groupModel.sequelize!;
-    const transaction = await sequelize.transaction();
+    await member.update({ leftAt: new Date() });
 
-    try {
-      await member.update({ leftAt: new Date() }, { transaction });
-
-      await this.groupModel.decrement('memberCount', {
-        where: { id: groupId },
-        transaction,
-      });
-
-      await transaction.commit();
-
-      this.logger.log(
-        `Member ${memberId} removed from group ${groupId} by ${userId}`,
-        'GroupService',
-      );
-    } catch (error) {
-      await transaction.rollback();
-      throw error;
-    }
+    this.logger.log(
+      `Member ${memberId} removed from group ${groupId} by ${userId}`,
+      'GroupService',
+    );
   }
 
   // =====================================================
@@ -541,23 +510,29 @@ export class GroupService {
       }),
     };
 
+    const memberCountLiteral = literal(
+      '(SELECT COUNT(*)::int FROM group_member WHERE group_member.group_id = "Group"."id" AND group_member.left_at IS NULL)',
+    );
+
     const { rows: data, count: totalItems } =
       await this.groupModel.findAndCountAll({
         where,
-        attributes: [
-          'id',
-          'name',
-          'slug',
-          'description',
-          'logoUrl',
-          'joinPolicy',
-          'tags',
-          'city',
-          'country',
-          'memberCount',
-          'createdAt',
-        ],
-        order: [['memberCount', 'DESC']],
+        attributes: {
+          include: [
+            'id',
+            'name',
+            'slug',
+            'description',
+            'logoUrl',
+            'joinPolicy',
+            'tags',
+            'city',
+            'country',
+            'createdAt',
+            [memberCountLiteral, 'memberCount'],
+          ],
+        },
+        order: [[memberCountLiteral, 'DESC']],
         limit,
         offset,
       });
@@ -572,29 +547,35 @@ export class GroupService {
    * Visible to anyone -- no membership required.
    */
   async getPublicProfile(groupId: string) {
+    const memberCountLiteral = literal(
+      '(SELECT COUNT(*)::int FROM group_member WHERE group_member.group_id = "Group"."id" AND group_member.left_at IS NULL)',
+    );
+
     const group = await this.groupModel.findOne({
       where: {
         id: groupId,
         isPublic: true,
         isActive: true,
       },
-      attributes: [
-        'id',
-        'name',
-        'slug',
-        'description',
-        'logoUrl',
-        'joinPolicy',
-        'tags',
-        'contactEmail',
-        'contactPhone',
-        'address',
-        'city',
-        'country',
-        'timezone',
-        'memberCount',
-        'createdAt',
-      ],
+      attributes: {
+        include: [
+          'id',
+          'name',
+          'slug',
+          'description',
+          'logoUrl',
+          'joinPolicy',
+          'tags',
+          'contactEmail',
+          'contactPhone',
+          'address',
+          'city',
+          'country',
+          'timezone',
+          'createdAt',
+          [memberCountLiteral, 'memberCount'],
+        ],
+      },
     });
 
     if (!group) {
@@ -603,7 +584,7 @@ export class GroupService {
 
     // Get the instructor (owner)
     const ownerMembership = await this.memberModel.findOne({
-      where: { groupId, isOwner: true, leftAt: null },
+      where: { groupId, role: GroupMemberRole.OWNER, leftAt: null },
       include: [
         {
           model: User,
@@ -731,33 +712,18 @@ export class GroupService {
       throw new BadRequestException('You are already a member of this group');
     }
 
-    const sequelize = this.groupModel.sequelize!;
-    const transaction = await sequelize.transaction();
+    const member = await this.memberModel.create({
+      groupId,
+      userId,
+      role: GroupMemberRole.MEMBER,
+    });
 
-    try {
-      const member = await this.memberModel.create(
-        { groupId, userId, isOwner: false },
-        { transaction },
-      );
+    this.logger.log(
+      `User ${userId} self-joined group ${group.name} (${groupId})`,
+      'GroupService',
+    );
 
-      // Update denormalized member count
-      await this.groupModel.increment('memberCount', {
-        where: { id: groupId },
-        transaction,
-      });
-
-      await transaction.commit();
-
-      this.logger.log(
-        `User ${userId} self-joined group ${group.name} (${groupId})`,
-        'GroupService',
-      );
-
-      return member;
-    } catch (error) {
-      await transaction.rollback();
-      throw error;
-    }
+    return member;
   }
 
   // =====================================================
@@ -853,32 +819,18 @@ export class GroupService {
       throw new BadRequestException('You are already a member of this group');
     }
 
-    const sequelize = this.groupModel.sequelize!;
-    const transaction = await sequelize.transaction();
+    const member = await this.memberModel.create({
+      groupId: group.id,
+      userId,
+      role: GroupMemberRole.MEMBER,
+    });
 
-    try {
-      const member = await this.memberModel.create(
-        { groupId: group.id, userId, isOwner: false },
-        { transaction },
-      );
+    this.logger.log(
+      `User ${userId} joined group ${group.name} (${group.id}) via join link`,
+      'GroupService',
+    );
 
-      await this.groupModel.increment('memberCount', {
-        where: { id: group.id },
-        transaction,
-      });
-
-      await transaction.commit();
-
-      this.logger.log(
-        `User ${userId} joined group ${group.name} (${group.id}) via join link`,
-        'GroupService',
-      );
-
-      return member;
-    } catch (error) {
-      await transaction.rollback();
-      throw error;
-    }
+    return member;
   }
 
   // =====================================================
@@ -886,47 +838,31 @@ export class GroupService {
   // =====================================================
 
   /**
-   * Add a user as a member (used by InvitationService)
+   * Add a user as a member (used by InvitationService).
    *
    * If already a member, returns existing membership.
-   * Otherwise creates a new one and increments memberCount.
+   * Otherwise creates a new one with role=MEMBER.
    */
   async addMember(
     groupId: string,
     userId: string,
     externalTransaction?: Transaction,
   ): Promise<GroupMember> {
-    // Check if already a member
+    const txOpt = externalTransaction
+      ? { transaction: externalTransaction }
+      : {};
+
     const existing = await this.memberModel.findOne({
       where: { groupId, userId, leftAt: null },
-      ...(externalTransaction ? { transaction: externalTransaction } : {}),
+      ...txOpt,
     });
 
     if (existing) return existing;
 
-    // If caller provides a transaction, use it; otherwise create our own
-    const sequelize = this.groupModel.sequelize!;
-    const transaction = externalTransaction || (await sequelize.transaction());
-
-    try {
-      const member = await this.memberModel.create(
-        { groupId, userId, isOwner: false },
-        { transaction },
-      );
-
-      // Update denormalized member count
-      await this.groupModel.increment('memberCount', {
-        where: { id: groupId },
-        transaction,
-      });
-
-      // Only commit if we own the transaction
-      if (!externalTransaction) await transaction.commit();
-      return member;
-    } catch (error) {
-      if (!externalTransaction) await transaction.rollback();
-      throw error;
-    }
+    return this.memberModel.create(
+      { groupId, userId, role: GroupMemberRole.MEMBER },
+      txOpt,
+    );
   }
 
   // =====================================================
@@ -961,15 +897,17 @@ export class GroupService {
     const transaction = await sequelize.transaction();
 
     try {
-      // Remove owner flag from current owner
+      // Demote current owner to MEMBER. (Promoting them to MODERATOR
+      // instead would be a separate product decision; keeping the
+      // current behaviour — old owner becomes a regular member.)
       await this.memberModel.update(
-        { isOwner: false },
+        { role: GroupMemberRole.MEMBER },
         { where: { groupId, userId: currentOwnerId }, transaction },
       );
 
-      // Set new owner
+      // Promote new owner.
       await this.memberModel.update(
-        { isOwner: true },
+        { role: GroupMemberRole.OWNER },
         { where: { groupId, userId: newOwnerId }, transaction },
       );
 

@@ -10,14 +10,31 @@ import { Group } from './group.entity';
 import { User } from '../../user/entities/user.entity';
 
 /**
+ * Membership role within a single group.
+ *
+ * - MEMBER: regular participant
+ * - MODERATOR: trusted member with elevated permissions (kick, pin, etc.)
+ *   — reserved; UI/permission wiring lands when the feature ships
+ * - OWNER: at most one per group (enforced by partial unique index in
+ *   migration 031). The original instructor when the group is created.
+ */
+export enum GroupMemberRole {
+  MEMBER = 'MEMBER',
+  MODERATOR = 'MODERATOR',
+  OWNER = 'OWNER',
+}
+
+/**
  * Group Member Entity
  *
  * Links users to groups.
- * Tracks ownership, health data sharing consent, and membership dates.
+ * Tracks role (member / moderator / owner), health-data sharing consent,
+ * and membership dates.
  *
- * A user can be a member of multiple groups.
- * The owner (isOwner = true) is the instructor who created the group.
- * Members who leave have leftAt set (soft membership removal).
+ * `isOwner` is exposed as a virtual getter (read `role === 'OWNER'`) so
+ * existing API responses keep their shape during the FE migration window.
+ * The DB column `is_owner` is GENERATED ALWAYS from `role` (see migration
+ * 031) and will be dropped once the FE has switched to `role`.
  */
 @Table({
   tableName: 'group_member',
@@ -47,10 +64,20 @@ export class GroupMember extends Model {
   declare userId: string;
 
   @Column({
-    type: DataType.BOOLEAN,
-    defaultValue: false,
+    type: DataType.ENUM(...Object.values(GroupMemberRole)),
+    allowNull: false,
+    defaultValue: GroupMemberRole.MEMBER,
   })
-  declare isOwner: boolean;
+  declare role: GroupMemberRole;
+
+  /**
+   * Read-only convenience: `role === 'OWNER'`. Kept so existing callers
+   * (and FE response payloads) continue to work; will be removed once
+   * the FE migrates to reading `role` directly.
+   */
+  get isOwner(): boolean {
+    return this.role === GroupMemberRole.OWNER;
+  }
 
   @Column({
     type: DataType.BOOLEAN,

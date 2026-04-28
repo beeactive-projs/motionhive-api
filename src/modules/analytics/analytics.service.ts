@@ -4,7 +4,7 @@ import {
   ForbiddenException,
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/sequelize';
-import { Op } from 'sequelize';
+import { literal, Op } from 'sequelize';
 import { Session } from '../session/entities/session.entity';
 import { SessionParticipant } from '../session/entities/session-participant.entity';
 import { Group } from '../group/entities/group.entity';
@@ -81,7 +81,17 @@ export class AnalyticsService {
       }),
       this.groupModel.findAll({
         where: { instructorId },
-        attributes: ['id', 'memberCount'],
+        attributes: {
+          include: [
+            'id',
+            [
+              literal(
+                '(SELECT COUNT(*)::int FROM group_member WHERE group_member.group_id = "Group"."id" AND group_member.left_at IS NULL)',
+              ),
+              'memberCount',
+            ],
+          ],
+        },
         paranoid: true,
       }),
     ]);
@@ -132,8 +142,10 @@ export class AnalyticsService {
       },
     });
 
+    // memberCount is a computed attribute (subquery on group_member), so
+    // it isn't typed on the entity. Read it via getDataValue.
     const totalMembers = groups.reduce(
-      (sum, g) => sum + (g.memberCount || 0),
+      (sum, g) => sum + (Number(g.getDataValue('memberCount' as never)) || 0),
       0,
     );
 

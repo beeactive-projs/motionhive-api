@@ -238,6 +238,7 @@ export const GroupDocs = {
               firstName: 'Jane',
               lastName: 'Doe',
               avatarId: 'cloudinary-asset-id-or-null',
+              role: 'MEMBER',
               isOwner: false,
               sharedHealthInfo: true,
               isClient: true,

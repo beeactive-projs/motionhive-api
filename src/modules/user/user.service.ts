@@ -568,7 +568,7 @@ export class UserService {
       InstructorProfile.findOne({ where: { userId } }),
       GroupMember.findAll({
         where: { userId },
-        attributes: ['groupId', 'isOwner', 'nickname', 'joinedAt', 'leftAt'],
+        attributes: ['groupId', 'role', 'nickname', 'joinedAt', 'leftAt'],
       }),
       SessionParticipant.findAll({
         where: { userId },
