@@ -24,6 +24,7 @@
 const fs = require('fs');
 const path = require('path');
 const { Client } = require('pg');
+const { generateDbMap } = require('./generate-db-map');
 
 // Load .env file if it exists (for local development)
 const envPath = path.join(__dirname, '..', '.env');
@@ -206,6 +207,8 @@ async function runMigrations() {
     if (failed === 0) {
       console.log('  All migrations completed successfully!');
       console.log('==========================================================\n');
+
+      await generateDbMap();
 
       if (migrations.includes('006_create_super_admin.sql')) {
         console.log('Super Admin Account:');

@@ -29,6 +29,7 @@
     "migrate:fresh": "node migrations/run.js",
     "migrate:only": "node migrations/run.js --only",
     "migrate:from": "node migrations/run.js --from",
+    "db:map": "node migrations/generate-db-map.js",
     "prepare": "husky"
   },
   "dependencies": {
