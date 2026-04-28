@@ -28,20 +28,34 @@ Migrations run **only if** the process that starts your app also runs the migrat
 The **production start command** must run migrations first, then start the app:
 
 1. **Build** the app (if not already built by the platform).
-2. **Run migrations** with `node migrations/run.js --safe` (so only **new** migrations run; existing data is kept).
+2. **Run migrations** with `node migrations/run.js`. The runner is **SAFE by default** (never drops, never re-seeds — only applies new migrations).
 3. **Start** the app with `node dist/main` (or `npm run start:prod`).
 
 In this project that is done by a single script:
 
-- **`npm run railway:start`** = `npm run build` → `node migrations/run.js --safe` → `npm run start:prod`
+- **`npm run railway:start`** = `npm run build` → `node migrations/run.js` → `npm run start:prod`
 
 So: **your deploy start command must be `npm run railway:start`** (or equivalent). The name is Railway-oriented but the script works on any platform.
 
-### What `--safe` does
+### Runner modes
 
-- Reads the `_migrations` table to see which migration files have already been run.
-- Runs **only** migration files that are not yet recorded.
-- Does **not** run the drop script (`000_drop_existing_schema.sql`), so existing data is preserved.
+| Mode      | Command                                   | What it does                                                                               |
+|-----------|-------------------------------------------|--------------------------------------------------------------------------------------------|
+| **SAFE**  | `npm run migrate` *(default)*             | Reads `_migrations`, applies only files not already recorded. Never runs `000_drop`.        |
+| **FRESH** | `npm run migrate:fresh`                   | Drops the whole schema and re-seeds. Refuses on `NODE_ENV=production` and on Neon URLs. Asks for typed confirmation. |
+| **ONLY**  | `npm run migrate:only NNN`                | Runs only the migration whose filename starts with `NNN`. Never runs `000_drop`.            |
+| **FROM**  | `npm run migrate:from NNN`                | Runs `NNN` and every later migration. Never runs `000_drop`.                                |
+
+### Safety guarantees
+
+The runner refuses to run **`--fresh`** when:
+
+- `NODE_ENV` is `production` or `staging`
+- `DATABASE_URL` points at a `*.neon.tech` host (your production DB is Neon)
+
+This means you **cannot accidentally wipe your hosted database** by typing `npm run migrate:fresh` from muscle memory. To wipe a hosted DB you have to edit the runner manually — that intentional friction is the point.
+
+The `--safe` flag is still accepted (silently — it's now the default) so any external scripts that pass it keep working.
 
 ---
 
@@ -87,7 +101,7 @@ Use the same idea: the **production start command** must run migrations then sta
 
 - **Option B** – Run migrations and start explicitly:
   ```bash
-  npm run build && node migrations/run.js --safe && node dist/main
+  npm run build && node migrations/run.js && node dist/main
   ```
 
 Do **not** use only `npm run start:prod` or `node dist/main` as the start command, or new migrations will never run on deploy.
@@ -100,9 +114,10 @@ Useful when fixing a server where migrations did not run, or when developing loc
 
 | Goal | Command |
 |------|--------|
-| Run only **new** migrations (safe, recommended) | `node migrations/run.js --safe` |
+| Run only **new** migrations (safe, default) | `node migrations/run.js` |
 | Run from a specific migration onward (e.g. 009 and 010) | `node migrations/run.js --from 009` |
 | Run only one migration file | `node migrations/run.js --only 010` |
+| Wipe and re-seed (local/dev only — refuses on prod/Neon) | `node migrations/run.js --fresh` |
 
 For production, ensure the correct database URL (e.g. `MYSQL_PUBLIC_URL` or `DATABASE_URL`) is set in the environment before running the command.
 
@@ -119,7 +134,7 @@ After that, set the deploy start command to `npm run railway:start` and redeploy
 
 ## Production already has schema but `_migrations` is empty
 
-If your production database was created earlier (e.g. by running all migrations once without `--safe`, or by another process) and the **`_migrations`** table is missing or empty, then on deploy the runner thinks no migrations have run and tries to run **001–008** again. Those fail with errors like:
+If your production database was created earlier (e.g. before the `_migrations` tracking table was introduced, or by another process) and the **`_migrations`** table is missing or empty, then on deploy the runner thinks no migrations have run and tries to run **001–008** again. Those fail with errors like:
 
 - `Table 'user' already exists`
 - `Duplicate column name 'gender'`
@@ -162,7 +177,7 @@ mysql "mysql://user:pass@host:port/railway" < migrations/bootstrap_migrations_fo
 
 ### Step 2: Redeploy
 
-Trigger a new deploy (push a commit or “Redeploy” in Railway). The start command will run `node migrations/run.js --safe`, which will:
+Trigger a new deploy (push a commit or “Redeploy” in Railway). The start command will run `node migrations/run.js` (SAFE mode is now the default), which will:
 
 - See 001–008 in `_migrations` and skip them.
 - Run **009** and **010** only.

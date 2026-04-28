@@ -216,7 +216,12 @@ export class PaymentController {
       req.user.id,
       query.page ?? 1,
       query.limit ?? 20,
-      query.status,
+      {
+        status: query.status,
+        clientId: query.clientId,
+        fromDate: query.fromDate,
+        toDate: query.toDate,
+      },
     );
   }
 

@@ -10,6 +10,7 @@ import {
 
 import { ConnectService } from './connect.service';
 import { StripeService } from './stripe.service';
+import { SubscriptionService } from './subscription.service';
 import { StripeAccount } from '../entities/stripe-account.entity';
 import { User } from '../../user/entities/user.entity';
 import {
@@ -38,6 +39,7 @@ type StripeAccountStub = {
   onboardingCompletedAt: Date | null;
   disconnectedAt: Date | null;
   save: jest.Mock;
+  destroy: jest.Mock;
 };
 
 function makeAccountRow(
@@ -56,6 +58,7 @@ function makeAccountRow(
     onboardingCompletedAt: null,
     disconnectedAt: null,
     save: jest.fn().mockResolvedValue(undefined),
+    destroy: jest.fn().mockResolvedValue(undefined),
     ...overrides,
   };
 }
@@ -72,6 +75,7 @@ describe('ConnectService', () => {
     buildIdempotencyKey: jest.Mock;
   };
   let notificationMock: { notify: jest.Mock };
+  let subscriptionMock: { cancelAllActiveAtPeriodEndForInstructor: jest.Mock };
   let configMock: { get: jest.Mock };
 
   beforeEach(async () => {
@@ -92,6 +96,9 @@ describe('ConnectService', () => {
       ),
     };
     notificationMock = { notify: jest.fn().mockResolvedValue(undefined) };
+    subscriptionMock = {
+      cancelAllActiveAtPeriodEndForInstructor: jest.fn().mockResolvedValue(0),
+    };
     configMock = {
       get: jest.fn((key: string, def?: unknown) => {
         if (key === 'DEFAULT_PLATFORM_FEE_BPS') return 0;
@@ -107,6 +114,7 @@ describe('ConnectService', () => {
         { provide: getModelToken(User), useValue: userModel },
         { provide: Sequelize, useValue: makeSequelizeMock() },
         { provide: StripeService, useValue: stripeMock },
+        { provide: SubscriptionService, useValue: subscriptionMock },
         { provide: ConfigService, useValue: configMock },
         { provide: NotificationService, useValue: notificationMock },
         { provide: WINSTON_MODULE_NEST_PROVIDER, useValue: makeSilentLogger() },
@@ -341,19 +349,57 @@ describe('ConnectService', () => {
   });
 
   describe('handleDeauthorized', () => {
-    it('marks account disconnected and notifies, does NOT cancel subscriptions', async () => {
+    it('cancels active subs at-period-end, deletes the local row, and notifies', async () => {
       const row = makeAccountRow({
         chargesEnabled: true,
         payoutsEnabled: true,
       });
       stripeAccountModel.findOne.mockResolvedValue(row);
+      subscriptionMock.cancelAllActiveAtPeriodEndForInstructor.mockResolvedValue(
+        3,
+      );
 
       await service.handleDeauthorized('acct_test', fakeTx as never);
 
-      expect(row.disconnectedAt).toBeInstanceOf(Date);
-      expect(row.chargesEnabled).toBe(false);
-      expect(row.payoutsEnabled).toBe(false);
-      expect(row.save).toHaveBeenCalledWith({ transaction: fakeTx });
+      // 1) Subscriptions cancelled
+      expect(
+        subscriptionMock.cancelAllActiveAtPeriodEndForInstructor,
+      ).toHaveBeenCalledWith('user-1', fakeTx);
+      // 2) Local row deleted (NOT just flagged disconnected — deleted so reconnect works cleanly)
+      expect(row.destroy).toHaveBeenCalledWith({ transaction: fakeTx });
+      expect(row.save).not.toHaveBeenCalled();
+      // 3) Instructor notified
+      expect(notificationMock.notify).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: NotificationType.STRIPE_ACCOUNT_RESTRICTED,
+          userId: 'user-1',
+        }),
+      );
+    });
+
+    it('logs and returns when local row missing (no throw, no sub cancellation)', async () => {
+      stripeAccountModel.findOne.mockResolvedValue(null);
+
+      await expect(
+        service.handleDeauthorized('acct_unknown', fakeTx as never),
+      ).resolves.toBeUndefined();
+
+      expect(
+        subscriptionMock.cancelAllActiveAtPeriodEndForInstructor,
+      ).not.toHaveBeenCalled();
+      expect(notificationMock.notify).not.toHaveBeenCalled();
+    });
+
+    it('handles zero active subs (notification still goes out)', async () => {
+      const row = makeAccountRow();
+      stripeAccountModel.findOne.mockResolvedValue(row);
+      subscriptionMock.cancelAllActiveAtPeriodEndForInstructor.mockResolvedValue(
+        0,
+      );
+
+      await service.handleDeauthorized('acct_test', fakeTx as never);
+
+      expect(row.destroy).toHaveBeenCalled();
       expect(notificationMock.notify).toHaveBeenCalledWith(
         expect.objectContaining({
           type: NotificationType.STRIPE_ACCOUNT_RESTRICTED,

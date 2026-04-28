@@ -16,6 +16,7 @@ import { ConnectService } from './connect.service';
 import { InvoiceService } from './invoice.service';
 import { SubscriptionService } from './subscription.service';
 import { RefundService } from './refund.service';
+import { OrphanedWebhookError } from './webhook-errors';
 
 /**
  * Result of processing a webhook, returned to the controller so it
@@ -221,6 +222,26 @@ export class WebhookHandlerService {
         status: WebhookEventStatus.PROCESSED,
       };
     } catch (err) {
+      // Orphan: webhook references a Stripe entity we have no local
+      // mirror for. Stamp 'orphaned' and return 200 — Stripe should NOT
+      // retry-spam us, the reconciliation worker (jobs sprint) sweeps
+      // these rows once the originating local row appears.
+      if (err instanceof OrphanedWebhookError) {
+        this.logger.warn(
+          `Webhook orphaned: ${event.type} (${event.id}) — ${err.message}`,
+          'WebhookHandlerService',
+        );
+        auditRow.status = WebhookEventStatus.ORPHANED;
+        auditRow.error = err.message;
+        await auditRow.save();
+        return {
+          eventId: event.id,
+          type: event.type,
+          duplicate: false,
+          status: WebhookEventStatus.ORPHANED,
+        };
+      }
+
       const message = err instanceof Error ? err.message : String(err);
       // Log id + type + error message only — NEVER log event.data.object.
       this.logger.error(

@@ -220,6 +220,11 @@ describe('InvoiceService.updateDraft', () => {
     expect(stripeMock.stripe.invoices.update).toHaveBeenCalledWith(
       'in_test',
       expect.objectContaining({ description: 'new memo' }),
+      expect.objectContaining({
+        idempotencyKey: expect.stringMatching(
+          /^invoice:inv-1:update_/,
+        ) as unknown as string,
+      }),
     );
     expect(inv.description).toBe('new memo');
     // eslint-disable-next-line @typescript-eslint/unbound-method -- jest.fn() reference; we're asserting on the spy, not invoking it.
@@ -243,8 +248,22 @@ describe('InvoiceService.updateDraft', () => {
       ],
     });
 
-    expect(stripeMock.stripe.invoiceItems.del).toHaveBeenCalledWith('ii_old1');
-    expect(stripeMock.stripe.invoiceItems.del).toHaveBeenCalledWith('ii_old2');
+    expect(stripeMock.stripe.invoiceItems.del).toHaveBeenCalledWith(
+      'ii_old1',
+      expect.objectContaining({
+        idempotencyKey: expect.stringMatching(
+          /^invoice_item:inv-1:edit_.*_del_ii_old1$/,
+        ) as unknown as string,
+      }),
+    );
+    expect(stripeMock.stripe.invoiceItems.del).toHaveBeenCalledWith(
+      'ii_old2',
+      expect.objectContaining({
+        idempotencyKey: expect.stringMatching(
+          /^invoice_item:inv-1:edit_.*_del_ii_old2$/,
+        ) as unknown as string,
+      }),
+    );
     expect(stripeMock.stripe.invoiceItems.create).toHaveBeenCalledTimes(2);
 
     const firstCall = stripeMock.stripe.invoiceItems.create.mock.calls[0];

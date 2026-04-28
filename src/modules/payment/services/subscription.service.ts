@@ -130,12 +130,12 @@ export class SubscriptionService {
       clientId: dto.clientUserId,
       stripeCustomerId: customer.stripeCustomerId,
       productId: dto.productId,
-      // We don't have the Stripe IDs yet; backfill below. Schema
-      // requires them to be NOT NULL, so write the local row id as a
-      // temporary placeholder — guaranteed unique, and overwritten
-      // before any consumer reads this row (no controller returns
-      // until after the Stripe call).
-      stripeSubscriptionId: '',
+      // We don't have the Stripe IDs yet; backfill below. Column is
+      // nullable (migration 032) — Postgres treats NULLs as distinct in
+      // UNIQUE indexes, so concurrent placeholder rows don't collide.
+      // Filled in once `subscriptions.create` returns. Mirrors the
+      // invoice fix in migration 024.
+      stripeSubscriptionId: null,
       stripePriceId: product.stripePriceId,
       status: SubscriptionStatus.INCOMPLETE,
       currentPeriodStart: null,
@@ -353,6 +353,108 @@ export class SubscriptionService {
   }
 
   /**
+   * Bulk cancel-at-period-end for every active subscription belonging
+   * to an instructor. Invoked from
+   * `ConnectService.handleDeauthorized` when the instructor disconnects
+   * from Stripe — we stop billing future cycles but let the current
+   * paid period play out (industry-standard marketplace behaviour).
+   *
+   * This is best-effort per-subscription:
+   * - Each Stripe call carries its own idempotency key so a retried
+   *   webhook delivery doesn't double-fire the same cancel.
+   * - If one subscription's Stripe call fails, we log + continue to
+   *   the next so a single bad row doesn't block all cancellations.
+   * - All local row updates run inside the caller's transaction.
+   *
+   * Returns the count of subscriptions touched (for the audit log).
+   *
+   * Notification fan-out (instructor + each affected client) is parked
+   * for the jobs sprint — see docs/research/jobs-system/11-payment-parked-items.md.
+   */
+  async cancelAllActiveAtPeriodEndForInstructor(
+    instructorId: string,
+    tx: Transaction,
+  ): Promise<number> {
+    const active = await this.subscriptionModel.findAll({
+      where: {
+        instructorId,
+        status: {
+          [Op.in]: [
+            SubscriptionStatus.ACTIVE,
+            SubscriptionStatus.TRIALING,
+            SubscriptionStatus.PAST_DUE,
+          ],
+        },
+        cancelAtPeriodEnd: false,
+      },
+      transaction: tx,
+    });
+
+    if (active.length === 0) return 0;
+
+    let touched = 0;
+    for (const sub of active) {
+      const stripeId = sub.stripeSubscriptionId;
+      if (!stripeId) {
+        // Sub never finished its create round-trip; nothing to cancel
+        // on Stripe. Local cleanup is enough.
+        sub.cancelAtPeriodEnd = true;
+        sub.cancelAt = sub.currentPeriodEnd;
+        await sub.save({ transaction: tx });
+        touched++;
+        continue;
+      }
+      try {
+        await this.stripeService.stripe.subscriptions.update(
+          stripeId,
+          { cancel_at_period_end: true },
+          {
+            idempotencyKey: this.stripeService.buildIdempotencyKey(
+              'subscription',
+              sub.id,
+              'cancel-at-period-end-deauth',
+            ),
+          },
+        );
+        sub.cancelAtPeriodEnd = true;
+        sub.cancelAt = sub.currentPeriodEnd;
+        await sub.save({ transaction: tx });
+        touched++;
+      } catch (err: unknown) {
+        // Don't bail — log per-sub and keep going. The deauth handler
+        // is the only chance to do this without a jobs sweep.
+        this.logger.error(
+          `Failed to cancel-at-period-end subscription ${sub.id} (stripe ${stripeId}) on deauth: ${
+            (err as Error).message
+          }`,
+          'SubscriptionService',
+        );
+      }
+    }
+
+    this.logger.log(
+      `Deauth: cancel-at-period-end applied to ${touched}/${active.length} subscriptions for instructor ${instructorId}`,
+      'SubscriptionService',
+    );
+    return touched;
+  }
+
+  /**
+   * Assert the local subscription has been linked to its Stripe row.
+   * Used as a guard before any subscriptions.* call — if the original
+   * `subscriptions.create` failed mid-flight the stripe id stays null
+   * and the row should not be operated on.
+   */
+  private assertStripeId(sub: Subscription): string {
+    if (!sub.stripeSubscriptionId) {
+      throw new BadRequestException(
+        'Subscription is incomplete (Stripe link missing). Recreate it.',
+      );
+    }
+    return sub.stripeSubscriptionId;
+  }
+
+  /**
    * Re-mint a confirmation URL for a subscription that's still
    * INCOMPLETE — the instructor uses this from the detail page when
    * the original email got lost. We pull the subscription's
@@ -371,7 +473,7 @@ export class SubscriptionService {
       return { url: null, status: sub.status };
     }
     const stripeSub = (await this.stripeService.stripe.subscriptions.retrieve(
-      sub.stripeSubscriptionId,
+      this.assertStripeId(sub),
       { expand: ['latest_invoice'] },
     )) as Stripe.Subscription & {
       latest_invoice?: Stripe.Invoice | string | null;
@@ -505,16 +607,32 @@ export class SubscriptionService {
       return sub;
     }
 
+    const stripeId = this.assertStripeId(sub);
     if (immediate) {
       await this.stripeService.stripe.subscriptions.cancel(
-        sub.stripeSubscriptionId,
+        stripeId,
+        undefined,
+        {
+          idempotencyKey: this.stripeService.buildIdempotencyKey(
+            'subscription',
+            sub.id,
+            'cancel-immediate',
+          ),
+        },
       );
       sub.status = SubscriptionStatus.CANCELED;
       sub.canceledAt = new Date();
     } else {
       await this.stripeService.stripe.subscriptions.update(
-        sub.stripeSubscriptionId,
+        stripeId,
         { cancel_at_period_end: true },
+        {
+          idempotencyKey: this.stripeService.buildIdempotencyKey(
+            'subscription',
+            sub.id,
+            'cancel-at-period-end',
+          ),
+        },
       );
       sub.cancelAtPeriodEnd = true;
       sub.cancelAt = sub.currentPeriodEnd;
@@ -562,8 +680,15 @@ export class SubscriptionService {
     }
 
     await this.stripeService.stripe.subscriptions.update(
-      sub.stripeSubscriptionId,
+      this.assertStripeId(sub),
       { cancel_at_period_end: true },
+      {
+        idempotencyKey: this.stripeService.buildIdempotencyKey(
+          'subscription',
+          sub.id,
+          'cancel-at-period-end-by-client',
+        ),
+      },
     );
     sub.cancelAtPeriodEnd = true;
     sub.cancelAt = sub.currentPeriodEnd;

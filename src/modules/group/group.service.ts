@@ -14,6 +14,10 @@ import { GroupMember, GroupMemberRole } from './entities/group-member.entity';
 import { CreateGroupDto } from './dto/create-group.dto';
 import { UpdateGroupDto } from './dto/update-group.dto';
 import { UpdateMemberDto } from './dto/update-member.dto';
+import {
+  AssignableMemberRole,
+  UpdateMemberRoleDto,
+} from './dto/update-member-role.dto';
 import { DiscoverGroupsDto } from './dto/discover-groups.dto';
 import { User } from '../user/entities/user.entity';
 import { Session } from '../session/entities/session.entity';
@@ -1007,5 +1011,52 @@ export class GroupService {
     if (!member.isOwner) {
       throw new ForbiddenException('Only the group owner can do this');
     }
+  }
+
+  /**
+   * Promote a member to MODERATOR or demote back to MEMBER.
+   *
+   * Only the group OWNER can call this. The OWNER role itself is
+   * immutable through this endpoint — owner transfer is the dedicated
+   * `transferOwnership` flow with stricter checks (and the partial
+   * unique index enforces "at most one OWNER per group").
+   */
+  async updateMemberRole(
+    requestingUserId: string,
+    groupId: string,
+    targetUserId: string,
+    dto: UpdateMemberRoleDto,
+  ): Promise<GroupMember> {
+    await this.assertOwner(groupId, requestingUserId);
+
+    if (requestingUserId === targetUserId) {
+      throw new BadRequestException(
+        'Use transfer ownership to change your own role',
+      );
+    }
+
+    const target = await this.memberModel.findOne({
+      where: { groupId, userId: targetUserId, leftAt: null },
+    });
+    if (!target) {
+      throw new NotFoundException('Target user is not a member of this group');
+    }
+    if (target.role === GroupMemberRole.OWNER) {
+      throw new ForbiddenException(
+        'Cannot change the owner via this endpoint — use transfer ownership',
+      );
+    }
+
+    const newRole =
+      dto.role === AssignableMemberRole.MODERATOR
+        ? GroupMemberRole.MODERATOR
+        : GroupMemberRole.MEMBER;
+
+    if (target.role === newRole) {
+      return target;
+    }
+
+    await target.update({ role: newRole });
+    return target;
   }
 }

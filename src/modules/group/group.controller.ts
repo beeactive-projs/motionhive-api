@@ -18,9 +18,11 @@ import { GroupService } from './group.service';
 import { CreateGroupDto } from './dto/create-group.dto';
 import { UpdateGroupDto } from './dto/update-group.dto';
 import { UpdateMemberDto } from './dto/update-member.dto';
+import { UpdateMemberRoleDto } from './dto/update-member-role.dto';
 import { DiscoverGroupsDto } from './dto/discover-groups.dto';
 import { ApiEndpoint } from '../../common/decorators/api-response.decorator';
 import { GroupDocs } from '../../common/docs/group.docs';
+import { GroupRoleDocs } from '../../common/docs/post.docs';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { RolesGuard } from '../../common/guards/roles.guard';
 import { PaginationDto } from '../../common/dto/pagination.dto';
@@ -228,6 +230,18 @@ export class GroupController {
   ) {
     await this.groupService.removeMember(id, memberId, req.user.id);
     return { message: 'Member removed successfully' };
+  }
+
+  @Patch(':id/members/:userId/role')
+  @UseGuards(AuthGuard('jwt'))
+  @ApiEndpoint({ ...GroupRoleDocs.updateMemberRole, body: UpdateMemberRoleDto })
+  async updateMemberRole(
+    @Param('id') id: string,
+    @Param('userId') memberId: string,
+    @Body() dto: UpdateMemberRoleDto,
+    @Request() req: AuthenticatedRequest,
+  ) {
+    return this.groupService.updateMemberRole(req.user.id, id, memberId, dto);
   }
 
   // =====================================================

@@ -28,6 +28,7 @@ import { WaitlistModule } from './modules/waitlist/waitlist.module';
 import { PaymentModule } from './modules/payment/payment.module';
 import { VenueModule } from './modules/venue/venue.module';
 import { SearchModule } from './modules/search/search.module';
+import { PostModule } from './modules/post/post.module';
 import { CamelCaseInterceptor } from './common/interceptors/camel-case.interceptor';
 
 /**
@@ -120,6 +121,7 @@ import { CamelCaseInterceptor } from './common/interceptors/camel-case.intercept
     PaymentModule, // Stripe Connect: onboarding, invoices, subscriptions, webhooks
     VenueModule, // Instructor venues (where training happens)
     SearchModule, // Global search (search_doc index + GET /search)
+    PostModule, // Group posts (V1) — schema is forward-compatible for personal/public feeds
   ],
 
   controllers: [],

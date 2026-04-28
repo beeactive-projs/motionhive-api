@@ -268,6 +268,70 @@ export class SearchIndexService {
     );
   }
 
+  // ────── Post ──────
+
+  /**
+   * A post is indexed iff the parent post row is alive AND at least
+   * one of its audiences is alive + APPROVED. PENDING / REJECTED posts
+   * stay out of the index until they're approved.
+   *
+   * Visibility is enforced by the read-side WHERE on the viewer's
+   * group memberships (mirrors the SESSION pattern), so isPublic=false
+   * here — V1 has no public posts.
+   */
+  async upsertPost(postId: string, tx?: Transaction): Promise<void> {
+    const rows = await this._sequelize.query<{
+      id: string;
+      author_id: string;
+      content: string;
+      has_visible_audience: boolean;
+    }>(
+      `SELECT p.id,
+              p.author_id,
+              p.content,
+              EXISTS (
+                SELECT 1 FROM post_audience pa
+                 WHERE pa.post_id = p.id
+                   AND pa.deleted_at IS NULL
+                   AND pa.approval_state = 'APPROVED'
+              ) AS has_visible_audience
+         FROM post p
+        WHERE p.id = :id AND p.deleted_at IS NULL`,
+      {
+        replacements: { id: postId },
+        transaction: tx,
+        type: QueryTypes.SELECT,
+      },
+    );
+
+    const p = rows[0];
+    if (!p || !p.has_visible_audience) {
+      await this.removeIfExists('post', postId, tx);
+      return;
+    }
+
+    // Title is a truncated lead so search results have something
+    // scannable; full body lives in `body` for trigram + tsvector.
+    const title =
+      p.content.length > 80 ? `${p.content.slice(0, 77)}...` : p.content;
+
+    await this._upsert(
+      {
+        entityType: 'post',
+        entityId: p.id,
+        title,
+        subtitle: null,
+        body: p.content,
+        tags: [],
+        city: null,
+        isPublic: false,
+        ownerId: p.author_id,
+        avatarUrl: null,
+      },
+      tx,
+    );
+  }
+
   // ────── Generic remove ──────
 
   async removeIfExists(

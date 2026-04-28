@@ -104,11 +104,18 @@ export class Subscription extends Model {
   })
   declare productId: string | null;
 
+  /**
+   * Nullable on insert: the local row is created BEFORE the Stripe
+   * `subscriptions.create` call so the Stripe network round-trip happens
+   * outside any open DB transaction and so the local id can be used as
+   * an idempotency key. Backfilled with the real Stripe id once the
+   * call returns. Mirrors invoice.stripe_invoice_id (migration 024).
+   */
   @Column({
     type: DataType.STRING(255),
-    allowNull: false,
+    allowNull: true,
   })
-  declare stripeSubscriptionId: string;
+  declare stripeSubscriptionId: string | null;
 
   @Column({
     type: DataType.STRING(255),
@@ -198,4 +205,23 @@ export class Subscription extends Model {
 
   @BelongsTo(() => Product, 'productId')
   declare product: Product | null;
+
+  /**
+   * Public response shape — strips Stripe-only ids from the serialized
+   * payload so the FE can't accidentally call Stripe directly with our
+   * customer / subscription / price ids. Kept on the entity itself so
+   * every serialization path (NestJS interceptor, manual JSON.stringify,
+   * test assertions) gets the filtered shape.
+   *
+   * Internal service code should still use the typed accessors
+   * (`sub.stripeSubscriptionId`) — those work on the in-memory instance
+   * regardless of what `toJSON` outputs.
+   */
+  toJSON(): Record<string, unknown> {
+    const raw = super.toJSON();
+    delete raw.stripeCustomerId;
+    delete raw.stripeSubscriptionId;
+    delete raw.stripePriceId;
+    return raw;
+  }
 }

@@ -23,6 +23,17 @@ export enum JoinPolicy {
 }
 
 /**
+ * Whether non-OWNER/MODERATOR members can post in the group, and if
+ * so whether moderators must approve first. OWNER/MODERATOR posts
+ * always bypass approval.
+ */
+export enum MemberPostPolicy {
+  DISABLED = 'DISABLED',
+  OPEN = 'OPEN',
+  APPROVAL_REQUIRED = 'APPROVAL_REQUIRED',
+}
+
+/**
  * Group Entity
  *
  * Represents a training group created by an instructor.
@@ -107,6 +118,14 @@ export class Group extends Model {
     comment: 'How new members join: OPEN, APPROVAL, INVITE_ONLY',
   })
   declare joinPolicy: JoinPolicy;
+
+  @Column({
+    type: DataType.ENUM(...Object.values(MemberPostPolicy)),
+    allowNull: false,
+    defaultValue: MemberPostPolicy.DISABLED,
+    comment: 'Whether members can post; OWNER/MODERATOR always can',
+  })
+  declare memberPostPolicy: MemberPostPolicy;
 
   @Column({
     type: DataType.JSON,
