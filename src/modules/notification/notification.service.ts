@@ -34,6 +34,11 @@ export enum NotificationType {
   STRIPE_ACCOUNT_RESTRICTED = 'STRIPE_ACCOUNT_RESTRICTED',
   DISPUTE_OPENED = 'DISPUTE_OPENED',
   REFUND_ISSUED = 'REFUND_ISSUED',
+  // ── Posts ────────────────────────────────────────────────
+  POST_NEW_COMMENT = 'POST_NEW_COMMENT',
+  POST_PENDING_APPROVAL = 'POST_PENDING_APPROVAL',
+  POST_APPROVED = 'POST_APPROVED',
+  POST_REJECTED = 'POST_REJECTED',
 }
 
 export interface NotifyParams {
