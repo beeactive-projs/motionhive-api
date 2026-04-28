@@ -7,6 +7,49 @@ import { ApiEndpointOptions } from '../decorators/api-response.decorator';
 import { ApiStandardResponses } from './standard-responses';
 
 export const ClientDocs = {
+  filterClients: {
+    summary: 'Filter clients (PrimeNG table)',
+    description:
+      'Server-side filtered, sorted, and paginated client list for a PrimeNG p-table. ' +
+      'Accepts the full TableLazyLoadEvent body. Covers instructor_client rows (ACTIVE/ARCHIVED) only — ' +
+      'PENDING items live in client_request and are not included. ' +
+      'Filterable fields: status, initiatedBy, startedAt, createdAt, notes, ' +
+      'client.firstName, client.lastName, client.email.',
+    auth: true,
+    responses: [
+      {
+        status: 200,
+        description: 'Filtered client list',
+        example: {
+          items: [
+            {
+              id: 'client-relationship-uuid',
+              clientId: 'user-uuid',
+              status: 'ACTIVE',
+              initiatedBy: 'INSTRUCTOR',
+              notes: 'Working on weight loss goals',
+              startedAt: '2026-01-15T10:00:00.000Z',
+              createdAt: '2026-01-01T10:00:00.000Z',
+              updatedAt: '2026-01-15T10:00:00.000Z',
+              client: {
+                id: 'user-uuid',
+                firstName: 'Jane',
+                lastName: 'Doe',
+                email: 'jane@example.com',
+                avatarId: null,
+              },
+            },
+          ],
+          totalRecords: 42,
+          first: 0,
+          rows: 20,
+        },
+      },
+      ApiStandardResponses.Unauthorized,
+      ApiStandardResponses.Forbidden,
+    ],
+  } as ApiEndpointOptions,
+
   getMyClients: {
     summary: 'List my clients',
     description:
