@@ -1708,7 +1708,7 @@ export class ClientService {
    * that are pending and not expired.
    */
   async getPendingRequests(userId: string): Promise<ClientRequest[]> {
-    return this.clientRequestModel.findAll({
+    const rows = await this.clientRequestModel.findAll({
       where: {
         toUserId: userId,
         status: ClientRequestStatus.PENDING,
@@ -1723,6 +1723,79 @@ export class ClientService {
       ],
       order: [['createdAt', 'DESC']],
     });
+
+    // [TEMP-DEBUG] remove with the rest of the TEMP-DEBUG block —
+    // grep -rn "TEMP-DEBUG" src/
+    await this.tempDebugPendingRequests(userId, rows);
+
+    return rows;
+  }
+
+  /**
+   * [TEMP-DEBUG] Narrows the pending-request lookup one predicate at a
+   * time so the log says which filter (or which database) drops the row.
+   * Never throws — a broken diagnostic must not break the endpoint.
+   */
+  private async tempDebugPendingRequests(
+    userId: string,
+    rows: ClientRequest[],
+  ) {
+    try {
+      const cfg = this.sequelize.config as
+        | { host?: string; database?: string }
+        | undefined;
+      const now = new Date();
+
+      // Every row aimed at this user, with NO status/expiry filter, so we
+      // can see the row the UI is missing and why it was filtered.
+      const allToUser = await this.clientRequestModel.findAll({
+        where: { toUserId: userId },
+        order: [['createdAt', 'DESC']],
+        limit: 20,
+      });
+
+      this.logger.log(
+        `[TEMP-DEBUG] pendingRequests user=${userId} ` +
+          `db=${cfg?.database ?? '?'}@${cfg?.host ?? '?'} now=${now.toISOString()} | ` +
+          `rowsAimedAtUser=${allToUser.length} returnedToUI=${rows.length}`,
+        'ClientService',
+      );
+
+      // Per-row verdict: exactly which predicate rejects it, if any.
+      for (const r of allToUser) {
+        const statusOk = r.status === ClientRequestStatus.PENDING;
+        const notExpired = new Date(r.expiresAt).getTime() > now.getTime();
+        const returned = rows.some((x) => x.id === r.id);
+        this.logger.log(
+          `[TEMP-DEBUG]   row=${r.id} type=${r.type} status=${r.status} ` +
+            `from=${r.fromUserId} expiresAt=${new Date(r.expiresAt).toISOString()} | ` +
+            `statusPending=${String(statusOk)} notExpired=${String(notExpired)} ` +
+            `returnedToUI=${String(returned)}` +
+            (returned ? '' : ' <<< DROPPED BEFORE THE UI'),
+          'ClientService',
+        );
+      }
+
+      // What the UI actually receives, post-serialisation. The FE filters
+      // on `type === 'INSTRUCTOR_TO_CLIENT'`, so the exact value matters.
+      this.logger.log(
+        `[TEMP-DEBUG] payloadToUI=${JSON.stringify(
+          rows.map((r) => ({
+            id: r.id,
+            type: r.type,
+            status: r.status,
+            hasFromUser: !!r.fromUser,
+            fromUserEmail: r.fromUser?.email ?? null,
+          })),
+        )}`,
+        'ClientService',
+      );
+    } catch (err) {
+      this.logger.error(
+        `[TEMP-DEBUG] pendingRequests debug failed: ${(err as Error).message}`,
+        'ClientService',
+      );
+    }
   }
 
   // =====================================================
