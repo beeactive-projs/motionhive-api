@@ -212,6 +212,18 @@ export class SessionDiscoverService {
       model: SessionTemplate,
       attributes: [...PUBLIC_TEMPLATE_FIELDS],
       required: true,
+      // The venue the class normally runs at. `venueOverride` below only
+      // carries a per-occurrence change, so without this an ordinary session
+      // came back with no location at all — and where a session is is half of
+      // whether someone can go to it.
+      include: [
+        {
+          model: Venue,
+          as: 'venue',
+          attributes: [...PUBLIC_VENUE_FIELDS],
+          required: false,
+        },
+      ],
       where: {
         status: SessionTemplateStatus.Active,
         [Op.and]: andClauses,

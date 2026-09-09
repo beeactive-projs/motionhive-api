@@ -5,7 +5,8 @@
  *   - Every transactional email shares the same outer shell: navy
  *     header with the MotionHive hex-icon + Poppins wordmark, a
  *     white content area, an optional honeycomb hero band for
- *     attention-grabbing emails, and a dark footer.
+ *     attention-grabbing emails, and a dark footer carrying the
+ *     trader identity + policy links (see `COMPANY` / `LEGAL_URLS`).
  *   - The helpers (`heading`, `paragraph`, `primaryButton`,
  *     `calloutBox`, `dataRow`, `personCard`, `dateTimeBlock`,
  *     `eyebrow`, `chip`, …) keep individual templates declarative.
@@ -38,6 +39,38 @@
  */
 export const LOGO_URL =
   'https://res.cloudinary.com/dom4dfr1q/image/upload/v1778503491/logo-bg-navy-sm_1_ac6drj.png';
+
+// ─────────────────────────────────────────────────────────────────────
+// LEGAL IDENTITY
+// ─────────────────────────────────────────────────────────────────────
+
+/** Marketing site root. Legal pages and the footer brand link hang off it. */
+export const WEBSITE_URL = 'https://motionhive.fit';
+
+/**
+ * Trader identity printed in every email footer.
+ *
+ * Kept in sync with the legal documents on the marketing site
+ * (`projects/website/src/app/legal/*` in the UI repo) — the cookie
+ * policy, privacy notice and terms all state the same entity. Change
+ * these only alongside those pages; a mismatch between what the email
+ * claims and what the published policy says is the problem this block
+ * exists to avoid.
+ */
+export const COMPANY = {
+  legalName: 'HIVECRAFT S.R.L.',
+  tradingName: 'MotionHive',
+  address:
+    'Soporului nr. 8C, bl. C, sc. 2, et. 1, ap. 58, Cluj-Napoca, Cluj 400482, Romania',
+  contactEmail: 'contact@motionhive.fit',
+};
+
+/** Canonical legal-document URLs, linked from the footer of every email. */
+export const LEGAL_URLS = {
+  terms: `${WEBSITE_URL}/legal/terms-of-service`,
+  privacy: `${WEBSITE_URL}/legal/privacy-policy`,
+  cookies: `${WEBSITE_URL}/legal/cookie-policy`,
+};
 
 // ─────────────────────────────────────────────────────────────────────
 // COLOR TOKENS
@@ -89,6 +122,12 @@ export const COLORS = {
   navy800: '#1e293b',
   ink2: '#475569',
   ink3: '#94a3b8',
+  /**
+   * Footer link text on navy. ink2 fails contrast against navy900
+   * (~2.2:1); this clears 10:1 while still sitting behind the honey
+   * brand link in the visual hierarchy.
+   */
+  footerLink: '#cbd5e1',
 
   // ── Surfaces ──────────────────────────────────────────────────────
   surface50: '#fcfaf6',
@@ -258,7 +297,14 @@ const CATEGORY_STYLES: Record<EmailCategory, CategoryStyle> = {
 export interface BaseLayoutOptions {
   /** Snippet shown in inbox previews. */
   preheader?: string;
-  /** Footer disclaimer override. */
+  /**
+   * "Why am I getting this?" line, shown above the legal block.
+   *
+   * This used to double as the copyright line, so any template that
+   * set it silently dropped the copyright. It is now purely additive:
+   * the legal block (copyright, trader identity, policy links)
+   * renders on every email regardless.
+   */
   footerNote?: string;
   /**
    * Category controls the accent line + heroBand. Templates SHOULD
@@ -307,9 +353,7 @@ export function baseLayout(
   const style = CATEGORY_STYLES[category];
   const showHeroBand = opts.heroBand ?? style.defaultHeroBand;
   const preheader = opts.preheader;
-  const footerCopy =
-    opts.footerNote ??
-    `&copy; ${new Date().getFullYear()} MotionHive. All rights reserved.`;
+  const reasonNote = opts.footerNote;
 
   return `
 <!DOCTYPE html>
@@ -412,18 +456,41 @@ export function baseLayout(
               <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%">
                 <tr>
                   <td style="font-family:${FONT_DISPLAY};font-size:13px;line-height:1.5;color:${COLORS.white};font-weight:600;letter-spacing:-0.01em;">
-                    <a href="https://motionhive.fit" style="color:${COLORS.honey};text-decoration:none;">motionhive.fit</a>
+                    <a href="${WEBSITE_URL}" style="color:${COLORS.honey};text-decoration:none;">motionhive.fit</a>
                   </td>
                 </tr>
                 <tr>
-                  <td style="font-family:${FONT_BODY};font-size:11px;line-height:1.6;color:${COLORS.ink3};padding-top:6px;">
-                    ${footerCopy}
+                  <td style="font-family:${FONT_BODY};font-size:11px;line-height:1.9;color:${COLORS.ink3};padding-top:8px;">
+                    <a href="${LEGAL_URLS.terms}" style="color:${COLORS.footerLink};text-decoration:none;">Terms of Service</a>
+                    &nbsp;&middot;&nbsp;
+                    <a href="${LEGAL_URLS.privacy}" style="color:${COLORS.footerLink};text-decoration:none;">Privacy Policy</a>
+                    &nbsp;&middot;&nbsp;
+                    <a href="${LEGAL_URLS.cookies}" style="color:${COLORS.footerLink};text-decoration:none;">Cookie Policy</a>
                   </td>
                 </tr>
                 <tr>
-                  // <td style="font-family:${FONT_BODY};font-size:11px;line-height:1.6;color:${COLORS.ink2};padding-top:4px;">
-                  //   MotionHive &middot; Legal address placeholder, City, Country
-                  // </td>
+                  <td style="padding-top:14px;border-top:1px solid rgba(255,255,255,0.10);font-size:1px;line-height:1px;">&nbsp;</td>
+                </tr>
+                ${
+                  reasonNote
+                    ? `<tr>
+                  <td style="font-family:${FONT_BODY};font-size:11px;line-height:1.6;color:${COLORS.ink3};padding-bottom:8px;">
+                    ${reasonNote}
+                  </td>
+                </tr>`
+                    : ''
+                }
+                <tr>
+                  <td style="font-family:${FONT_BODY};font-size:11px;line-height:1.6;color:${COLORS.ink3};">
+                    ${COMPANY.legalName} (${COMPANY.tradingName}) &middot; ${COMPANY.address}
+                  </td>
+                </tr>
+                <tr>
+                  <td style="font-family:${FONT_BODY};font-size:11px;line-height:1.6;color:${COLORS.ink3};padding-top:4px;">
+                    <a href="mailto:${COMPANY.contactEmail}" style="color:${COLORS.footerLink};text-decoration:none;">${COMPANY.contactEmail}</a>
+                    &nbsp;&middot;&nbsp;
+                    &copy; ${new Date().getFullYear()} ${COMPANY.tradingName}. All rights reserved.
+                  </td>
                 </tr>
               </table>
             </td>
@@ -631,12 +698,23 @@ export function dataCard(rows: string): string {
 }
 
 /**
- * Person card — avatar (hex via clip-path; degrades to a colored
- * circle in clients that strip clip-path) + name + role chip + role.
- * Use in the Incoming Request category to put a face on the request.
+ * Person card — avatar + name + role. Use in the Incoming Request
+ * category to put a face on the request.
  *
- * `avatarUrl` may be null; we render a honey hex with the first
- * initial as fallback.
+ * **Why this avatar is a rounded square and not the brand hexagon.**
+ * The hex was drawn with `clip-path`, which Outlook (every version),
+ * Gmail webmail and Yahoo strip. The declaration next to it —
+ * `border-radius:28px` on a 56px box — then took over, so the same
+ * email showed a hexagon in Apple Mail and a *circle* everywhere else.
+ * A rounded square degrades to a plain square when `border-radius` is
+ * dropped, which still reads as intentional. Rendering a real brand
+ * hex in email means shipping it as a raster image (inline SVG is
+ * stripped by Gmail and unsupported in Outlook) — see LOGO_URL, which
+ * is a PNG for exactly this reason.
+ *
+ * `avatarUrl` may be null; we render a honey tile with the first
+ * initial as fallback. Every call site currently relies on that
+ * fallback.
  */
 export function personCard(params: {
   name: string;
@@ -648,8 +726,8 @@ export function personCard(params: {
   const { name, role, avatarUrl, meta } = params;
   const initial = (name || '?').trim().charAt(0).toUpperCase() || '?';
   const avatar = avatarUrl
-    ? `<img src="${avatarUrl}" width="56" height="56" alt="" style="display:block;width:56px;height:56px;-webkit-clip-path:polygon(50% 0,100% 25%,100% 75%,50% 100%,0 75%,0 25%);clip-path:polygon(50% 0,100% 25%,100% 75%,50% 100%,0 75%,0 25%);border-radius:28px;background-color:${COLORS.honey100};" />`
-    : `<table role="presentation" cellpadding="0" cellspacing="0"><tr><td width="56" height="56" align="center" style="width:56px;height:56px;background-color:${COLORS.honey};-webkit-clip-path:polygon(50% 0,100% 25%,100% 75%,50% 100%,0 75%,0 25%);clip-path:polygon(50% 0,100% 25%,100% 75%,50% 100%,0 75%,0 25%);border-radius:28px;font-family:${FONT_DISPLAY};font-size:22px;font-weight:600;color:${COLORS.navy900};line-height:56px;text-align:center;letter-spacing:-0.02em;">${initial}</td></tr></table>`;
+    ? `<img src="${avatarUrl}" width="56" height="56" alt="" style="display:block;width:56px;height:56px;border-radius:16px;background-color:${COLORS.honey100};" />`
+    : `<table role="presentation" cellpadding="0" cellspacing="0"><tr><td width="56" height="56" align="center" style="width:56px;height:56px;background-color:${COLORS.honey};border-radius:16px;font-family:${FONT_DISPLAY};font-size:22px;font-weight:600;color:${COLORS.navy900};line-height:56px;text-align:center;letter-spacing:-0.02em;">${initial}</td></tr></table>`;
 
   return `
     <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:0 0 22px;background-color:${COLORS.surface50};border-radius:16px;">
@@ -756,14 +834,32 @@ export function featureItem(icon: string, text: string): string {
 // HONEYCOMB BACKGROUND PATTERN
 // ─────────────────────────────────────────────────────────────────────
 
+const HONEYCOMB_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="28" height="32" viewBox="0 0 28 32"><g fill="none" stroke="#f59e0b" stroke-opacity="0.18" stroke-width="1"><polygon points="14,1 27,8.5 27,23.5 14,31 1,23.5 1,8.5"/></g></svg>`;
+
 /**
- * Subtle hex-pattern data URI. Used by the heroBand. Inline as a
- * base64 SVG so it works without an external host. Honey at low
- * alpha so it reads as texture, not pattern.
+ * Subtle hex-pattern data URI. Used by the heroBand. Inlined so it
+ * works without an external host. Honey at low alpha so it reads as
+ * texture, not pattern.
+ *
+ * **Base64, not percent-encoding — deliberately.** This value is
+ * interpolated into a `style="…"` attribute, and every other encoding
+ * has a quote that breaks out of it:
+ *   - `url("…")` — the double quote closes the style attribute, so the
+ *     whole declaration is dropped. (This was the original bug: the
+ *     band rendered as a flat cream strip in every client.)
+ *   - `url('…')` — `encodeURIComponent` leaves `'` untouched, and the
+ *     SVG's own attribute quotes then close the CSS string early.
+ *   - Bare `url(…)` — CSS forbids quotes and parens in an unquoted URL.
+ * The base64 alphabet contains none of those characters, so the value
+ * is inert wherever it lands.
+ *
+ * Degrades cleanly: Outlook ignores `background-image` on a `<td>` and
+ * Gmail strips data URIs, both leaving the honey-50 background colour.
  */
-const HONEYCOMB_DATA_URI = `url("data:image/svg+xml;utf8,${encodeURIComponent(
-  `<svg xmlns='http://www.w3.org/2000/svg' width='28' height='32' viewBox='0 0 28 32'><g fill='none' stroke='%23f59e0b' stroke-opacity='0.18' stroke-width='1'><polygon points='14,1 27,8.5 27,23.5 14,31 1,23.5 1,8.5'/></g></svg>`,
-)}")`;
+const HONEYCOMB_DATA_URI = `url(data:image/svg+xml;base64,${Buffer.from(
+  HONEYCOMB_SVG,
+  'utf8',
+).toString('base64')})`;
 
 // ─────────────────────────────────────────────────────────────────────
 // PLAIN-TEXT LAYOUT
@@ -791,6 +887,12 @@ export interface PlainTextSection {
 export function plainTextLayout(params: {
   preheader?: string;
   sections: PlainTextSection[];
+  /**
+   * "Why am I getting this?" line. Additive — the trader identity and
+   * policy links below it render either way. Mirrors
+   * `BaseLayoutOptions.footerNote` so a template's HTML and text parts
+   * can pass the same string.
+   */
   footerNote?: string;
 }): string {
   const { preheader, sections, footerNote } = params;
@@ -831,11 +933,20 @@ export function plainTextLayout(params: {
   }
 
   lines.push('---');
+  if (footerNote) {
+    lines.push(footerNote);
+    lines.push('');
+  }
   lines.push(
-    footerNote ||
-      `(c) ${new Date().getFullYear()} MotionHive. All rights reserved.`,
+    `${COMPANY.legalName} (${COMPANY.tradingName}) · ${COMPANY.address}`,
   );
-  // lines.push('MotionHive · Legal address placeholder, City, Country');
+  lines.push(COMPANY.contactEmail);
+  lines.push(
+    `Terms: ${LEGAL_URLS.terms} · Privacy: ${LEGAL_URLS.privacy} · Cookies: ${LEGAL_URLS.cookies}`,
+  );
+  lines.push(
+    `(c) ${new Date().getFullYear()} ${COMPANY.tradingName}. All rights reserved.`,
+  );
 
   return lines.join('\n');
 }

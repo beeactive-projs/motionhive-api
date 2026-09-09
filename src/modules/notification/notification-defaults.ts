@@ -71,29 +71,52 @@ export const NOTIFICATION_DEFAULTS: Record<
   [NotificationType.PARTICIPANT_LEFT]: IN_APP_ONLY,
 
   // ── Client / coaching relationships ──────────────────────
-  // These are "someone wants to work with you / accepted" —
-  // worth an email so it's not lost in app silence.
-  [NotificationType.CLIENT_REQUEST_RECEIVED]: IN_APP_AND_EMAIL,
-  [NotificationType.CLIENT_REQUEST_ACCEPTED]: IN_APP_AND_EMAIL,
-  [NotificationType.CLIENT_REQUEST_DECLINED]: IN_APP_AND_EMAIL,
-  [NotificationType.CLIENT_INVITATION_RECEIVED]: IN_APP_AND_EMAIL,
-  [NotificationType.CLIENT_RELATIONSHIP_ENDED]: IN_APP_AND_EMAIL,
+  // IN_APP_ONLY on purpose — these five are the one family where
+  // ClientService already sends a dedicated domain email of its own
+  // (sendClientRequestToInstructorEmail, sendClientRequestAcceptedEmail,
+  // sendClientRequestDeclinedEmail, sendExistingUserClientInvitationEmail,
+  // sendCollaborationEndedEmail) right next to the notify() call. Leaving
+  // the email channel on here delivered the generic notification email as
+  // well, so an invitee got two emails for one invite. The domain template
+  // is the better one — it carries the Accept/Decline CTAs — so it keeps
+  // the email channel and the notification stays in-app.
+  //
+  // Each builder targets exactly the recipient who already gets that
+  // domain email, so nobody loses an email by this. If you ever fire one
+  // of these types from a path with no domain email, give it its own
+  // preset rather than flipping these back.
+  [NotificationType.CLIENT_REQUEST_RECEIVED]: IN_APP_ONLY,
+  [NotificationType.CLIENT_REQUEST_ACCEPTED]: IN_APP_ONLY,
+  [NotificationType.CLIENT_REQUEST_DECLINED]: IN_APP_ONLY,
+  [NotificationType.CLIENT_INVITATION_RECEIVED]: IN_APP_ONLY,
+  [NotificationType.CLIENT_RELATIONSHIP_ENDED]: IN_APP_ONLY,
 
   // ── Groups & invitations ─────────────────────────────────
-  [NotificationType.GROUP_INVITATION_RECEIVED]: IN_APP_AND_EMAIL,
-  [NotificationType.GROUP_INVITATION_ACCEPTED]: IN_APP_AND_EMAIL,
-  [NotificationType.GROUP_INVITATION_DECLINED]: IN_APP_AND_EMAIL,
+  // IN_APP_ONLY for the same reason as the coaching block above: every
+  // one of these already has a dedicated domain email next to its
+  // notify() call in InvitationService / GroupService, addressed to the
+  // same recipient. GROUP_MEMBER_LEFT was already set this way; the rest
+  // were not, so they sent the generic notification email on top of the
+  // domain one. These events are still emailed — just once, by the
+  // richer template that carries the real CTAs.
+  [NotificationType.GROUP_INVITATION_RECEIVED]: IN_APP_ONLY,
+  [NotificationType.GROUP_INVITATION_ACCEPTED]: IN_APP_ONLY,
+  [NotificationType.GROUP_INVITATION_DECLINED]: IN_APP_ONLY,
   // Member churn is noisy in active groups → in-app only.
   [NotificationType.GROUP_MEMBER_JOINED]: IN_APP_ONLY,
   [NotificationType.GROUP_MEMBER_LEFT]: IN_APP_ONLY,
-  // Removal / ownership transfer / role change is consequential → email.
-  [NotificationType.GROUP_MEMBER_REMOVED]: IN_APP_AND_EMAIL,
-  [NotificationType.GROUP_MEMBER_ROLE_CHANGED]: IN_APP_AND_EMAIL,
-  [NotificationType.GROUP_OWNERSHIP_TRANSFERRED]: IN_APP_AND_EMAIL,
+  // Removal / ownership transfer / role change is consequential, and
+  // stays emailed — via sendGroupMemberRemovedEmail /
+  // sendGroupOwnershipTransferredEmail / sendGroupRoleChangedEmail.
+  [NotificationType.GROUP_MEMBER_REMOVED]: IN_APP_ONLY,
+  [NotificationType.GROUP_MEMBER_ROLE_CHANGED]: IN_APP_ONLY,
+  [NotificationType.GROUP_OWNERSHIP_TRANSFERRED]: IN_APP_ONLY,
   // Join requests — owner needs to act; user wants to know the outcome.
-  [NotificationType.GROUP_JOIN_REQUEST_RECEIVED]: IN_APP_AND_EMAIL,
-  [NotificationType.GROUP_JOIN_REQUEST_APPROVED]: IN_APP_AND_EMAIL,
-  [NotificationType.GROUP_JOIN_REQUEST_REJECTED]: IN_APP_AND_EMAIL,
+  // Both are covered by sendGroupJoinRequestReceivedEmail /
+  // sendGroupJoinRequestDecidedEmail.
+  [NotificationType.GROUP_JOIN_REQUEST_RECEIVED]: IN_APP_ONLY,
+  [NotificationType.GROUP_JOIN_REQUEST_APPROVED]: IN_APP_ONLY,
+  [NotificationType.GROUP_JOIN_REQUEST_REJECTED]: IN_APP_ONLY,
 
   // ── Payments & invoicing ─────────────────────────────────
   // Money matters → email always on by default.

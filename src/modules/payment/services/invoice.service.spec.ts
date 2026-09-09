@@ -1,6 +1,7 @@
 import { Test } from '@nestjs/testing';
 import { getModelToken } from '@nestjs/sequelize';
 import { WINSTON_MODULE_NEST_PROVIDER } from 'nest-winston';
+import { Op } from 'sequelize';
 import { Sequelize } from 'sequelize-typescript';
 import {
   BadRequestException,
@@ -311,6 +312,48 @@ describe('InvoiceService.updateDraft', () => {
     const update = stripeMock.stripe.invoices.update.mock.calls[0][1];
     expect(typeof update.due_date).toBe('number');
     expect(update.due_date).toBe(Math.floor(new Date(future).getTime() / 1000));
+  });
+
+  // The client's own list renders whoever is on the *other* side of the bill.
+  // Without this the row named the person reading it, which tells them
+  // nothing about which coach to pay.
+  it('names both parties, from the one user lookup', async () => {
+    invoiceModel.findByPk.mockResolvedValue(
+      makeInvoice({ clientId: 'client-1' }),
+    );
+    userFindAll.mockClear();
+    userFindAll.mockResolvedValueOnce([
+      {
+        id: 'user-1',
+        email: 'coach@x.com',
+        firstName: 'Alex',
+        lastName: 'Rivera',
+        avatarUrl: null,
+      },
+      {
+        id: 'client-1',
+        email: 'client@x.com',
+        firstName: 'Sarah',
+        lastName: 'Mitchell',
+        avatarUrl: null,
+      },
+    ]);
+
+    const result = await service.updateDraft('user-1', 'inv-1', {
+      description: 'Coaching',
+    });
+
+    expect(result.instructor).toMatchObject({
+      id: 'user-1',
+      firstName: 'Alex',
+    });
+    expect(result.client).toMatchObject({ id: 'client-1', firstName: 'Sarah' });
+    // Both sides come out of a single query, not one per party.
+    expect(userFindAll).toHaveBeenCalledTimes(1);
+    expect(userFindAll.mock.calls[0][0].where.id[Op.in].sort()).toEqual([
+      'client-1',
+      'user-1',
+    ]);
   });
 });
 

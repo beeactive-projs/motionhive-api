@@ -54,10 +54,10 @@ import { CreateInvoiceDto } from '../dto/create-invoice.dto';
  *   - applicationFeeAmount=0 is OMITTED from the API call
  *     (StripeService.buildFeeParams)
  */
-/** The person on the other side of an invoice, whichever side is asking. */
-export interface InvoicePartyRef {
+/** One side of an invoice, as the apps render it in a row. */
+export interface InvoiceParty {
   id: string | null;
-  email: string | null;
+  email: string;
   firstName: string | null;
   lastName: string | null;
   avatarUrl: string | null;
@@ -66,13 +66,12 @@ export interface InvoicePartyRef {
 export interface InvoiceResponse {
   [key: string]: unknown;
   clientEmail: string | null;
-  client: (InvoicePartyRef & { email: string }) | null;
+  client: InvoiceParty | null;
   /**
-   * Who issued it. The coach's own list does not need this — they are the
-   * instructor — but the client's list leads with "who is asking me for
-   * money", and the row had only an `instructorId` to show.
+   * Who issued it. The client's own list needs this — a row that names the
+   * person reading it tells them nothing about which coach to pay.
    */
-  instructor: InvoicePartyRef | null;
+  instructor: InvoiceParty | null;
 }
 
 @Injectable()
@@ -101,8 +100,9 @@ export class InvoiceService {
 
   /**
    * Build a response object for a single invoice with `clientEmail` and a
-   * `client` summary — works for both registered users (via User relation)
-   * and guests (via stripe_customer row).
+   * summary of both parties. The client side works for registered users (via
+   * User relation) and guests (via stripe_customer row); an instructor is
+   * always a registered user.
    */
   private async enrich(invoice: Invoice): Promise<InvoiceResponse> {
     return (await this.enrichMany([invoice]))[0];
@@ -114,7 +114,6 @@ export class InvoiceService {
   private async enrichMany(invoices: Invoice[]): Promise<InvoiceResponse[]> {
     if (invoices.length === 0) return [];
 
-    // One lookup covers both sides: clients and instructors are both users.
     const userIds = Array.from(
       new Set(
         invoices
@@ -177,8 +176,8 @@ export class InvoiceService {
         ? {
             id: instructor.id,
             email: instructor.email,
-            firstName: instructor.firstName,
-            lastName: instructor.lastName,
+            firstName: instructor.firstName ?? null,
+            lastName: instructor.lastName ?? null,
             avatarUrl: instructor.avatarUrl ?? null,
           }
         : null;
