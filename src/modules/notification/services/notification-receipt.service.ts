@@ -1,4 +1,4 @@
-import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
 import { InjectModel } from '@nestjs/sequelize';
 import { literal, Op } from 'sequelize';
 import {
@@ -18,13 +18,6 @@ import {
   TYPE_TO_CATEGORY,
 } from '../notification-categories';
 import { NotificationType } from '../notification-types';
-
-// ─────────────────────────────────────────────────────────────────────
-// [TEMP-DEBUG] Instrumentation for the "invitation notification never
-// appears" investigation. Delete this const and every TEMP_DEBUG call
-// in this file once the cause is found: grep -rn "TEMP-DEBUG" src/
-// ─────────────────────────────────────────────────────────────────────
-const TEMP_DEBUG = new Logger('TEMP-DEBUG');
 
 /**
  * Shape returned to the FE — flattens the (notification + receipt)
@@ -121,14 +114,6 @@ export class NotificationReceiptService {
       offset: getOffset(opts.page, opts.limit),
     });
 
-    // [TEMP-DEBUG] Who asked, with what filters, and what came back.
-    TEMP_DEBUG.log(
-      `list user=${userId} page=${opts.page} limit=${opts.limit} ` +
-        `unreadOnly=${String(opts.unreadOnly)} category=${opts.category ?? 'none'} ` +
-        `=> rows=${rows.length} total=${count} ` +
-        `types=[${rows.map((r) => r.notification?.type).join(',')}]`,
-    );
-
     const items = rows.map((r) => this.toBellShape(r));
     return buildPaginatedResponse(items, count, opts.page, opts.limit);
   }
@@ -139,7 +124,7 @@ export class NotificationReceiptService {
    * delivered) so the badge stays accurate.
    */
   async unreadCount(userId: string): Promise<number> {
-    const final = await this.receiptModel.count({
+    return this.receiptModel.count({
       where: {
         userId,
         readAt: { [Op.is]: null },
@@ -148,53 +133,6 @@ export class NotificationReceiptService {
       },
       include: [this.activeNotificationInclude()],
     });
-
-    // [TEMP-DEBUG] Narrow the count down one predicate at a time so the
-    // log says exactly which filter (or which database) loses the rows.
-    await this.tempDebugUnread(userId, final);
-
-    return final;
-  }
-
-  /**
-   * [TEMP-DEBUG] Delete with the rest of the TEMP-DEBUG block.
-   * Never throws — a broken diagnostic must not break the endpoint.
-   */
-  private async tempDebugUnread(userId: string, final: number) {
-    try {
-      const seq = this.receiptModel.sequelize;
-      const cfg = seq?.config as
-        | { host?: string; database?: string }
-        | undefined;
-
-      const anyReceipts = await this.receiptModel.count({ where: { userId } });
-      const notReadOrDismissed = await this.receiptModel.count({
-        where: {
-          userId,
-          readAt: { [Op.is]: null },
-          dismissedAt: { [Op.is]: null },
-        },
-      });
-      const plusInAppSent = await this.receiptModel.count({
-        where: {
-          userId,
-          readAt: { [Op.is]: null },
-          dismissedAt: { [Op.is]: null },
-          ...this.bellVisibleClause(),
-        },
-      });
-
-      TEMP_DEBUG.log(
-        `unreadCount user=${userId} ` +
-          `db=${cfg?.database ?? '?'}@${cfg?.host ?? '?'} | ` +
-          `receiptsForUser=${anyReceipts} ` +
-          `-> notRead/notDismissed=${notReadOrDismissed} ` +
-          `-> inAppSent=${plusInAppSent} ` +
-          `-> +joinVisible(FINAL)=${final}`,
-      );
-    } catch (err) {
-      TEMP_DEBUG.error(`unreadCount debug failed: ${(err as Error).message}`);
-    }
   }
 
   /**
