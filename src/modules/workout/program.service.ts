@@ -34,6 +34,8 @@ import {
   ProgramSource,
   ProgramStatus,
 } from './entities/workout.enums';
+import { CopyProgramWeekDto } from './dto/copy-program-week.dto';
+import { ReorderPrescribedRowsDto } from './dto/reorder-prescribed-rows.dto';
 import { CreatePrescribedExerciseDto } from './dto/create-prescribed-exercise.dto';
 import { CreatePrescribedSetDto } from './dto/create-prescribed-set.dto';
 import {
@@ -376,6 +378,192 @@ export class ProgramService {
       }
 
       return copy;
+    });
+  }
+
+  /**
+   * Copy every workout of one week into another, with its exercises and
+   * sets, in ONE transaction.
+   *
+   * The client used to do this itself with one request per row, which is
+   * both slow and not atomic — a throttle or a dropped connection halfway
+   * left the target week half-copied. Whatever is already in the target
+   * week is removed first, so repeating a copy is idempotent rather than
+   * additive.
+   */
+  async reorderExercises(
+    programId: string,
+    workoutId: string,
+    dto: ReorderPrescribedRowsDto,
+    ownerId: string,
+  ): Promise<PrescribedExercise[]> {
+    await this._loadWorkout(programId, workoutId, ownerId);
+    const rows = await this.prescribedExerciseModel.findAll({
+      where: { programWorkoutId: workoutId },
+    });
+    await this._reorderRows(rows, dto, 'Exercise not found.');
+    return this.prescribedExerciseModel.findAll({
+      where: { programWorkoutId: workoutId },
+      order: [['orderIndex', 'ASC']],
+    });
+  }
+
+  async reorderSets(
+    programId: string,
+    workoutId: string,
+    exerciseId: string,
+    dto: ReorderPrescribedRowsDto,
+    ownerId: string,
+  ): Promise<PrescribedSet[]> {
+    await this._loadPrescribedExercise(
+      programId,
+      workoutId,
+      exerciseId,
+      ownerId,
+    );
+    const rows = await this.prescribedSetModel.findAll({
+      where: { prescribedExerciseId: exerciseId },
+    });
+    await this._reorderRows(rows, dto, 'Set not found.');
+    return this.prescribedSetModel.findAll({
+      where: { prescribedExerciseId: exerciseId },
+      order: [['orderIndex', 'ASC']],
+    });
+  }
+
+  /**
+   * Apply new indexes to a list of ordered rows in one transaction. Rows
+   * not mentioned keep their index; the combined layout is checked for
+   * two rows landing on the same index before anything is written.
+   */
+  private async _reorderRows(
+    rows: (PrescribedExercise | PrescribedSet)[],
+    dto: ReorderPrescribedRowsDto,
+    notFound: string,
+  ): Promise<void> {
+    const byId = new Map(rows.map((r) => [r.id, r]));
+    const seen = new Set<string>();
+    for (const item of dto.items) {
+      if (!byId.has(item.id)) throw new NotFoundException(notFound);
+      if (seen.has(item.id)) {
+        throw new BadRequestException(
+          'Each row may appear only once in items.',
+        );
+      }
+      seen.add(item.id);
+    }
+
+    const targetById = new Map(dto.items.map((i) => [i.id, i.orderIndex]));
+    const taken = new Set<number>();
+    for (const row of rows) {
+      const index = targetById.get(row.id) ?? row.orderIndex;
+      if (taken.has(index)) {
+        throw new ConflictException(
+          `Two rows would share position ${index + 1}.`,
+        );
+      }
+      taken.add(index);
+    }
+
+    const moved = dto.items.filter(
+      (i) => byId.get(i.id)!.orderIndex !== i.orderIndex,
+    );
+    if (!moved.length) return;
+    await this.sequelize.transaction(async (tx) => {
+      for (const item of moved) {
+        await byId
+          .get(item.id)!
+          .update({ orderIndex: item.orderIndex }, { transaction: tx });
+      }
+    });
+  }
+
+  async copyWeek(
+    programId: string,
+    dto: CopyProgramWeekDto,
+    ownerId: string,
+  ): Promise<ProgramWorkout[]> {
+    await this._loadProgram(programId, ownerId);
+    if (dto.fromWeekIndex === dto.toWeekIndex) {
+      throw new BadRequestException('Source and target week must differ.');
+    }
+
+    const source = await this.workoutModel.findAll({
+      where: { programId, weekIndex: dto.fromWeekIndex },
+      order: [['dayIndex', 'ASC']],
+      include: [
+        {
+          model: PrescribedExercise,
+          as: 'exercises',
+          required: false,
+          include: [{ model: PrescribedSet, as: 'sets', required: false }],
+        },
+      ],
+    });
+    if (!source.length) {
+      throw new BadRequestException('That week has nothing to copy.');
+    }
+
+    return this.sequelize.transaction(async (tx) => {
+      // CASCADE on the FK takes the nested exercises and sets with them.
+      await this.workoutModel.destroy({
+        where: { programId, weekIndex: dto.toWeekIndex },
+        transaction: tx,
+      });
+
+      const copied: ProgramWorkout[] = [];
+      for (const w of source) {
+        const newWorkout = await this.workoutModel.create(
+          {
+            programId,
+            name: w.name,
+            notes: w.notes,
+            weekIndex: dto.toWeekIndex,
+            dayIndex: w.dayIndex,
+            sequenceNumber: w.sequenceNumber,
+            phase: w.phase,
+            estimatedDurationMinutes: w.estimatedDurationMinutes,
+          },
+          { transaction: tx },
+        );
+
+        for (const ex of w.exercises ?? []) {
+          const newExercise = await this.prescribedExerciseModel.create(
+            {
+              programWorkoutId: newWorkout.id,
+              exerciseId: ex.exerciseId,
+              blockId: ex.blockId,
+              supersetGroupId: ex.supersetGroupId,
+              orderIndex: ex.orderIndex,
+              notes: ex.notes,
+              alternateExerciseId: ex.alternateExerciseId,
+            },
+            { transaction: tx },
+          );
+
+          const sets = (ex.sets ?? []).map((st) => ({
+            prescribedExerciseId: newExercise.id,
+            orderIndex: st.orderIndex,
+            setType: st.setType,
+            targetRepsMin: st.targetRepsMin,
+            targetRepsMax: st.targetRepsMax,
+            targetWeightKg: st.targetWeightKg,
+            targetWeightPercent1rm: st.targetWeightPercent1rm,
+            targetDurationSeconds: st.targetDurationSeconds,
+            targetDistanceMeters: st.targetDistanceMeters,
+            targetRpe: st.targetRpe,
+            targetRir: st.targetRir,
+            restAfterSeconds: st.restAfterSeconds,
+            tempo: st.tempo,
+            notes: st.notes,
+          }));
+          if (sets.length) {
+            await this.prescribedSetModel.bulkCreate(sets, { transaction: tx });
+          }
+        }
+        copied.push(newWorkout);
+      }
+      return copied;
     });
   }
 
@@ -824,14 +1012,33 @@ export class ProgramService {
     const orderIndex =
       dto.orderIndex ?? (await this._nextExerciseOrderIndex(workoutId));
 
-    return this.prescribedExerciseModel.create({
-      programWorkoutId: workoutId,
-      exerciseId: dto.exerciseId,
-      blockId: dto.blockId ?? null,
-      supersetGroupId: dto.supersetGroupId ?? null,
-      orderIndex,
-      notes: dto.notes?.trim() || null,
-      alternateExerciseId: dto.alternateExerciseId ?? null,
+    // The sets ride along in the same transaction: an editor that adds a
+    // movement with N empty sets should not need N+1 round trips for it.
+    return this.sequelize.transaction(async (tx) => {
+      const created = await this.prescribedExerciseModel.create(
+        {
+          programWorkoutId: workoutId,
+          exerciseId: dto.exerciseId,
+          blockId: dto.blockId ?? null,
+          supersetGroupId: dto.supersetGroupId ?? null,
+          orderIndex,
+          notes: dto.notes?.trim() || null,
+          alternateExerciseId: dto.alternateExerciseId ?? null,
+        },
+        { transaction: tx },
+      );
+
+      if (dto.defaultSets) {
+        await this.prescribedSetModel.bulkCreate(
+          Array.from({ length: dto.defaultSets }, (_, i) => ({
+            prescribedExerciseId: created.id,
+            orderIndex: i,
+            setType: ExerciseSetType.Normal,
+          })),
+          { transaction: tx },
+        );
+      }
+      return created;
     });
   }
 

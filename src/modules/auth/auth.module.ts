@@ -34,6 +34,8 @@ import { EmailVerifierService } from '../../common/services/email-verifier.servi
   ],
   controllers: [AuthController],
   providers: [AuthService, JwtStrategy, CryptoService, EmailVerifierService],
-  exports: [AuthService],
+  // JwtModule is exported for the rate-limit guard, which keys buckets by the
+  // token's subject and needs to verify it with the same secret.
+  exports: [AuthService, JwtModule],
 })
 export class AuthModule {}

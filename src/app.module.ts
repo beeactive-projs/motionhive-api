@@ -4,12 +4,13 @@ import { SequelizeModule } from '@nestjs/sequelize';
 import { BullModule } from '@nestjs/bullmq';
 import { ScheduleModule } from '@nestjs/schedule';
 import { EventEmitterModule } from '@nestjs/event-emitter';
-import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
+import { ThrottlerModule } from '@nestjs/throttler';
 import { APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
 import { WinstonModule } from 'nest-winston';
 import { getDatabaseConfig } from './config/database.config';
 import { envValidationSchema } from './config/env.validation';
 import { createLogger } from './common/logger/winston.config';
+import { UserThrottlerGuard } from './common/guards/user-throttler.guard';
 import { RequestIdMiddleware } from './common/middleware/request-id.middleware';
 import { UserModule } from './modules/user/user.module';
 import { AuthModule } from './modules/auth/auth.module';
@@ -83,7 +84,11 @@ import { CamelCaseInterceptor } from './common/interceptors/camel-case.intercept
         ]
       : []),
 
-    ThrottlerModule.forRoot([{ name: 'default', ttl: 60000, limit: 100 }]),
+    // A ceiling per route per user (see UserThrottlerGuard), not a policy:
+    // a person by hand peaks at ~10/min on any one route, so 300 only ever
+    // catches a runaway loop or a bot. The security limits are the
+    // per-route @Throttle()s on auth, payments and the email-sending routes.
+    ThrottlerModule.forRoot([{ name: 'default', ttl: 60000, limit: 300 }]),
 
     ScheduleModule.forRoot(),
     EventEmitterModule.forRoot(),
@@ -120,7 +125,7 @@ import { CamelCaseInterceptor } from './common/interceptors/camel-case.intercept
   controllers: [],
 
   providers: [
-    { provide: APP_GUARD, useClass: ThrottlerGuard },
+    { provide: APP_GUARD, useClass: UserThrottlerGuard },
     { provide: APP_INTERCEPTOR, useClass: CamelCaseInterceptor },
   ],
 })

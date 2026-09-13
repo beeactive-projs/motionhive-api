@@ -4,6 +4,7 @@ import {
   IsOptional,
   IsString,
   IsUUID,
+  Max,
   MaxLength,
   Min,
 } from 'class-validator';
@@ -59,4 +60,17 @@ export class CreatePrescribedExerciseDto {
   @IsInt()
   @Min(0)
   orderIndex?: number;
+
+  @ApiPropertyOptional({
+    minimum: 1,
+    maximum: 30,
+    description:
+      'Create this many empty sets under the exercise, in the same ' +
+      'transaction. Omit to add the exercise alone.',
+  })
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(30)
+  defaultSets?: number;
 }

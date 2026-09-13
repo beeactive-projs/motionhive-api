@@ -271,6 +271,38 @@ describe('WorkoutLogService (smoke — not exhaustive)', () => {
 
   // ─── save-as-routine — the conversion moment ─────────────────────
 
+  describe('addExerciseToLog — defaultSets', () => {
+    it('creates the empty sets with the exercise in one transaction', async () => {
+      logModel.findByPk.mockResolvedValueOnce({
+        id: 'log-1',
+        userId: 'me',
+        status: WorkoutLogStatus.InProgress,
+      });
+      exerciseModel.findByPk.mockResolvedValueOnce({
+        id: 'ex-1',
+        name: 'Squat',
+        thumbnailUrl: null,
+        visibility: 'PUBLIC',
+        ownerId: null,
+      });
+      loggedExerciseModel.max.mockResolvedValueOnce(null);
+      loggedExerciseModel.create.mockResolvedValueOnce({ id: 'le-new' });
+
+      await service.addExerciseToLog('log-1', 'ex-1', 'me', 3);
+
+      expect(loggedExerciseModel.create).toHaveBeenCalledWith(
+        expect.objectContaining({ exerciseId: 'ex-1', orderIndex: 0 }),
+        { transaction: fakeTx },
+      );
+      expect(loggedSetModel.bulkCreate).toHaveBeenCalledWith(
+        [0, 1, 2].map((orderIndex) =>
+          expect.objectContaining({ loggedExerciseId: 'le-new', orderIndex }),
+        ),
+        { transaction: fakeTx },
+      );
+    });
+  });
+
   describe('saveLogAsRoutine', () => {
     const done = { id: 'log-1', userId: 'me', name: 'Saturday session' };
 
@@ -781,6 +813,7 @@ describe('WorkoutLogService (smoke — not exhaustive)', () => {
           orderIndex: 3,
           assignedExerciseId: null,
         }),
+        { transaction: fakeTx },
       );
     });
 
@@ -800,6 +833,7 @@ describe('WorkoutLogService (smoke — not exhaustive)', () => {
 
       expect(loggedExerciseModel.create).toHaveBeenCalledWith(
         expect.objectContaining({ orderIndex: 0 }),
+        { transaction: fakeTx },
       );
     });
   });

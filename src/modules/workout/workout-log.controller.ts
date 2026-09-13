@@ -78,6 +78,7 @@ export class WorkoutLogController {
       id,
       dto.exerciseId,
       req.user.id,
+      dto.defaultSets,
     );
   }
 

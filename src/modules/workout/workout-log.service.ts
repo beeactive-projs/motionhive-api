@@ -570,6 +570,7 @@ export class WorkoutLogService {
     workoutLogId: string,
     exerciseId: string,
     userId: string,
+    defaultSets = 0,
   ): Promise<LoggedExercise> {
     const log = await this._loadOwnedLog(workoutLogId, userId);
     if (log.status !== WorkoutLogStatus.InProgress) {
@@ -591,15 +592,35 @@ export class WorkoutLogService {
       where: { workoutLogId },
     });
     const orderIndex = last == null ? 0 : Number(last) + 1;
-    return this.loggedExerciseModel.create({
-      workoutLogId,
-      exerciseId,
-      assignedExerciseId: null,
-      exerciseNameSnapshot: exercise.name,
-      exerciseThumbnailUrlSnapshot: exercise.thumbnailUrl,
-      orderIndex,
-      supersetGroupId: null,
-      notes: null,
+    // The empty sets ride along in the same transaction: the logger used
+    // to add them one request at a time after the exercise landed.
+    return this.sequelize.transaction(async (tx) => {
+      const created = await this.loggedExerciseModel.create(
+        {
+          workoutLogId,
+          exerciseId,
+          assignedExerciseId: null,
+          exerciseNameSnapshot: exercise.name,
+          exerciseThumbnailUrlSnapshot: exercise.thumbnailUrl,
+          orderIndex,
+          supersetGroupId: null,
+          notes: null,
+        },
+        { transaction: tx },
+      );
+      if (defaultSets > 0) {
+        await this.loggedSetModel.bulkCreate(
+          Array.from({ length: defaultSets }, (_, i) => ({
+            loggedExerciseId: created.id,
+            assignedSetId: null,
+            orderIndex: i,
+            setType: 'NORMAL',
+            isCompleted: false,
+          })),
+          { transaction: tx },
+        );
+      }
+      return created;
     });
   }
 

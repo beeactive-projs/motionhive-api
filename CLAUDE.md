@@ -79,7 +79,7 @@ src/
 ### Global Pipeline (wired in main.ts + app.module.ts)
 - **Global filter**: HttpExceptionFilter
 - **Global interceptor**: CamelCaseInterceptor (APP_INTERCEPTOR)
-- **Global guard**: ThrottlerGuard (APP_GUARD, default 100 req/60s)
+- **Global guard**: `UserThrottlerGuard` (APP_GUARD) — 300 req/60s **per route**, keyed by the verified JWT subject when there is one, by IP otherwise
 - **Global pipe**: ValidationPipe (whitelist + transform)
 - **Middleware**: RequestIdMiddleware on all routes
 - **Security**: Helmet, CORS (explicit origin list), `express.raw()` scoped to `/webhooks/stripe`
@@ -234,6 +234,6 @@ Full schema in `src/config/env.validation.ts` (Joi, `abortEarly: false`).
 - **Pagination limits**: `@Min(1)` and `@Max(100)` on every limit param
 - **Never use `any`** — always use strict types; prefer `unknown` + narrowing, or define an explicit interface/type
 - **Never commit `console.log`** — use Winston logger
-- **Rate limit** sensitive endpoints with `@Throttle()`
+- **Rate limit** sensitive endpoints with `@Throttle()`. The global 300/min/route/user ceiling is a bug-and-bot net, not a policy: a person by hand peaks at ~10/min on one route. **Never fix a 429 by raising it** — a UI action that touches many rows gets a bulk route in one transaction (`copy-week`, `reorder`, `defaultSets` on add-exercise), because a client loop of per-row writes is also non-atomic
 - **Webhook handlers**: pass `{ transaction: tx }` to every ORM call inside the handler
 - **Stripe writes**: always use `StripeService.buildIdempotencyKey()`; use `buildFeeParams()` for application_fee_amount (never pass explicit 0)

@@ -22,6 +22,7 @@ import { ProgramLibrary } from './dto/list-programs.query.dto';
 import { ProgramSource } from './entities/workout.enums';
 import { ProgramAssignment } from './entities/program-assignment.entity';
 import {
+  fakeTx,
   makeSequelizeMock,
   makeSilentLogger,
 } from '../../../test/helpers/sequelize-mocks';
@@ -50,6 +51,7 @@ describe('ProgramService (smoke — not exhaustive)', () => {
     findOne: jest.fn(),
     findAll: jest.fn(),
     create: jest.fn(),
+    destroy: jest.fn(),
     max: jest.fn(),
   };
   const prescribedExerciseModel = {
@@ -696,6 +698,241 @@ describe('ProgramService (smoke — not exhaustive)', () => {
 
       expect(prescribedSetModel.create).toHaveBeenCalledWith(
         expect.objectContaining({ orderIndex: 3 }),
+      );
+    });
+  });
+
+  describe('addExercise — defaultSets shorthand', () => {
+    it('creates that many empty sets with the exercise in one transaction', async () => {
+      programModel.findByPk.mockResolvedValueOnce({ id: 'p-1', ownerId: 'me' });
+      workoutModel.findOne.mockResolvedValueOnce({
+        id: 'w-1',
+        programId: 'p-1',
+      });
+      exerciseModel.findByPk.mockResolvedValueOnce({
+        id: 'ex-1',
+        source: ExerciseSource.System,
+        visibility: ExerciseVisibility.Public,
+        ownerId: null,
+      });
+      prescribedExerciseModel.max.mockResolvedValueOnce(null);
+      prescribedExerciseModel.create.mockResolvedValueOnce({ id: 'e-new' });
+
+      await service.addExercise(
+        'p-1',
+        'w-1',
+        { exerciseId: 'ex-1', defaultSets: 3 },
+        'me',
+      );
+
+      expect(prescribedExerciseModel.create).toHaveBeenCalledWith(
+        expect.objectContaining({ exerciseId: 'ex-1' }),
+        { transaction: fakeTx },
+      );
+      expect(prescribedSetModel.bulkCreate).toHaveBeenCalledWith(
+        [
+          expect.objectContaining({
+            prescribedExerciseId: 'e-new',
+            orderIndex: 0,
+          }),
+          expect.objectContaining({
+            prescribedExerciseId: 'e-new',
+            orderIndex: 1,
+          }),
+          expect.objectContaining({
+            prescribedExerciseId: 'e-new',
+            orderIndex: 2,
+          }),
+        ],
+        { transaction: fakeTx },
+      );
+    });
+  });
+
+  describe('reorderExercises', () => {
+    const row = (id: string, orderIndex: number) => ({
+      id,
+      orderIndex,
+      update: jest.fn().mockResolvedValue(undefined),
+    });
+
+    it('writes only the rows that moved, in one transaction', async () => {
+      programModel.findByPk.mockResolvedValueOnce({ id: 'p-1', ownerId: 'me' });
+      workoutModel.findOne.mockResolvedValueOnce({
+        id: 'w-1',
+        programId: 'p-1',
+      });
+      const a = row('e-a', 0);
+      const b = row('e-b', 1);
+      prescribedExerciseModel.findAll
+        .mockResolvedValueOnce([a, b])
+        .mockResolvedValueOnce([b, a]);
+
+      await service.reorderExercises(
+        'p-1',
+        'w-1',
+        {
+          items: [
+            { id: 'e-a', orderIndex: 1 },
+            { id: 'e-b', orderIndex: 0 },
+          ],
+        },
+        'me',
+      );
+
+      expect(a.update).toHaveBeenCalledWith(
+        { orderIndex: 1 },
+        { transaction: fakeTx },
+      );
+      expect(b.update).toHaveBeenCalledWith(
+        { orderIndex: 0 },
+        { transaction: fakeTx },
+      );
+    });
+
+    it('404s on a row outside the workout', async () => {
+      programModel.findByPk.mockResolvedValueOnce({ id: 'p-1', ownerId: 'me' });
+      workoutModel.findOne.mockResolvedValueOnce({
+        id: 'w-1',
+        programId: 'p-1',
+      });
+      prescribedExerciseModel.findAll.mockResolvedValueOnce([row('e-a', 0)]);
+      await expect(
+        service.reorderExercises(
+          'p-1',
+          'w-1',
+          { items: [{ id: 'e-x', orderIndex: 0 }] },
+          'me',
+        ),
+      ).rejects.toThrow(NotFoundException);
+    });
+
+    it('409s when two rows would share an index', async () => {
+      programModel.findByPk.mockResolvedValueOnce({ id: 'p-1', ownerId: 'me' });
+      workoutModel.findOne.mockResolvedValueOnce({
+        id: 'w-1',
+        programId: 'p-1',
+      });
+      prescribedExerciseModel.findAll.mockResolvedValueOnce([
+        row('e-a', 0),
+        row('e-b', 1),
+      ]);
+      await expect(
+        service.reorderExercises(
+          'p-1',
+          'w-1',
+          { items: [{ id: 'e-a', orderIndex: 1 }] },
+          'me',
+        ),
+      ).rejects.toThrow(ConflictException);
+    });
+  });
+
+  // ─── Week copy (one transaction, target replaced) ────────────────
+
+  describe('copyWeek', () => {
+    const owned = () =>
+      programModel.findByPk.mockResolvedValueOnce({ id: 'p-1', ownerId: 'me' });
+
+    it('rejects copying a week onto itself', async () => {
+      owned();
+      await expect(
+        service.copyWeek('p-1', { fromWeekIndex: 1, toWeekIndex: 1 }, 'me'),
+      ).rejects.toThrow(BadRequestException);
+      expect(workoutModel.findAll).not.toHaveBeenCalled();
+    });
+
+    it('rejects an empty source week', async () => {
+      owned();
+      workoutModel.findAll.mockResolvedValueOnce([]);
+      await expect(
+        service.copyWeek('p-1', { fromWeekIndex: 0, toWeekIndex: 1 }, 'me'),
+      ).rejects.toThrow(BadRequestException);
+      expect(workoutModel.destroy).not.toHaveBeenCalled();
+    });
+
+    it('replaces the target week and copies the whole tree in one transaction', async () => {
+      owned();
+      workoutModel.findAll.mockResolvedValueOnce([
+        {
+          name: 'Day 1',
+          notes: null,
+          dayIndex: 0,
+          sequenceNumber: 0,
+          phase: null,
+          estimatedDurationMinutes: 45,
+          exercises: [
+            {
+              exerciseId: 'ex-squat',
+              blockId: null,
+              supersetGroupId: null,
+              orderIndex: 0,
+              notes: null,
+              alternateExerciseId: null,
+              sets: [
+                {
+                  orderIndex: 0,
+                  setType: 'WORKING',
+                  targetRepsMin: 5,
+                  targetRepsMax: 5,
+                },
+                {
+                  orderIndex: 1,
+                  setType: 'WORKING',
+                  targetRepsMin: 5,
+                  targetRepsMax: 5,
+                },
+              ],
+            },
+          ],
+        },
+        { name: 'Day 3', dayIndex: 2, sequenceNumber: 1, exercises: [] },
+      ]);
+      workoutModel.create
+        .mockResolvedValueOnce({ id: 'w-copy-1' })
+        .mockResolvedValueOnce({ id: 'w-copy-2' });
+      prescribedExerciseModel.create.mockResolvedValueOnce({ id: 'e-copy-1' });
+
+      const copied = await service.copyWeek(
+        'p-1',
+        { fromWeekIndex: 0, toWeekIndex: 2 },
+        'me',
+      );
+
+      expect(copied.map((w) => w.id)).toEqual(['w-copy-1', 'w-copy-2']);
+
+      // Whatever the target held is gone before the copy lands.
+      expect(workoutModel.destroy).toHaveBeenCalledWith({
+        where: { programId: 'p-1', weekIndex: 2 },
+        transaction: fakeTx,
+      });
+
+      expect(workoutModel.create).toHaveBeenCalledTimes(2);
+      expect(workoutModel.create).toHaveBeenNthCalledWith(
+        1,
+        expect.objectContaining({ name: 'Day 1', weekIndex: 2, dayIndex: 0 }),
+        { transaction: fakeTx },
+      );
+      expect(prescribedExerciseModel.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          programWorkoutId: 'w-copy-1',
+          exerciseId: 'ex-squat',
+        }),
+        { transaction: fakeTx },
+      );
+      expect(prescribedSetModel.bulkCreate).toHaveBeenCalledTimes(1);
+      expect(prescribedSetModel.bulkCreate).toHaveBeenCalledWith(
+        [
+          expect.objectContaining({
+            prescribedExerciseId: 'e-copy-1',
+            orderIndex: 0,
+          }),
+          expect.objectContaining({
+            prescribedExerciseId: 'e-copy-1',
+            orderIndex: 1,
+          }),
+        ],
+        { transaction: fakeTx },
       );
     });
   });

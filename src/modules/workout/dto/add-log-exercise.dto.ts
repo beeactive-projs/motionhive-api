@@ -1,5 +1,5 @@
-import { ApiProperty } from '@nestjs/swagger';
-import { IsUUID } from 'class-validator';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { IsInt, IsOptional, IsUUID, Max, Min } from 'class-validator';
 
 /**
  * Add an unplanned exercise mid-session. Used by the active log when:
@@ -13,4 +13,17 @@ export class AddLogExerciseDto {
   @ApiProperty({ example: 'aa11cc22-dd33-44ee-bb55-ff66aa77bb88' })
   @IsUUID('4')
   exerciseId: string;
+
+  @ApiPropertyOptional({
+    minimum: 1,
+    maximum: 30,
+    description:
+      'Create this many empty sets with the exercise, in the same ' +
+      'transaction, so it is loggable the moment it appears.',
+  })
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(30)
+  defaultSets?: number;
 }
