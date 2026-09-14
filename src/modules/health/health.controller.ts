@@ -55,7 +55,13 @@ export class HealthController {
   @ApiResponse({ status: 200, description: 'Database reachable' })
   @ApiResponse({ status: 503, description: 'Database unreachable' })
   checkDb() {
-    return this.health.check([() => this.db.pingCheck('database')]);
+    // A cold connection to Neon (fresh TCP + TLS + auth after the pool
+    // dropped its idle sockets) takes 1–2 s when the API and the
+    // database sit in different regions; Terminus' default 1 s timeout
+    // reported a perfectly healthy database as down.
+    return this.health.check([
+      () => this.db.pingCheck('database', { timeout: 5000 }),
+    ]);
   }
 
   /**

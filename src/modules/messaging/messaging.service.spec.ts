@@ -238,8 +238,9 @@ describe('MessagingService — Stage 2 core', () => {
     }
 
     function mockMessageCreate(id: string, conversationId: string) {
-      msg.create.mockResolvedValue({ id, conversationId });
-      msg.findByPk.mockResolvedValue({
+      // `create` returns the full row (INSERT … RETURNING); the send
+      // path uses it directly instead of re-fetching by id.
+      const row = {
         id,
         conversationId,
         senderId: sender,
@@ -247,41 +248,36 @@ describe('MessagingService — Stage 2 core', () => {
         body: 'hello',
         deletedAt: null,
         createdAt: new Date('2026-05-11T10:00:00Z'),
-      });
+      };
+      msg.create.mockResolvedValue(row);
+      msg.findByPk.mockResolvedValue(row);
     }
 
     function mockListItemAfterSend(conversationId: string) {
-      part.findOne.mockImplementation(
-        (args: { where?: { userId?: string } }) => {
-          // First call: hydrate list item for sender.
-          if (args.where?.userId === sender) {
-            return {
-              conversationId,
-              userId: sender,
-              lastReadAt: null,
-              mutedUntil: null,
-              leftAt: null,
-              conversation: {
-                id: conversationId,
-                type: ConversationType.DIRECT,
-                name: null,
-                avatarUrl: null,
-                lastMessageAt: new Date('2026-05-11T10:00:00Z'),
-                lastMessagePreview: 'hello',
-              },
-            };
-          }
-          // Second call: hydrate "the other user" snapshot.
-          return {
-            user: {
-              id: recipient,
-              firstName: 'Bob',
-              lastName: 'Builder',
-              avatarUrl: null,
-            },
-          };
+      // Both participant rows come back from one findAll (user included
+      // on the other side) — the send path no longer re-reads the
+      // conversation, it patches the row it just wrote.
+      part.findAll.mockResolvedValue([
+        {
+          conversationId: conversationId,
+          userId: sender,
+          lastReadAt: null,
+          mutedUntil: null,
+          leftAt: null,
         },
-      );
+        {
+          conversationId: conversationId,
+          userId: recipient,
+          lastReadAt: null,
+          leftAt: null,
+          user: {
+            id: recipient,
+            firstName: 'Bob',
+            lastName: 'Builder',
+            avatarUrl: null,
+          },
+        },
+      ]);
     }
 
     it('rejects sending to self', async () => {
@@ -789,8 +785,9 @@ describe('MessagingService — Stage 2 core', () => {
       conv.create.mockResolvedValue({ id });
     }
     function mockMessageCreate(id: string, conversationId: string) {
-      msg.create.mockResolvedValue({ id, conversationId });
-      msg.findByPk.mockResolvedValue({
+      // `create` returns the full row (INSERT … RETURNING); the send
+      // path uses it directly instead of re-fetching by id.
+      const row = {
         id,
         conversationId,
         senderId: sender,
@@ -798,38 +795,35 @@ describe('MessagingService — Stage 2 core', () => {
         body: 'hi',
         deletedAt: null,
         createdAt: new Date(),
-      });
+      };
+      msg.create.mockResolvedValue(row);
+      msg.findByPk.mockResolvedValue(row);
     }
     function mockListItemAfterSend(conversationId: string) {
-      part.findOne.mockImplementation(
-        (args: { where?: { userId?: string } }) => {
-          if (args.where?.userId === sender) {
-            return {
-              conversationId,
-              userId: sender,
-              lastReadAt: null,
-              mutedUntil: null,
-              leftAt: null,
-              conversation: {
-                id: conversationId,
-                type: ConversationType.DIRECT,
-                name: null,
-                avatarUrl: null,
-                lastMessageAt: new Date(),
-                lastMessagePreview: 'hi',
-              },
-            };
-          }
-          return {
-            user: {
-              id: recipient,
-              firstName: 'Bob',
-              lastName: 'Builder',
-              avatarUrl: null,
-            },
-          };
+      // Both participant rows come back from one findAll (user included
+      // on the other side) — the send path no longer re-reads the
+      // conversation, it patches the row it just wrote.
+      part.findAll.mockResolvedValue([
+        {
+          conversationId: conversationId,
+          userId: sender,
+          lastReadAt: null,
+          mutedUntil: null,
+          leftAt: null,
         },
-      );
+        {
+          conversationId: conversationId,
+          userId: recipient,
+          lastReadAt: null,
+          leftAt: null,
+          user: {
+            id: recipient,
+            firstName: 'Bob',
+            lastName: 'Builder',
+            avatarUrl: null,
+          },
+        },
+      ]);
     }
 
     it('rate-limit check runs BEFORE the User.findByPk recipient lookup', async () => {
@@ -962,8 +956,9 @@ describe('MessagingService — Stage 2 core', () => {
       });
       conv.findOne.mockResolvedValue(null);
       conv.create.mockResolvedValue({ id: convId });
-      msg.create.mockResolvedValue({ id: 'm-1', conversationId: convId });
-      msg.findByPk.mockResolvedValue({
+      // `create` returns the full row (INSERT … RETURNING); the send
+      // path uses it directly instead of re-fetching by id.
+      const row = {
         id: 'm-1',
         conversationId: convId,
         senderId: sender,
@@ -971,36 +966,33 @@ describe('MessagingService — Stage 2 core', () => {
         body: 'hi',
         deletedAt: null,
         createdAt: new Date(),
-      });
-      part.findOne.mockImplementation(
-        (args: { where?: { userId?: string } }) => {
-          if (args.where?.userId === sender) {
-            return {
-              conversationId: convId,
-              userId: sender,
-              lastReadAt: null,
-              mutedUntil: null,
-              leftAt: null,
-              conversation: {
-                id: convId,
-                type: ConversationType.DIRECT,
-                name: null,
-                avatarUrl: null,
-                lastMessageAt: new Date(),
-                lastMessagePreview: 'hi',
-              },
-            };
-          }
-          return {
-            user: {
-              id: recipient,
-              firstName: 'Bob',
-              lastName: 'Builder',
-              avatarUrl: null,
-            },
-          };
+      };
+      msg.create.mockResolvedValue(row);
+      msg.findByPk.mockResolvedValue(row);
+      // Both participant rows come back from one findAll (user included
+      // on the other side) — the send path no longer re-reads the
+      // conversation, it patches the row it just wrote.
+      part.findAll.mockResolvedValue([
+        {
+          conversationId: convId,
+          userId: sender,
+          lastReadAt: null,
+          mutedUntil: null,
+          leftAt: null,
         },
-      );
+        {
+          conversationId: convId,
+          userId: recipient,
+          lastReadAt: null,
+          leftAt: null,
+          user: {
+            id: recipient,
+            firstName: 'Bob',
+            lastName: 'Builder',
+            avatarUrl: null,
+          },
+        },
+      ]);
     }
 
     it('fires notify exactly once on happy path, to the recipient, with MESSAGE_RECEIVED type', async () => {
@@ -1079,8 +1071,7 @@ describe('MessagingService — Stage 2 core', () => {
         avatarUrl: null,
       });
       conv.findOne.mockResolvedValue({ id: 'conv-x', lastMessageAt: prev });
-      msg.create.mockResolvedValue({ id: 'm-2', conversationId: 'conv-x' });
-      msg.findByPk.mockResolvedValue({
+      const row = {
         id: 'm-2',
         conversationId: 'conv-x',
         senderId: sender,
@@ -1088,22 +1079,30 @@ describe('MessagingService — Stage 2 core', () => {
         body: 'hi',
         deletedAt: null,
         createdAt: new Date(),
-      });
-      part.findOne.mockResolvedValue({
-        conversationId: 'conv-x',
-        userId: sender,
-        lastReadAt: null,
-        mutedUntil: null,
-        leftAt: null,
-        conversation: {
-          id: 'conv-x',
-          type: ConversationType.DIRECT,
-          name: null,
-          avatarUrl: null,
-          lastMessageAt: new Date(),
-          lastMessagePreview: 'hi',
+      };
+      msg.create.mockResolvedValue(row);
+      msg.findByPk.mockResolvedValue(row);
+      part.findAll.mockResolvedValue([
+        {
+          conversationId: 'conv-x',
+          userId: sender,
+          lastReadAt: null,
+          mutedUntil: null,
+          leftAt: null,
         },
-      });
+        {
+          conversationId: 'conv-x',
+          userId: recipient,
+          lastReadAt: null,
+          leftAt: null,
+          user: {
+            id: recipient,
+            firstName: 'Bob',
+            lastName: 'Builder',
+            avatarUrl: null,
+          },
+        },
+      ]);
 
       await service.sendMessage(sender, recipient, 'hi');
       await new Promise((r) => setImmediate(r));
@@ -1184,8 +1183,9 @@ describe('MessagingService — Stage 2 core', () => {
       });
       conv.findOne.mockResolvedValue(null);
       conv.create.mockResolvedValue({ id: convId });
-      msg.create.mockResolvedValue({ id: 'm-1', conversationId: convId });
-      msg.findByPk.mockResolvedValue({
+      // `create` returns the full row (INSERT … RETURNING); the send
+      // path uses it directly instead of re-fetching by id.
+      const row = {
         id: 'm-1',
         conversationId: convId,
         senderId: sender,
@@ -1193,36 +1193,33 @@ describe('MessagingService — Stage 2 core', () => {
         body: 'hi',
         deletedAt: null,
         createdAt: new Date('2026-05-12T10:00:00Z'),
-      });
-      part.findOne.mockImplementation(
-        (args: { where?: { userId?: string } }) => {
-          if (args.where?.userId === sender) {
-            return {
-              conversationId: convId,
-              userId: sender,
-              lastReadAt: null,
-              mutedUntil: null,
-              leftAt: null,
-              conversation: {
-                id: convId,
-                type: ConversationType.DIRECT,
-                name: null,
-                avatarUrl: null,
-                lastMessageAt: new Date(),
-                lastMessagePreview: 'hi',
-              },
-            };
-          }
-          return {
-            user: {
-              id: recipient,
-              firstName: 'Bob',
-              lastName: 'Builder',
-              avatarUrl: null,
-            },
-          };
+      };
+      msg.create.mockResolvedValue(row);
+      msg.findByPk.mockResolvedValue(row);
+      // Both participant rows come back from one findAll (user included
+      // on the other side) — the send path no longer re-reads the
+      // conversation, it patches the row it just wrote.
+      part.findAll.mockResolvedValue([
+        {
+          conversationId: convId,
+          userId: sender,
+          lastReadAt: null,
+          mutedUntil: null,
+          leftAt: null,
         },
-      );
+        {
+          conversationId: convId,
+          userId: recipient,
+          lastReadAt: null,
+          leftAt: null,
+          user: {
+            id: recipient,
+            firstName: 'Bob',
+            lastName: 'Builder',
+            avatarUrl: null,
+          },
+        },
+      ]);
     }
 
     it('sendMessage emits message.created ONLY to the recipient (not sender)', async () => {
@@ -1330,6 +1327,209 @@ describe('MessagingService — Stage 2 core', () => {
       const [recipientIds, payload] = emitter.emitMessageDeleted.mock.calls[0];
       expect(recipientIds).toEqual([recipient]);
       expect(payload.messageId).toBe('m-1');
+    });
+  });
+
+  // ───────────────── query shape (round trips per request) ────────────
+  //
+  // These assert *how many* queries a request costs, not just its
+  // result. Every one of them is a network round trip to Postgres, so a
+  // handler that quietly grows one per conversation is a latency bug
+  // that no correctness test would catch.
+
+  describe('query shape', () => {
+    const me = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
+    const other = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
+
+    function directRow(id: string, lastReadAt: Date | null = null) {
+      return {
+        conversationId: id,
+        userId: me,
+        lastReadAt,
+        mutedUntil: null,
+        leftAt: null,
+        conversation: {
+          id,
+          type: ConversationType.DIRECT,
+          name: null,
+          avatarUrl: null,
+          lastMessageAt: new Date('2026-05-11T10:00:00Z'),
+          lastMessagePreview: 'hi',
+        },
+      };
+    }
+
+    it('getUnreadCount totals one grouped query instead of counting per thread', async () => {
+      part.findAll.mockResolvedValue([
+        { conversationId: 'c1', lastReadAt: null },
+        { conversationId: 'c2', lastReadAt: new Date('2026-05-01T00:00:00Z') },
+        { conversationId: 'c3', lastReadAt: null },
+      ]);
+      msg.findAll.mockResolvedValue([
+        { conversationId: 'c1', count: '2' },
+        { conversationId: 'c3', count: 5 },
+      ]);
+
+      const result = await service.getUnreadCount(me);
+
+      expect(result).toEqual({ count: 7 });
+      expect(msg.findAll).toHaveBeenCalledTimes(1);
+      // The old shape was one count() per conversation, serially.
+      expect(msg.count).not.toHaveBeenCalled();
+    });
+
+    it('getUnreadCount asks nothing further when the user has no threads', async () => {
+      part.findAll.mockResolvedValue([]);
+
+      expect(await service.getUnreadCount(me)).toEqual({ count: 0 });
+      expect(msg.findAll).not.toHaveBeenCalled();
+    });
+
+    it('listConversations costs the same number of queries for 1 thread as for 20', async () => {
+      const countQueriesFor = async (size: number) => {
+        jest.clearAllMocks();
+        const rows = Array.from({ length: size }, (_, i) => directRow(`c${i}`));
+        part.findAndCountAll.mockResolvedValue({ rows, count: size });
+        msg.findAll.mockResolvedValue(
+          rows.map((r) => ({ conversationId: r.conversationId, count: 1 })),
+        );
+        part.findAll.mockResolvedValue(
+          rows.map((r) => ({
+            conversationId: r.conversationId,
+            userId: other,
+            lastReadAt: null,
+            user: {
+              id: other,
+              firstName: 'Bob',
+              lastName: 'Builder',
+              avatarUrl: null,
+              handle: null,
+            },
+          })),
+        );
+
+        const page = await service.listConversations(me, 1, 50);
+        expect(page.items).toHaveLength(size);
+        expect(page.items[0].unreadCount).toBe(1);
+        expect(page.items[0].otherUser?.id).toBe(other);
+
+        return {
+          unreadQueries:
+            msg.findAll.mock.calls.length + msg.count.mock.calls.length,
+          participantQueries: part.findAll.mock.calls.length,
+        };
+      };
+
+      expect(await countQueriesFor(1)).toEqual({
+        unreadQueries: 1,
+        participantQueries: 1,
+      });
+      expect(await countQueriesFor(20)).toEqual({
+        unreadQueries: 1,
+        participantQueries: 1,
+      });
+    });
+
+    it('sendMessage returns the inserted row rather than reading it back', async () => {
+      userFindByPkSpy.mockResolvedValue({
+        id: other,
+        firstName: 'Bob',
+        lastName: 'Builder',
+        avatarUrl: null,
+        isActive: true,
+        createdAt: new Date('2020-01-01T00:00:00Z'),
+      });
+      conv.findOne.mockResolvedValue({
+        id: 'c1',
+        type: ConversationType.DIRECT,
+        name: null,
+        avatarUrl: null,
+        lastMessageAt: null,
+        lastMessagePreview: null,
+      });
+      msg.create.mockResolvedValue({
+        id: 'm-1',
+        conversationId: 'c1',
+        senderId: me,
+        kind: MessageKind.TEXT,
+        body: 'hello',
+        deletedAt: null,
+        createdAt: new Date('2026-05-11T10:00:00Z'),
+      });
+      part.findAll.mockResolvedValue([
+        {
+          conversationId: 'c1',
+          userId: me,
+          lastReadAt: null,
+          mutedUntil: null,
+          leftAt: null,
+        },
+        {
+          conversationId: 'c1',
+          userId: other,
+          lastReadAt: null,
+          leftAt: null,
+          user: {
+            id: other,
+            firstName: 'Bob',
+            lastName: 'Builder',
+            avatarUrl: null,
+            handle: null,
+          },
+        },
+      ]);
+
+      const result = await service.sendMessage(me, other, 'hello');
+
+      expect(result.message.id).toBe('m-1');
+      expect(result.message.body).toBe('hello');
+      // The INSERT already returned the row.
+      expect(msg.findByPk).not.toHaveBeenCalled();
+      // And the conversation row we just wrote is not read back either.
+      expect(conv.findOne).toHaveBeenCalledTimes(1);
+      expect(result.conversation.lastMessagePreview).toBe('hello');
+    });
+
+    it('sendMessage hands the sender it already loaded to the safety gate', async () => {
+      const createdAt = new Date('2020-01-01T00:00:00Z');
+      userFindByPkSpy.mockResolvedValue({
+        id: other,
+        firstName: 'Bob',
+        lastName: 'Builder',
+        avatarUrl: null,
+        isActive: true,
+        createdAt,
+      });
+      conv.findOne.mockResolvedValue({
+        id: 'c1',
+        type: ConversationType.DIRECT,
+      });
+      msg.create.mockResolvedValue({
+        id: 'm-1',
+        conversationId: 'c1',
+        senderId: me,
+        kind: MessageKind.TEXT,
+        body: 'hi',
+        deletedAt: null,
+        createdAt: new Date(),
+      });
+      part.findAll.mockResolvedValue([
+        {
+          conversationId: 'c1',
+          userId: me,
+          lastReadAt: null,
+          mutedUntil: null,
+          leftAt: null,
+        },
+      ]);
+
+      await service.sendMessage(me, other, 'hi');
+
+      expect(safety.canMessage).toHaveBeenCalledWith(
+        me,
+        other,
+        expect.objectContaining({ senderCreatedAt: createdAt }),
+      );
     });
   });
 });

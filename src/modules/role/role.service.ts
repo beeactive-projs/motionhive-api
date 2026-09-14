@@ -17,6 +17,56 @@ export class RoleService {
   ) {}
 
   // =====================================================
+  // ROLE NAME CACHE
+  // =====================================================
+
+  /**
+   * Per-process cache of a user's global role names, read by
+   * JwtStrategy on every authenticated request. Roles change rarely
+   * (becoming an instructor, an admin grant) and every write goes
+   * through this service, so entries are dropped on assign/remove and
+   * otherwise expire after ROLE_NAME_CACHE_TTL_MS. Saves one database
+   * round trip per request — which is most of the request when the API
+   * and the database are far apart.
+   *
+   * Scope is one API process. With several replicas a change made on
+   * another instance shows up after the TTL, which is acceptable for a
+   * guard check.
+   */
+  private static readonly ROLE_NAME_CACHE_TTL_MS = 60_000;
+  private static readonly ROLE_NAME_CACHE_MAX_ENTRIES = 5_000;
+  private readonly roleNameCache = new Map<
+    string,
+    { names: string[]; expiresAt: number }
+  >();
+
+  /** Global role names for a user, served from the cache when fresh. */
+  async getUserRoleNames(userId: string): Promise<string[]> {
+    const now = Date.now();
+    const hit = this.roleNameCache.get(userId);
+    if (hit && hit.expiresAt > now) {
+      return [...hit.names];
+    }
+
+    const roles = await this.getUserRoles(userId);
+    const names = roles.map((role) => role.name);
+
+    if (this.roleNameCache.size >= RoleService.ROLE_NAME_CACHE_MAX_ENTRIES) {
+      this.roleNameCache.clear();
+    }
+    this.roleNameCache.set(userId, {
+      names,
+      expiresAt: now + RoleService.ROLE_NAME_CACHE_TTL_MS,
+    });
+    return [...names];
+  }
+
+  /** Forget a user's cached role names (called on every role write). */
+  invalidateUserRoleCache(userId: string): void {
+    this.roleNameCache.delete(userId);
+  }
+
+  // =====================================================
   // ROLE CRUD
   // =====================================================
 
@@ -76,6 +126,7 @@ export class RoleService {
       return existing;
     }
 
+    this.invalidateUserRoleCache(userId);
     return this.userRoleModel.create(
       {
         userId: userId,
@@ -117,6 +168,7 @@ export class RoleService {
       },
     });
 
+    this.invalidateUserRoleCache(userId);
     return deleted > 0;
   }
 

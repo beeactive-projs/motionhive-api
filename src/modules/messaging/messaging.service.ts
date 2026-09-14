@@ -9,7 +9,7 @@ import {
 import { InjectModel } from '@nestjs/sequelize';
 import { WINSTON_MODULE_NEST_PROVIDER } from 'nest-winston';
 import { randomUUID } from 'crypto';
-import { Op, Transaction, UniqueConstraintError } from 'sequelize';
+import { col, fn, Op, UniqueConstraintError } from 'sequelize';
 import { Sequelize } from 'sequelize-typescript';
 import {
   buildPaginatedResponse,
@@ -101,6 +101,12 @@ export interface SendMessageResult {
 
 // Tombstone moved to ./constants — single source of truth.
 const DELETED_BODY_TOMBSTONE = DELETED_MESSAGE_BODY;
+
+/** The conversation fields an inbox row is built from. */
+type ConversationSummary = Pick<
+  Conversation,
+  'id' | 'type' | 'name' | 'avatarUrl' | 'lastMessageAt' | 'lastMessagePreview'
+>;
 
 /**
  * MessagingService — core conversation/message operations.
@@ -206,7 +212,9 @@ export class MessagingService {
     // and silent-drop, matching the block-leak protections below.
     const [sender, recipient] = await Promise.all([
       User.findByPk(senderId, {
-        attributes: ['id', 'firstName', 'lastName'],
+        // createdAt feeds the safety gate's new-account rule so it does
+        // not look the sender up a second time.
+        attributes: ['id', 'firstName', 'lastName', 'createdAt'],
       }),
       User.findByPk(recipientId, {
         attributes: [
@@ -252,7 +260,9 @@ export class MessagingService {
     // need to be rolled back (and never emit an event for a blocked
     // send). The gate decides between three semantically distinct
     // outcomes — see CanMessageResult.
-    const verdict = await this.safety.canMessage(senderId, recipientId);
+    const verdict = await this.safety.canMessage(senderId, recipientId, {
+      senderCreatedAt: sender?.createdAt ?? null,
+    });
 
     if (verdict.kind === 'forbidden') {
       throw new ForbiddenException(verdict.reason);
@@ -271,22 +281,22 @@ export class MessagingService {
     }
 
     // ── Happy path ────────────────────────────────────────────────────
-    // Resolve or create the conversation BEFORE the message transaction.
-    // Two reasons:
+    // Resolve or create the conversation BEFORE the message transaction:
     //   1. The per-conversation rate limit needs a conversation id and
     //      should run *outside* the message tx so a 429 doesn't leave
     //      a stale slot reservation when the tx rolls back.
-    //   2. The find-or-create logic has its own concurrent-first-send
-    //      race handling — see findOrCreateDirectConversation.
-    const conversation = await this.sequelize.transaction(async (tx) => {
-      return this.findOrCreateDirectConversation(senderId, recipientId, tx);
-    });
+    //   2. The lookup is a plain read; only the first-send create path
+    //      opens a transaction (see findOrCreateDirectConversation).
+    const conversation = await this.findOrCreateDirectConversation(
+      senderId,
+      recipientId,
+    );
 
     await this.rateLimit.assertSendAllowed(senderId, conversation.id);
 
     // Capture the previous-message timestamp BEFORE the update writes
     // the new one. This drives the email "quiet-period" gate — if the
-    // conversation has been silent for &gt; EMAIL_QUIET_PERIOD_MS we'll
+    // conversation has been silent for > EMAIL_QUIET_PERIOD_MS we'll
     // email the recipient; otherwise they're presumably still engaged
     // and we stay out of their inbox.
     const previousMessageAt: Date | null = conversation.lastMessageAt;
@@ -296,35 +306,65 @@ export class MessagingService {
     const now = new Date();
     const metadata = threatFlags.anyFlag ? { threatFlags } : null;
 
-    const messageId = await this.sequelize.transaction(async (tx) => {
-      const message = await this.messageModel.create(
-        {
-          conversationId: conversation.id,
-          senderId,
-          kind: MessageKind.TEXT,
-          body: storedBody,
-          metadata,
-        },
-        { transaction: tx },
-      );
+    // The write and the participant lookup are independent, so they
+    // share one round trip. `returning: true` makes the INSERT hand the
+    // full row back (DB defaults included), so the created message is
+    // used as-is instead of being re-fetched by id.
+    const [createdMessage, participants] = await Promise.all([
+      this.sequelize.transaction(async (tx) => {
+        const message = await this.messageModel.create(
+          {
+            conversationId: conversation.id,
+            senderId,
+            kind: MessageKind.TEXT,
+            body: storedBody,
+            metadata,
+          },
+          { transaction: tx, returning: true },
+        );
 
-      await this.conversationModel.update(
-        { lastMessageAt: now, lastMessagePreview: preview, updatedAt: now },
-        { where: { id: conversation.id }, transaction: tx },
-      );
+        await this.conversationModel.update(
+          { lastMessageAt: now, lastMessagePreview: preview, updatedAt: now },
+          { where: { id: conversation.id }, transaction: tx },
+        );
 
-      return message.id;
-    });
-
-    const [createdMessage, listItem] = await Promise.all([
-      this.messageModel.findByPk(messageId),
-      this.buildListItemForUser(senderId, conversation.id),
+        return message;
+      }),
+      this.participantModel.findAll({
+        where: { conversationId: conversation.id },
+        include: [{ model: User, attributes: USER_SAFE_ATTRIBUTES }],
+      }),
     ]);
 
-    if (!createdMessage || !listItem) {
-      // Should never happen — both were just written in the same tx.
+    const self =
+      participants.find((p) => p.userId === senderId && !p.leftAt) ?? null;
+    if (!self) {
+      // Should never happen — the sender's participant row was written
+      // together with the conversation.
       throw new NotFoundException('Conversation state vanished after send.');
     }
+    // v1 is DIRECT-only, so "the other side" is the one non-sender row.
+    const other = participants.find((p) => p.userId !== senderId) ?? null;
+
+    const unread = await this.countUnreadFor(
+      senderId,
+      conversation.id,
+      self.lastReadAt,
+    );
+    const listItem = this.toListItem(
+      self,
+      {
+        id: conversation.id,
+        type: conversation.type,
+        name: conversation.name,
+        avatarUrl: conversation.avatarUrl,
+        // Reflect the write we just committed without re-reading the row.
+        lastMessageAt: now,
+        lastMessagePreview: preview,
+      },
+      unread,
+      other,
+    );
 
     // Velocity bookkeeping AFTER commit. Fire-and-forget — alarm
     // failures must never break message delivery.
@@ -349,7 +389,7 @@ export class MessagingService {
     // notify-after-commit: in-app channel is always off (the Messages
     // sidebar badge is the persistent in-app signal); email follows
     // the "quiet-period" rule — sent only when the conversation has
-    // been silent for &gt; EMAIL_QUIET_PERIOD_MS since the previous
+    // been silent for > EMAIL_QUIET_PERIOD_MS since the previous
     // message. Sender display name is threaded through from the
     // upfront lookup — no second query.
     const senderName =
@@ -500,9 +540,7 @@ export class MessagingService {
       distinct: true,
     });
 
-    const items = await Promise.all(
-      rows.map((p) => this.hydrateListItem(userId, p)),
-    );
+    const items = await this.hydrateListItems(userId, rows);
 
     return buildPaginatedResponse(items, count, page, limit);
   }
@@ -603,17 +641,18 @@ export class MessagingService {
       return { count: 0 };
     }
 
+    // One grouped query rather than a count per thread. This badge is
+    // fetched on every page load, and counting serially made it the
+    // slowest call a user with a busy inbox makes — N round trips where
+    // one does.
+    const byConversation = await this.countUnreadByConversation(
+      userId,
+      participants,
+    );
+
     let total = 0;
-    for (const p of participants) {
-      const unread = await this.messageModel.count({
-        where: {
-          conversationId: p.conversationId,
-          senderId: { [Op.ne]: userId },
-          deletedAt: null,
-          ...(p.lastReadAt ? { createdAt: { [Op.gt]: p.lastReadAt } } : {}),
-        },
-      });
-      total += unread;
+    for (const count of byConversation.values()) {
+      total += count;
     }
 
     return { count: total };
@@ -802,22 +841,21 @@ export class MessagingService {
 
   /**
    * Look up the canonical DIRECT conversation between two users; create
-   * it (with both participant rows) on first send. Concurrent-first-send
-   * race protection comes from the partial UNIQUE index on
-   * `conversation.direct_key` (migration 039) — if two senders hit
-   * `create` simultaneously, exactly one wins; the loser catches the
-   * UniqueConstraintError and re-reads the winner.
+   * it (with both participant rows) on first send.
    *
-   * Postgres aborts a transaction on unique violation, so the loser's
-   * retry-read CANNOT run inside the failed tx. We use a SAVEPOINT
-   * (Sequelize nested transaction) for the create, so only the inner
-   * step rolls back on conflict; the outer caller transaction stays
-   * valid and the retry read works against committed rows.
+   * The lookup is a plain read and deliberately runs outside any
+   * transaction — every send after the first takes this branch, and a
+   * BEGIN/COMMIT pair around one SELECT is two wasted round trips.
+   *
+   * Concurrent-first-send race protection comes from the partial UNIQUE
+   * index on `conversation.direct_key` (migration 039): if two senders
+   * create simultaneously, exactly one insert succeeds. The loser's
+   * transaction rolls back on the UniqueConstraintError and it re-reads
+   * the winner's row.
    */
   private async findOrCreateDirectConversation(
     aId: string,
     bId: string,
-    tx: Transaction,
   ): Promise<Conversation> {
     const directKey = directKeyFor(aId, bId);
     const [sortedA, sortedB] = [aId, bId].sort();
@@ -825,53 +863,45 @@ export class MessagingService {
     // Fast path: lookup by the deterministic key.
     const existing = await this.conversationModel.findOne({
       where: { type: ConversationType.DIRECT, directKey },
-      transaction: tx,
     });
     if (existing) return existing;
 
-    // Create inside a SAVEPOINT. If the UNIQUE(direct_key) index trips
-    // because a concurrent sender beat us, only the savepoint rolls
-    // back — the outer tx remains usable for the retry read.
     try {
-      return await this.sequelize.transaction(
-        { transaction: tx },
-        async (sp) => {
-          const conversation = await this.conversationModel.create(
+      return await this.sequelize.transaction(async (tx) => {
+        const conversation = await this.conversationModel.create(
+          {
+            type: ConversationType.DIRECT,
+            createdById: aId,
+            directKey,
+          },
+          { transaction: tx },
+        );
+
+        await this.participantModel.bulkCreate(
+          [
             {
-              type: ConversationType.DIRECT,
-              createdById: aId,
-              directKey,
+              conversationId: conversation.id,
+              userId: sortedA,
+              role: ConversationParticipantRole.MEMBER,
             },
-            { transaction: sp },
-          );
+            {
+              conversationId: conversation.id,
+              userId: sortedB,
+              role: ConversationParticipantRole.MEMBER,
+            },
+          ],
+          { transaction: tx },
+        );
 
-          await this.participantModel.bulkCreate(
-            [
-              {
-                conversationId: conversation.id,
-                userId: sortedA,
-                role: ConversationParticipantRole.MEMBER,
-              },
-              {
-                conversationId: conversation.id,
-                userId: sortedB,
-                role: ConversationParticipantRole.MEMBER,
-              },
-            ],
-            { transaction: sp },
-          );
-
-          return conversation;
-        },
-      );
+        return conversation;
+      });
     } catch (err) {
       if (err instanceof UniqueConstraintError) {
-        // Another concurrent sender won the create. The savepoint
-        // already rolled back so the outer tx is healthy — re-read
-        // by the deterministic key to grab the winner.
+        // Another concurrent sender won the create; our transaction
+        // rolled back. Re-read by the deterministic key to grab the
+        // winner.
         const winner = await this.conversationModel.findOne({
           where: { type: ConversationType.DIRECT, directKey },
-          transaction: tx,
         });
         if (winner) return winner;
       }
@@ -921,53 +951,130 @@ export class MessagingService {
     if (!participant || !participant.conversation) {
       return null;
     }
-    return this.hydrateListItem(userId, participant);
+    const [item] = await this.hydrateListItems(userId, [participant]);
+    return item ?? null;
   }
 
-  private async hydrateListItem(
+  /**
+   * Inbox hydration for N participant rows (each with `conversation`
+   * included) in two queries total, regardless of N: one grouped
+   * unread count and one lookup of the other side of every DIRECT
+   * thread. The previous per-row version issued 2N queries, which on a
+   * remote database turned a 20-thread inbox into 40 round trips.
+   */
+  private async hydrateListItems(
     userId: string,
-    participant: ConversationParticipant,
-  ): Promise<ConversationListItem> {
-    const conversation = participant.conversation;
-    const unread = await this.messageModel.count({
+    participants: ConversationParticipant[],
+  ): Promise<ConversationListItem[]> {
+    if (participants.length === 0) return [];
+
+    const directIds = participants
+      .filter((p) => p.conversation.type === ConversationType.DIRECT)
+      .map((p) => p.conversationId);
+
+    const [unreadByConversation, otherByConversation] = await Promise.all([
+      this.countUnreadByConversation(userId, participants),
+      this.otherParticipantByConversation(userId, directIds),
+    ]);
+
+    return participants.map((p) =>
+      this.toListItem(
+        p,
+        p.conversation,
+        unreadByConversation.get(p.conversationId) ?? 0,
+        otherByConversation.get(p.conversationId) ?? null,
+      ),
+    );
+  }
+
+  /**
+   * Unread messages per conversation for one user, in a single grouped
+   * query. "Unread" = sent by someone else, not deleted, and newer than
+   * the user's `lastReadAt` for that conversation (everything when they
+   * have never read it).
+   */
+  private async countUnreadByConversation(
+    userId: string,
+    participants: ConversationParticipant[],
+  ): Promise<Map<string, number>> {
+    const rows = (await this.messageModel.findAll({
+      attributes: ['conversationId', [fn('COUNT', col('Message.id')), 'count']],
       where: {
-        conversationId: conversation.id,
         senderId: { [Op.ne]: userId },
         deletedAt: null,
-        ...(participant.lastReadAt
-          ? { createdAt: { [Op.gt]: participant.lastReadAt } }
-          : {}),
+        [Op.or]: participants.map((p) => ({
+          conversationId: p.conversationId,
+          ...(p.lastReadAt ? { createdAt: { [Op.gt]: p.lastReadAt } } : {}),
+        })),
+      },
+      group: ['Message.conversation_id'],
+      raw: true,
+    })) as unknown as Array<{ conversationId: string; count: string | number }>;
+
+    return new Map(rows.map((r) => [r.conversationId, Number(r.count)]));
+  }
+
+  /** The non-`userId` participant of each DIRECT conversation, with user. */
+  private async otherParticipantByConversation(
+    userId: string,
+    conversationIds: string[],
+  ): Promise<Map<string, ConversationParticipant>> {
+    const byConversation = new Map<string, ConversationParticipant>();
+    if (conversationIds.length === 0) return byConversation;
+
+    const rows = await this.participantModel.findAll({
+      where: {
+        conversationId: { [Op.in]: conversationIds },
+        userId: { [Op.ne]: userId },
+      },
+      include: [{ model: User, attributes: USER_SAFE_ATTRIBUTES }],
+    });
+    for (const row of rows) {
+      if (!byConversation.has(row.conversationId)) {
+        byConversation.set(row.conversationId, row);
+      }
+    }
+    return byConversation;
+  }
+
+  /** Unread count for one user in one conversation (see above). */
+  private countUnreadFor(
+    userId: string,
+    conversationId: string,
+    lastReadAt: Date | null,
+  ): Promise<number> {
+    return this.messageModel.count({
+      where: {
+        conversationId,
+        senderId: { [Op.ne]: userId },
+        deletedAt: null,
+        ...(lastReadAt ? { createdAt: { [Op.gt]: lastReadAt } } : {}),
       },
     });
+  }
 
-    let otherUser: ParticipantSnapshot | null = null;
-    let lastReadByOther: string | null = null;
-    if (conversation.type === ConversationType.DIRECT) {
-      const other = await this.participantModel.findOne({
-        where: {
-          conversationId: conversation.id,
-          userId: { [Op.ne]: userId },
-        },
-        include: [
-          {
-            model: User,
-            attributes: USER_SAFE_ATTRIBUTES,
-          },
-        ],
-      });
-      if (other?.user) {
-        otherUser = {
+  /**
+   * Shape one inbox row. Pure — every input has already been loaded, so
+   * callers control how many queries the hydration costs.
+   */
+  private toListItem(
+    participant: ConversationParticipant,
+    conversation: ConversationSummary,
+    unreadCount: number,
+    other: ConversationParticipant | null,
+  ): ConversationListItem {
+    const otherUser: ParticipantSnapshot | null = other?.user
+      ? {
           id: other.user.id,
           firstName: other.user.firstName,
           lastName: other.user.lastName,
           avatarUrl: other.user.avatarUrl ?? null,
           handle: other.user.handle ?? null,
-        };
-      }
-      lastReadByOther = other?.lastReadAt
-        ? other.lastReadAt.toISOString()
-        : null;
-    }
+        }
+      : null;
+    const lastReadByOther = other?.lastReadAt
+      ? other.lastReadAt.toISOString()
+      : null;
 
     const mutedUntil = participant.mutedUntil;
     const muted = !!(mutedUntil && mutedUntil.getTime() > Date.now());
@@ -979,7 +1086,7 @@ export class MessagingService {
       avatarUrl: conversation.avatarUrl,
       lastMessageAt: conversation.lastMessageAt,
       lastMessagePreview: conversation.lastMessagePreview,
-      unreadCount: unread,
+      unreadCount,
       muted,
       otherUser,
       lastReadByOther,

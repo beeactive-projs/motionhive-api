@@ -39,6 +39,9 @@ describe('HealthController', () => {
     // The indicator passed to health.check should exercise the DB ping.
     const indicators = health.check.mock.calls[0][0] as Array<() => unknown>;
     await indicators[0]();
-    expect(db.pingCheck).toHaveBeenCalledWith('database');
+    // 5s, not Terminus' 1s default: a cold Neon connection (fresh TCP +
+    // TLS + auth after the pool dropped its idle sockets) takes 1-2s
+    // cross-region, and reporting that as 503 restarts a healthy app.
+    expect(db.pingCheck).toHaveBeenCalledWith('database', { timeout: 5000 });
   });
 });

@@ -50,9 +50,15 @@ export const getDatabaseConfig = (
       // worst case). Symptom of the old 30s setting:
       //   `SequelizeConnectionError: Authentication timed out`
       acquire: 60000,
-      // Drop pooled sockets after 10s of idle so we don't hand out a
-      // connection Neon has already killed compute-side.
-      idle: 10000,
+      // Drop pooled sockets after 60s of idle. Neon only kills
+      // connections when it suspends the compute, which happens after
+      // 5 minutes without any activity, so anything below that window
+      // is safe — and a longer idle means a user clicking around every
+      // few seconds reuses a warm socket instead of paying a fresh
+      // TCP + TLS + auth handshake (3–4 round trips, ~1 s cross-region)
+      // after every 10-second pause. Keep this well under Neon's
+      // suspend timeout.
+      idle: 60000,
       // Reap idle sockets every 1s. Without this, the eviction only
       // runs on pool acquire; with sparse traffic, a "dead" socket can
       // linger in the pool well past the `idle` threshold and get

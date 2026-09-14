@@ -86,23 +86,43 @@ export class MessagingSafetyService {
   async canMessage(
     senderId: string,
     recipientId: string,
+    opts: {
+      /**
+       * The sender's `createdAt` when the caller already has it (the
+       * send path loads the sender up front). Skips one lookup.
+       */
+      senderCreatedAt?: Date | null;
+    } = {},
   ): Promise<CanMessageResult> {
     if (senderId === recipientId) {
       return { kind: 'forbidden', reason: 'Cannot message yourself.' };
     }
 
-    if (await this.isMessagingSuspended(senderId)) {
+    // The three checks are independent reads, so they share one round
+    // trip; the verdicts are then applied in precedence order —
+    // suspension, then block, then the new-account rule.
+    const [suspended, blocked, throttled] = await Promise.all([
+      this.isMessagingSuspended(senderId),
+      this.isBlocked(recipientId, senderId),
+      this.senderIsThrottledByAccountAge(
+        senderId,
+        recipientId,
+        opts.senderCreatedAt ?? null,
+      ),
+    ]);
+
+    if (suspended) {
       return {
         kind: 'forbidden',
         reason: 'Your messaging has been restricted. Contact support.',
       };
     }
 
-    if (await this.isBlocked(recipientId, senderId)) {
+    if (blocked) {
       return { kind: 'silentDrop', reason: 'BLOCKED_BY_RECIPIENT' };
     }
 
-    if (await this.senderIsThrottledByAccountAge(senderId, recipientId)) {
+    if (throttled) {
       return {
         kind: 'forbidden',
         reason:
@@ -247,17 +267,22 @@ export class MessagingSafetyService {
   private async senderIsThrottledByAccountAge(
     senderId: string,
     recipientId: string,
+    knownCreatedAt: Date | null,
   ): Promise<boolean> {
-    const sender = await User.findByPk(senderId, {
-      attributes: ['id', 'createdAt'],
-    });
-    if (!sender) {
-      // Defensive: a missing sender would have already 401'd at the
-      // guard layer. Treat as throttled so we never accidentally allow.
-      return true;
+    let createdAt = knownCreatedAt;
+    if (!createdAt) {
+      const sender = await User.findByPk(senderId, {
+        attributes: ['id', 'createdAt'],
+      });
+      if (!sender) {
+        // Defensive: a missing sender would have already 401'd at the
+        // guard layer. Treat as throttled so we never accidentally allow.
+        return true;
+      }
+      createdAt = sender.createdAt;
     }
 
-    const ageMs = Date.now() - sender.createdAt.getTime();
+    const ageMs = Date.now() - createdAt.getTime();
     if (ageMs >= NEW_ACCOUNT_WINDOW_MS) {
       return false;
     }

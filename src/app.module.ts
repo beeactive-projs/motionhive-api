@@ -12,6 +12,7 @@ import { envValidationSchema } from './config/env.validation';
 import { createLogger } from './common/logger/winston.config';
 import { UserThrottlerGuard } from './common/guards/user-throttler.guard';
 import { RequestIdMiddleware } from './common/middleware/request-id.middleware';
+import { RequestTimingMiddleware } from './common/middleware/request-timing.middleware';
 import { UserModule } from './modules/user/user.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { RoleModule } from './modules/role/role.module';
@@ -131,6 +132,7 @@ import { CamelCaseInterceptor } from './common/interceptors/camel-case.intercept
 })
 export class AppModule implements NestModule {
   configure(consumer: MiddlewareConsumer) {
-    consumer.apply(RequestIdMiddleware).forRoutes('*');
+    // Order matters: the timing log line carries the request id.
+    consumer.apply(RequestIdMiddleware, RequestTimingMiddleware).forRoutes('*');
   }
 }

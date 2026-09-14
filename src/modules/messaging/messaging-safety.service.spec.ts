@@ -48,6 +48,13 @@ describe('MessagingSafetyService — Stage 3', () => {
     };
 
     userFindByPkSpy = jest.spyOn(User, 'findByPk');
+    // Default: an established account. canMessage runs its three checks
+    // in parallel, so the sender lookup happens even when an earlier
+    // verdict wins — every test needs the spy to resolve.
+    userFindByPkSpy.mockResolvedValue({
+      id: 'sender-id',
+      createdAt: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000),
+    } as never);
 
     const module = await Test.createTestingModule({
       providers: [
@@ -269,6 +276,48 @@ describe('MessagingSafetyService — Stage 3', () => {
       userFindByPkSpy.mockResolvedValue(null);
       const v = await service.canMessage(sender, recipient);
       expect(v.kind).toBe('forbidden');
+    });
+
+    it('runs the three checks in parallel but applies them in precedence order', async () => {
+      // All three fire on one round trip; the verdict must still be the
+      // most serious one, not whichever resolved first.
+      suspensionModel.findOne.mockResolvedValue({ id: 's1' });
+      blockModel.findOne.mockResolvedValue({ id: 'b1' });
+      mockSenderAge(1);
+      defaultNoActiveLink();
+
+      const v = await service.canMessage(sender, recipient);
+
+      expect(v.kind).toBe('forbidden');
+      expect(suspensionModel.findOne).toHaveBeenCalledTimes(1);
+      expect(blockModel.findOne).toHaveBeenCalledTimes(1);
+    });
+
+    it('skips the sender lookup when the caller already has createdAt', async () => {
+      defaultNoSuspension();
+      defaultNoBlock();
+      userFindByPkSpy.mockClear();
+
+      const v = await service.canMessage(sender, recipient, {
+        senderCreatedAt: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000),
+      });
+
+      expect(v.kind).toBe('allowed');
+      expect(userFindByPkSpy).not.toHaveBeenCalled();
+    });
+
+    it('still loads the sender when no createdAt is supplied', async () => {
+      defaultNoSuspension();
+      defaultNoBlock();
+      mockSenderAge(1);
+      defaultNoActiveLink();
+      userFindByPkSpy.mockClear();
+      mockSenderAge(1);
+
+      const v = await service.canMessage(sender, recipient);
+
+      expect(v.kind).toBe('forbidden');
+      expect(userFindByPkSpy).toHaveBeenCalledTimes(1);
     });
 
     it('exact 48h boundary: NOT throttled (only strictly younger accounts are)', async () => {

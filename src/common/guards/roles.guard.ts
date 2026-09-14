@@ -35,17 +35,24 @@ export class RolesGuard implements CanActivate {
       return true;
     }
 
-    const request = context.switchToHttp().getRequest();
+    const request = context
+      .switchToHttp()
+      .getRequest<{ user?: { id: string; roles?: unknown } }>();
     const user = request.user;
 
     if (!user) {
       throw new ForbiddenException('User not authenticated');
     }
 
-    const hasRole = await this.roleService.userHasAnyRole(
-      user.id,
-      requiredRoles,
-    );
+    // JwtStrategy already attaches the user's global role names, so the
+    // common case needs no query. Principals from other strategies (the
+    // SSE token strategy returns only `{ id }`) fall back to the DB.
+    const attachedRoles = Array.isArray(user.roles)
+      ? user.roles.filter((role): role is string => typeof role === 'string')
+      : null;
+    const hasRole = attachedRoles
+      ? requiredRoles.some((role) => attachedRoles.includes(role))
+      : await this.roleService.userHasAnyRole(user.id, requiredRoles);
 
     if (!hasRole) {
       throw new ForbiddenException(
