@@ -1,6 +1,7 @@
 import { Test } from '@nestjs/testing';
 import type { AuthenticatedRequest } from '../../common/types/authenticated-request';
 import { NotificationController } from './notification.controller';
+import { NotificationCategory } from './notification-categories';
 import { NotificationReceiptService } from './services/notification-receipt.service';
 
 const mockReq = (userId: string) =>
@@ -62,6 +63,31 @@ describe('NotificationController', () => {
       page: 2,
       limit: 50,
       unreadOnly: true,
+      locale: 'en',
+    });
+  });
+
+  it('list forwards the category list to the service', async () => {
+    receipts.listForUser.mockResolvedValue({
+      items: [],
+      total: 0,
+      page: 1,
+      pageSize: 20,
+    });
+    await controller.list(mockReq('user-1'), {
+      page: 1,
+      limit: 20,
+      unreadOnly: false,
+      category: [NotificationCategory.Sessions, NotificationCategory.Payments],
+    });
+    expect(receipts.listForUser).toHaveBeenCalledWith('user-1', {
+      page: 1,
+      limit: 20,
+      unreadOnly: false,
+      categories: [
+        NotificationCategory.Sessions,
+        NotificationCategory.Payments,
+      ],
       locale: 'en',
     });
   });

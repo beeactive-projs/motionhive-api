@@ -56,8 +56,8 @@ export interface BellNotification {
 export interface ListReceiptsOptions {
   page: number;
   limit: number;
-  /** Narrow to a single category. Omit for everything. */
-  category?: NotificationCategory;
+  /** Narrow to these categories, any of them. Omit or empty for everything. */
+  categories?: NotificationCategory[];
   unreadOnly?: boolean;
   /** The reader's language: title/body are rendered in it. */
   locale: Locale;
@@ -105,10 +105,12 @@ export class NotificationReceiptService {
       receiptWhere.dismissedAt = { [Op.is]: null };
     }
 
-    // Category is a property of the type, not a column, so it filters as the
-    // set of types that map to it. Keeps the paging honest — filtering after
-    // the query would return short pages.
-    const typeFilter = opts.category ? CATEGORY_TO_TYPES[opts.category] : null;
+    // Category is a property of the type, not a column, so categories filter
+    // as the union of the types that map to them. Keeps the paging honest —
+    // filtering after the query would return short pages.
+    const typeFilter = opts.categories?.length
+      ? opts.categories.flatMap((category) => CATEGORY_TO_TYPES[category])
+      : null;
 
     const { rows, count } = await this.receiptModel.findAndCountAll({
       where: receiptWhere,

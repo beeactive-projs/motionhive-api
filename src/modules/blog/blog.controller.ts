@@ -59,8 +59,12 @@ export class BlogController {
   @Get('sitemap.xml')
   async sitemap(@Res() res: Response) {
     const xml = await this.blogService.getSitemapXml();
-    res.setHeader('Content-Type', 'application/xml');
+    res.setHeader('Content-Type', 'application/xml; charset=utf-8');
     res.setHeader('Cache-Control', 'public, max-age=3600');
+    // Bump when the sitemap's shape changes, so a deploy can be checked
+    // with a HEAD request. 2 = public-site host, one URL per translation
+    // with hreflang alternates.
+    res.setHeader('X-Sitemap-Version', '2');
     res.send(xml);
   }
 

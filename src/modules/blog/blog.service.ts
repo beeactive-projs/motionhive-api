@@ -19,6 +19,7 @@ import {
   PaginatedResponse,
 } from '../../common/dto/pagination.dto';
 import { buildSearchTerm } from '../../common/utils/search.utils';
+import { escapeHtml } from '../../common/utils/html.utils';
 import { apiError } from '../../common/i18n';
 
 interface AuthContext {
@@ -27,6 +28,17 @@ interface AuthContext {
 }
 
 const ADMIN_ROLES = ['ADMIN', 'SUPER_ADMIN'];
+
+/**
+ * Website path prefix per post language. English is the default locale
+ * and lives at the root; Romanian is the `/ro` bundle (see the website's
+ * vercel.json). A language missing here is skipped from the sitemap.
+ */
+const SITEMAP_LOCALE_PREFIX: Record<string, string> = { en: '', ro: '/ro' };
+const SITEMAP_DEFAULT_LANGUAGE = 'en';
+
+/** A slug that forms one clean path segment: no whitespace, `/`, `?`, `#`. */
+const SITEMAP_SLUG_PATTERN = /^[^\s/?#\\]+$/;
 
 /**
  * Public blog post response. Storage is `authorUserId` (FK) XOR
@@ -486,17 +498,24 @@ export class BlogService {
       });
   }
 
-  async getSitemapSlugs(): Promise<{ slug: string; updatedAt: Date }[]> {
-    // Hard cap: crawlers get at most the 10k most-recently-updated posts.
-    // An unbounded findAll on a growing table turns this public route
-    // into an easy memory/CPU exhaustion target.
+  private async getSitemapRows(): Promise<
+    { slug: string; language: string; updatedAt: Date }[]
+  > {
+    // Hard cap: crawlers get at most the 10k most-recently-updated rows
+    // (one row per post per language). An unbounded findAll on a growing
+    // table turns this public route into an easy memory/CPU exhaustion
+    // target.
     const posts = await this.blogPostModel.findAll({
       where: { isPublished: true },
-      attributes: ['slug', 'updatedAt'],
+      attributes: ['slug', 'language', 'updatedAt'],
       order: [['updatedAt', 'DESC']],
       limit: 10_000,
     });
-    return posts.map((p) => ({ slug: p.slug, updatedAt: p.updatedAt }));
+    return posts.map((p) => ({
+      slug: p.slug,
+      language: p.language,
+      updatedAt: p.updatedAt,
+    }));
   }
 
   /**
@@ -515,55 +534,91 @@ export class BlogService {
     return this.sitemapCache.xml;
   }
 
+  /**
+   * Blog articles only, one `<url>` per published translation, on the
+   * public marketing site (`PUBLIC_SITE_URL`, NOT `FRONTEND_URL`, which is
+   * the `app.` origin and redirects to login). Static pages (`/`, `/about`,
+   * `/legal/*`, ...) belong to the website's own `sitemap-pages.xml`; the
+   * website's `sitemap.xml` index points at both.
+   *
+   * Translations share a slug and differ by `language`: EN lives at
+   * `/blog/<slug>`, RO at `/ro/blog/<slug>`. Each URL carries reciprocal
+   * `xhtml:link` hreflang alternates for the translations that exist, plus
+   * `x-default` (EN when present).
+   */
   private async buildSitemapXml(): Promise<string> {
-    const posts = await this.getSitemapSlugs();
-    const BASE = this.configService.get<string>(
-      'FRONTEND_URL',
-      'https://motionhive.fit',
-    );
+    const base = this.configService
+      .get<string>('PUBLIC_SITE_URL', 'https://www.motionhive.fit')
+      .replace(/\/+$/, '');
+    const rows = await this.getSitemapRows();
 
-    const staticUrls = [
-      { loc: `${BASE}/`, priority: '1.0', changefreq: 'weekly' },
-      { loc: `${BASE}/about`, priority: '0.7', changefreq: 'monthly' },
-      { loc: `${BASE}/blog`, priority: '0.9', changefreq: 'daily' },
-      {
-        loc: `${BASE}/legal/terms-of-service`,
-        priority: '0.3',
-        changefreq: 'yearly',
-      },
-      {
-        loc: `${BASE}/legal/privacy-policy`,
-        priority: '0.3',
-        changefreq: 'yearly',
-      },
-    ];
+    // slug → language → lastmod. Rows arrive newest-first, so if two rows
+    // collapse onto the same (trimmed slug, language), the newest wins and
+    // the URL is emitted once.
+    const translations = new Map<string, Map<string, Date>>();
+    for (const row of rows) {
+      const slug = row.slug?.trim() ?? '';
+      const language = row.language?.trim() ?? '';
+      if (!SITEMAP_SLUG_PATTERN.test(slug)) {
+        this.logger.warn(
+          `Sitemap: skipping ${language} post with invalid slug ${JSON.stringify(row.slug)}.`,
+        );
+        continue;
+      }
+      if (!(language in SITEMAP_LOCALE_PREFIX)) {
+        this.logger.warn(
+          `Sitemap: skipping post "${slug}" with unsupported language ${JSON.stringify(row.language)}.`,
+        );
+        continue;
+      }
+      const byLanguage = translations.get(slug) ?? new Map<string, Date>();
+      if (!byLanguage.has(language)) byLanguage.set(language, row.updatedAt);
+      translations.set(slug, byLanguage);
+    }
 
-    const staticXml = staticUrls
-      .map(
-        (u) => `  <url>
-    <loc>${u.loc}</loc>
-    <changefreq>${u.changefreq}</changefreq>
-    <priority>${u.priority}</priority>
-  </url>`,
-      )
-      .join('\n');
+    const urlFor = (slug: string, language: string) =>
+      `${base}${SITEMAP_LOCALE_PREFIX[language]}/blog/${encodeURIComponent(slug)}`;
 
-    const blogXml = posts
-      .map(
-        (p) => `  <url>
-    <loc>${BASE}/blog/${p.slug}</loc>
-    <lastmod>${p.updatedAt.toISOString().split('T')[0]}</lastmod>
+    const urlsXml: string[] = [];
+    for (const [slug, byLanguage] of translations) {
+      const entries = [...byLanguage.entries()].sort(([a], [b]) =>
+        a.localeCompare(b),
+      );
+      const languages = entries.map(([lang]) => lang);
+      const defaultLanguage = byLanguage.has(SITEMAP_DEFAULT_LANGUAGE)
+        ? SITEMAP_DEFAULT_LANGUAGE
+        : languages[0];
+      const alternates = [
+        ...languages.map((lang) => ({
+          hreflang: lang,
+          href: urlFor(slug, lang),
+        })),
+        { hreflang: 'x-default', href: urlFor(slug, defaultLanguage) },
+      ]
+        .map(
+          (a) =>
+            `    <xhtml:link rel="alternate" hreflang="${a.hreflang}" href="${escapeHtml(a.href)}"/>`,
+        )
+        .join('\n');
+
+      for (const [language, updatedAt] of entries) {
+        urlsXml.push(`  <url>
+    <loc>${escapeHtml(urlFor(slug, language))}</loc>
+    <lastmod>${updatedAt.toISOString().slice(0, 10)}</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.8</priority>
-  </url>`,
-      )
-      .join('\n');
+${alternates}
+  </url>`);
+      }
+    }
 
     return `<?xml version="1.0" encoding="UTF-8"?>
-<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
-${staticXml}
-${blogXml}
-</urlset>`;
+<urlset
+  xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"
+  xmlns:xhtml="http://www.w3.org/1999/xhtml">
+${urlsXml.join('\n')}
+</urlset>
+`;
   }
 
   private assertCanEdit(post: BlogPost, auth: AuthContext): void {

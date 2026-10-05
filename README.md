@@ -238,6 +238,7 @@ Key variables:
 - `JWT_REFRESH_EXPIRES_IN` — Refresh token lifetime (default: `7d`)
 - `BCRYPT_ROUNDS` — Password hashing rounds (default: `12`)
 - `FRONTEND_URL` — Frontend URL for CORS and email links
+- `PUBLIC_SITE_URL` — Marketing site origin for blog sitemap URLs (default: `https://www.motionhive.fit`)
 
 ---
 

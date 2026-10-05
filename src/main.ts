@@ -206,6 +206,9 @@ A comprehensive REST API for managing fitness training sessions, trainers, and c
       'https://admin.motionhive.fit',
       'https://admin-dev.motionhive.fit',
       'https://dev.admin.motionhive.fit',
+      // Capacitor WebView origins (mobile app): iOS / Android
+      'capacitor://localhost',
+      'https://localhost',
       /\.vercel\.app$/,
       /\.railway\.app$/,
       /\.netlify\.app$/,

@@ -12,10 +12,12 @@ export class UpdateClientDto {
   @ApiPropertyOptional({
     example: 'Prefers morning sessions. Working on upper body strength.',
     description:
-      'Private notes about the client (only visible to the instructor)',
+      'Private notes about the client (only visible to the instructor). Max 2000 characters — the same limit the web and mobile note editors show.',
   })
   @IsString()
-  @MaxLength(5000)
+  // 2000, not 5000: both clients count down from 2000 and show that number to
+  // the coach. A server limit above it makes the counter a decoration.
+  @MaxLength(2000)
   @IsOptional()
   notes?: string;
 

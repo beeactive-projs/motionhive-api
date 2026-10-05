@@ -10,6 +10,7 @@ import {
   Min,
 } from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { Transform } from 'class-transformer';
 
 export class CreateBlogPostDto {
   @ApiProperty({ example: 'My First Blog Post' })
@@ -18,7 +19,13 @@ export class CreateBlogPostDto {
   @MaxLength(255)
   title: string;
 
+  // Trimmed before validation: a stray leading space once produced a live
+  // URL of `/blog/%20<slug>`. Whitespace-only then fails @IsNotEmpty.
+  // UpdateBlogPostDto inherits this through PartialType.
   @ApiProperty({ example: 'my-first-blog-post' })
+  @Transform(({ value }: { value: unknown }) =>
+    typeof value === 'string' ? value.trim() : value,
+  )
   @IsString()
   @IsNotEmpty()
   @MaxLength(255)

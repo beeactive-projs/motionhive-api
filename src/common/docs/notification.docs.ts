@@ -12,7 +12,8 @@ export const NotificationDocs = {
     description:
       'Paginated bell list. Returns receipt rows joined with the parent notification, ' +
       'newest first. Filters out expired alerts and alerts scheduled for the future. ' +
-      'Set `unreadOnly=true` to skip read + dismissed entries.',
+      'Set `unreadOnly=true` to skip read + dismissed entries. Pass `category` — ' +
+      'once, repeated, or comma-separated — to narrow to one or more categories.',
     auth: true,
     responses: [
       { status: 200, description: 'Paginated list of bell notifications' },

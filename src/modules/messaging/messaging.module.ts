@@ -1,5 +1,8 @@
 import { Module } from '@nestjs/common';
+import { ConfigModule, ConfigService } from '@nestjs/config';
+import { JwtModule } from '@nestjs/jwt';
 import { SequelizeModule } from '@nestjs/sequelize';
+import { getJwtConfig } from '../../config/jwt.config';
 import { Conversation } from './entities/conversation.entity';
 import { ConversationParticipant } from './entities/conversation-participant.entity';
 import { ConversationMembershipEvent } from './entities/conversation-membership-event.entity';
@@ -25,6 +28,7 @@ import { MessagingVelocityService } from './messaging-velocity.service';
 import { MessagingEventsService } from './messaging-events.service';
 import { MessagingStreamAckService } from './messaging-stream-ack.service';
 import { SseJwtStrategy } from './auth/sse-jwt.strategy';
+import { MessagingStreamTicketService } from './auth/messaging-stream-ticket.service';
 
 /**
  * Messaging Module — Stage 1 skeleton.
@@ -54,6 +58,14 @@ import { SseJwtStrategy } from './auth/sse-jwt.strategy';
     // UserModule exports UserService, used by SseJwtStrategy.validate
     // to resolve the user behind the query-param token.
     UserModule,
+    // Registered here rather than importing AuthModule: this module needs
+    // exactly one thing from it (a JwtService on the same secret, to sign
+    // stream tickets), and AuthModule pulls in Profile and Payment.
+    JwtModule.registerAsync({
+      imports: [ConfigModule],
+      inject: [ConfigService],
+      useFactory: getJwtConfig,
+    }),
   ],
   controllers: [
     MessagingController,
@@ -69,6 +81,7 @@ import { SseJwtStrategy } from './auth/sse-jwt.strategy';
     MessagingVelocityService,
     MessagingEventsService,
     MessagingStreamAckService,
+    MessagingStreamTicketService,
     SseJwtStrategy,
   ],
   exports: [

@@ -11,6 +11,7 @@ import { Sequelize } from 'sequelize-typescript';
 import { WINSTON_MODULE_NEST_PROVIDER } from 'nest-winston';
 
 import { ClientService } from './client.service';
+import { ClientDirection } from './dto/list-clients.dto';
 import {
   ClientRequest,
   ClientRequestStatus,
@@ -495,6 +496,203 @@ describe('ClientService', () => {
       await expect(
         service.leaveInstructor('client-1', 'instr-1'),
       ).rejects.toBeInstanceOf(BadRequestException);
+    });
+  });
+  // =====================================================================
+  // Listing: direction, search, and a count that explains itself
+  // =====================================================================
+  describe('client list', () => {
+    const NOW = new Date('2026-09-21T10:00:00.000Z');
+
+    /** A `client_request` row as the includes hydrate it. */
+    const request = (over: Record<string, unknown> = {}) => ({
+      id: 'req-1',
+      type: ClientRequestType.INSTRUCTOR_TO_CLIENT,
+      status: ClientRequestStatus.PENDING,
+      message: null,
+      invitedEmail: null,
+      createdAt: NOW,
+      updatedAt: NOW,
+      expiresAt: new Date('2026-10-21T10:00:00.000Z'),
+      fromUser: null,
+      toUser: null,
+      ...over,
+    });
+
+    const user = (over: Record<string, unknown> = {}) => ({
+      id: 'u-1',
+      firstName: 'Anna',
+      lastName: 'Popescu',
+      email: 'anna@example.com',
+      handle: null,
+      avatarId: null,
+      avatarUrl: null,
+      ...over,
+    });
+
+    describe('pending request count', () => {
+      it('reports each direction, not just a total that cannot be explained', async () => {
+        // One invitation sent, no incoming requests. The bare total read as
+        // "1 pending" over a list of incoming requests that was empty.
+        clientRequestModel.count
+          .mockResolvedValueOnce(1) // outgoing
+          .mockResolvedValueOnce(0); // incoming
+
+        await expect(
+          service.getPendingRequestsCount('inst-1'),
+        ).resolves.toEqual({ count: 1, incoming: 0, outgoing: 1 });
+      });
+
+      it('keeps `count` meaning both directions so existing callers are unaffected', async () => {
+        clientRequestModel.count
+          .mockResolvedValueOnce(2)
+          .mockResolvedValueOnce(3);
+
+        await expect(
+          service.getPendingRequestsCount('inst-1'),
+        ).resolves.toEqual({ count: 5, incoming: 3, outgoing: 2 });
+      });
+    });
+
+    describe('direction filter', () => {
+      it('narrows to incoming requests and leaves settled relationships out', async () => {
+        clientRequestModel.findAll.mockResolvedValue([]);
+
+        await service.getMyClients('inst-1', {
+          direction: ClientDirection.INCOMING,
+        });
+
+        // Only a pending row has a direction, so the settled table is not read.
+        expect(instructorClientModel.findAll).not.toHaveBeenCalled();
+        expect(instructorClientModel.findAndCountAll).not.toHaveBeenCalled();
+
+        const where = clientRequestModel.findAll.mock.calls[0][0].where;
+        const directions = where[Object.getOwnPropertySymbols(where)[0]];
+        expect(directions).toEqual([
+          { toUserId: 'inst-1', type: ClientRequestType.CLIENT_TO_INSTRUCTOR },
+        ]);
+      });
+
+      it('narrows to the invitations the coach sent', async () => {
+        clientRequestModel.findAll.mockResolvedValue([]);
+
+        await service.getMyClients('inst-1', {
+          direction: ClientDirection.OUTGOING,
+        });
+
+        const where = clientRequestModel.findAll.mock.calls[0][0].where;
+        const directions = where[Object.getOwnPropertySymbols(where)[0]];
+        expect(directions).toEqual([
+          {
+            fromUserId: 'inst-1',
+            type: ClientRequestType.INSTRUCTOR_TO_CLIENT,
+          },
+        ]);
+      });
+
+      it('asks for both directions when none is given', async () => {
+        clientRequestModel.findAll.mockResolvedValue([]);
+
+        await service.getMyClients('inst-1', {
+          status: InstructorClientStatus.PENDING,
+        });
+
+        const where = clientRequestModel.findAll.mock.calls[0][0].where;
+        const directions = where[Object.getOwnPropertySymbols(where)[0]];
+        expect(directions).toHaveLength(2);
+      });
+    });
+
+    describe('search', () => {
+      it('pushes the term into the query that paginates, not after it', async () => {
+        await service.getMyClients('inst-1', {
+          status: InstructorClientStatus.ACTIVE,
+          search: 'anna popescu',
+        });
+
+        const include =
+          instructorClientModel.findAndCountAll.mock.calls[0][0].include[0];
+        // INNER JOIN, so `total` counts matches rather than the whole roster.
+        expect(include.required).toBe(true);
+        // One AND-ed group per token: both have to land somewhere.
+        const and =
+          include.where[Object.getOwnPropertySymbols(include.where)[0]];
+        expect(and).toHaveLength(2);
+      });
+
+      it('leaves the join alone when there is no term to search for', async () => {
+        await service.getMyClients('inst-1', {
+          status: InstructorClientStatus.ACTIVE,
+        });
+
+        const include =
+          instructorClientModel.findAndCountAll.mock.calls[0][0].include[0];
+        expect(include.required).toBeUndefined();
+        expect(include.where).toBeUndefined();
+      });
+
+      it('ignores a one-character term rather than matching most of the roster', async () => {
+        await service.getMyClients('inst-1', {
+          status: InstructorClientStatus.ACTIVE,
+          search: 'a',
+        });
+
+        const include =
+          instructorClientModel.findAndCountAll.mock.calls[0][0].include[0];
+        expect(include.where).toBeUndefined();
+      });
+
+      it('matches a pending row on the address an email-only invite went to', async () => {
+        clientRequestModel.findAll.mockResolvedValue([
+          request({ id: 'req-email', invitedEmail: 'radu@example.com' }),
+          request({ id: 'req-user', toUser: user() }),
+        ]);
+
+        const result = await service.getMyClients('inst-1', {
+          status: InstructorClientStatus.PENDING,
+          search: 'radu',
+        });
+
+        expect(result.items.map((row) => row.id)).toEqual(['req-email']);
+        expect(result.total).toBe(1);
+      });
+
+      it('matches a pending row across first and last name', async () => {
+        clientRequestModel.findAll.mockResolvedValue([
+          request({ id: 'req-anna', toUser: user() }),
+          request({
+            id: 'req-elena',
+            toUser: user({
+              id: 'u-2',
+              firstName: 'Elena',
+              lastName: 'Dumitru',
+              email: 'elena@example.com',
+            }),
+          }),
+        ]);
+
+        const result = await service.getMyClients('inst-1', {
+          status: InstructorClientStatus.PENDING,
+          search: 'anna popescu',
+        });
+
+        expect(result.items.map((row) => row.id)).toEqual(['req-anna']);
+      });
+
+      it('reports the matched count, so pagination does not promise rows it filtered out', async () => {
+        clientRequestModel.findAll.mockResolvedValue([
+          request({ id: 'a', toUser: user() }),
+          request({ id: 'b', toUser: user({ id: 'u-2', firstName: 'Zed' }) }),
+        ]);
+
+        const result = await service.getMyClients('inst-1', {
+          status: InstructorClientStatus.PENDING,
+          search: 'zed',
+        });
+
+        expect(result.total).toBe(1);
+        expect(result.items).toHaveLength(1);
+      });
     });
   });
 });

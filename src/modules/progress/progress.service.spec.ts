@@ -71,10 +71,13 @@ describe('ProgressService — streaks', () => {
         ...input,
       });
 
-    it('leaves someone with no active plan alone', () => {
-      // Nothing assigned means nothing to be behind on. Flagging them
-      // would fill the screen with people the coach cannot help.
-      expect(reason({ activePlans: 0, lastWorkoutAt: null })).toBeNull();
+    it('flags someone with no active plan ahead of every other reason', () => {
+      // Nothing assigned means nothing to be behind on — which used to
+      // return null and file them under "On track", beside people who are
+      // actually training. It is the coach's omission, and the one thing
+      // on the screen they can fix outright, so it outranks the rest.
+      expect(reason({ activePlans: 0, lastWorkoutAt: null })).toBe('NO_PLAN');
+      expect(reason({ activePlans: 0, daysSince: 30 })).toBe('NO_PLAN');
     });
 
     it('flags an assigned client who has never logged anything', () => {

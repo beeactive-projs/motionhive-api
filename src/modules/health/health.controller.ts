@@ -41,7 +41,11 @@ export class HealthController {
   @ApiOperation({ summary: 'Liveness probe (no DB — process up?)' })
   @ApiResponse({ status: 200, description: 'Process is up' })
   check() {
-    return { status: 'ok', uptime: Math.round(process.uptime()) };
+    return {
+      status: 'ok',
+      uptime: Math.round(process.uptime()),
+      commit: this.healthService.getCommit(),
+    };
   }
 
   /**

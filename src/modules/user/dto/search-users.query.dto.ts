@@ -12,9 +12,9 @@ import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
 export class SearchUsersQueryDto {
   @ApiProperty({
-    example: 'alice',
+    example: 'elena dumitru',
     description:
-      'Search term — matches email, first name, or last name (case-insensitive).',
+      'Search term — matches email, first name, last name, handle or full name (case-insensitive). Whitespace splits the term into tokens and every token must match, so "elena dumitru" matches a first/last name pair.',
   })
   @IsString()
   @MinLength(2)

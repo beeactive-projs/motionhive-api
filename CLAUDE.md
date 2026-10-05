@@ -210,7 +210,7 @@ Full schema in `src/config/env.validation.ts` (Joi, `abortEarly: false`).
 
 **Stripe**: `STRIPE_SECRET_KEY`, `STRIPE_PUBLISHABLE_KEY`, `STRIPE_WEBHOOK_SECRET` (required for payments); `STRIPE_API_VERSION` (default `'2026-03-25.dahlia'`); `DEFAULT_PLATFORM_FEE_BPS` (default 0)
 
-**Optional**: `REDIS_HOST`, `REDIS_PORT`, `GOOGLE_CLIENT_ID/SECRET`, `FACEBOOK_APP_ID/SECRET`, `CLOUDINARY_*`, `JWT_EXPIRES_IN`, `JWT_REFRESH_EXPIRES_IN`, `EMAIL_FROM`, `EMAIL_FROM_NAME`, `RESEND_API_KEY`
+**Optional**: `REDIS_HOST`, `REDIS_PORT`, `GOOGLE_CLIENT_ID/SECRET`, `FACEBOOK_APP_ID/SECRET`, `CLOUDINARY_*`, `JWT_EXPIRES_IN`, `JWT_REFRESH_EXPIRES_IN`, `EMAIL_FROM`, `EMAIL_FROM_NAME`, `RESEND_API_KEY`, `PUBLIC_SITE_URL` (marketing site origin for the blog sitemap, default `https://www.motionhive.fit`; never reuse `FRONTEND_URL`, which is the `app.` origin)
 
 ## Known Issues & Technical Debt
 

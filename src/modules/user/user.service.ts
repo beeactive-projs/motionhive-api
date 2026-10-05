@@ -14,7 +14,10 @@ import {
   QueryTypes,
   Transaction,
   UniqueConstraintError,
+  col,
+  fn,
   literal,
+  where as whereFn,
 } from 'sequelize';
 import { Sequelize } from 'sequelize-typescript';
 import { User } from './entities/user.entity';
@@ -192,7 +195,13 @@ export class UserService {
     const limit = Math.min(Math.max(params.limit ?? 10, 1), 20);
     const term = params.q.trim();
     if (term.length < 2) return [];
-    const like = `%${term}%`;
+
+    // "Elena Dumitru" is the first thing a coach types, and it matched
+    // nothing: a single LIKE over first_name OR last_name can never span two
+    // columns. Split on whitespace and require every token to match
+    // somewhere, so tokens may land in different columns. Capped so a pasted
+    // paragraph can't turn into a hundred-predicate query.
+    const tokens = term.split(/\s+/).filter(Boolean).slice(0, 5);
 
     const notInUserIds: string[] = [];
     if (params.excludeUserId) notInUserIds.push(params.excludeUserId);
@@ -203,12 +212,11 @@ export class UserService {
         InstructorClient.findAll({
           where: {
             instructorId,
-            status: {
-              [Op.in]: [
-                InstructorClientStatus.ACTIVE,
-                InstructorClientStatus.PENDING,
-              ],
-            },
+            // ACTIVE only. A pending invitation is a client_request row, and
+            // those are queried below; a PENDING instructor_client row is an
+            // orphan from a removed flow and must not hide a person the coach
+            // can legitimately invite.
+            status: InstructorClientStatus.ACTIVE,
           },
           attributes: ['clientId'],
         }),
@@ -231,23 +239,44 @@ export class UserService {
       }
     }
 
+    // One token matches if it appears in any searchable column. `handle` is
+    // in the list because the result row displays it — searching what you
+    // were just shown used to return nobody. The concatenated full name
+    // catches "elena dum" as a single token too.
+    const fullName = fn(
+      'concat_ws',
+      ' ',
+      col('User.first_name'),
+      col('User.last_name'),
+    );
+    const tokenMatches = tokens.map((token) => {
+      const like = `%${token}%`;
+      return {
+        [Op.or]: [
+          { email: { [Op.iLike]: like } },
+          { firstName: { [Op.iLike]: like } },
+          { lastName: { [Op.iLike]: like } },
+          { handle: { [Op.iLike]: like } },
+          whereFn(fullName, { [Op.iLike]: like }),
+        ],
+      };
+    });
+
     const where: Record<string, unknown> = {
       isActive: true,
-      [Op.or]: [
-        { email: { [Op.iLike]: like } },
-        { firstName: { [Op.iLike]: like } },
-        { lastName: { [Op.iLike]: like } },
-      ],
-      // Hard block: users with staff roles (admin/super/support) never appear
-      // in pickers, regardless of any other role they carry.
-      [Op.and]: literal(
-        `NOT EXISTS (
+      [Op.and]: [
+        ...tokenMatches,
+        // Hard block: users with staff roles (admin/super/support) never
+        // appear in pickers, regardless of any other role they carry.
+        literal(
+          `NOT EXISTS (
           SELECT 1 FROM user_role ur_hide
           JOIN role r_hide ON r_hide.id = ur_hide.role_id
           WHERE ur_hide.user_id = "User"."id"
             AND r_hide.name IN (${SEARCH_HIDDEN_ROLES.map((r) => `'${r}'`).join(', ')})
         )`,
-      ),
+        ),
+      ],
     };
     if (notInUserIds.length > 0) {
       where.id = { [Op.notIn]: Array.from(new Set(notInUserIds)) };

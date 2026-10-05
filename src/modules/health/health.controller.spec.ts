@@ -9,7 +9,10 @@ describe('HealthController', () => {
   const db = {
     pingCheck: jest.fn().mockResolvedValue({ database: { status: 'up' } }),
   };
-  const healthService = { getAppConfig: jest.fn() };
+  const healthService = {
+    getAppConfig: jest.fn(),
+    getCommit: jest.fn().mockReturnValue('abc1234'),
+  };
 
   beforeEach(async () => {
     jest.clearAllMocks();
@@ -26,7 +29,11 @@ describe('HealthController', () => {
 
   it('liveness (/health) does NOT touch the DB — Railway polls this every ~15s', () => {
     const res = controller.check();
-    expect(res).toEqual({ status: 'ok', uptime: expect.any(Number) });
+    expect(res).toEqual({
+      status: 'ok',
+      uptime: expect.any(Number),
+      commit: 'abc1234',
+    });
     // The whole point of the fix: liveness must not ping Postgres, or
     // Neon never scales to zero and burns the compute allowance.
     expect(db.pingCheck).not.toHaveBeenCalled();

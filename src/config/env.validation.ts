@@ -95,6 +95,12 @@ export const envValidationSchema = Joi.object({
     otherwise: Joi.optional(),
   }),
 
+  // Public marketing site origin (no trailing slash). Used ONLY for the blog
+  // sitemap's absolute URLs. Deliberately separate from FRONTEND_URL, which
+  // points at the authenticated app (`app.`) for CORS, emails and redirects;
+  // blog articles live on the marketing site and `app.` redirects to login.
+  PUBLIC_SITE_URL: Joi.string().uri().default('https://www.motionhive.fit'),
+
   // Vercel Deploy Hook for the marketing site. Optional: when set, publishing/
   // editing/deleting a published blog post POSTs here to rebuild the
   // prerendered site so the new article HTML is generated. Unset → no-op.

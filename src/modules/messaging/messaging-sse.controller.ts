@@ -14,6 +14,7 @@ import { ApiEndpoint } from '../../common/decorators/api-response.decorator';
 import { MessagingDocs } from '../../common/docs/messaging.docs';
 import type { AuthenticatedRequest } from '../../common/types/authenticated-request';
 import { StreamAckDto } from './dto/stream-ack.dto';
+import { MessagingStreamTicketService } from './auth/messaging-stream-ticket.service';
 import {
   MessagingEventsService,
   MessagingStreamEvent,
@@ -24,13 +25,17 @@ import { SseJwtGuard } from './auth/sse-jwt.guard';
 /**
  * SSE stream + ack endpoint.
  *
- *   GET  /messaging/stream?token=<jwt>   long-lived event-stream
- *   POST /messaging/stream/ack           records last-seen event id
+ *   POST /messaging/stream/ticket          mints a 60s stream ticket
+ *   GET  /messaging/stream?ticket=<jwt>    long-lived event-stream
+ *   POST /messaging/stream/ack             records last-seen event id
  *
  * The stream endpoint uses `SseJwtGuard` (NOT the regular `AuthGuard('jwt')`)
- * because `EventSource` cannot send custom headers — the access token
- * travels as a query parameter. The ack endpoint uses the regular guard
- * since it's a normal POST with `Authorization`.
+ * because `EventSource` cannot send custom headers — its credential has to
+ * travel as a query parameter. That credential is a short-lived,
+ * stream-scoped ticket rather than the access token, so a URL captured in a
+ * log is not a working key to the API; see `MessagingStreamTicketService`.
+ * The ticket and ack endpoints use the regular guard, since both are normal
+ * POSTs that can carry `Authorization`.
  *
  * Held connections do NOT consume DB connections — the observable
  * filters EventEmitter2 events in memory only.
@@ -41,7 +46,33 @@ export class MessagingSseController {
   constructor(
     private readonly events: MessagingEventsService,
     private readonly ack: MessagingStreamAckService,
+    private readonly tickets: MessagingStreamTicketService,
   ) {}
+
+  /**
+   * Exchange the access token — sent properly, in a header — for a ticket
+   * that may go in the stream URL. Called just before opening the
+   * `EventSource`, and again on reconnect: sixty seconds is a handshake
+   * window, not a session.
+   */
+  @Post('ticket')
+  @UseGuards(AuthGuard('jwt'))
+  @ApiEndpoint({
+    summary: 'Mint a stream ticket',
+    description:
+      'Returns a short-lived, single-purpose token for opening ' +
+      'GET /messaging/stream. Valid for 60 seconds and refused by every ' +
+      'other endpoint, so it can be put in a URL where an access token ' +
+      'never should be.',
+    auth: true,
+    responses: [
+      { status: 201, description: 'Ticket minted' },
+      { status: 401, description: 'Not authenticated' },
+    ],
+  })
+  mintTicket(@Request() req: AuthenticatedRequest) {
+    return this.tickets.issue(req.user.id);
+  }
 
   /**
    * Long-lived SSE stream. Emits messaging events for the

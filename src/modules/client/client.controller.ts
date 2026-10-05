@@ -15,6 +15,7 @@ import { AuthGuard } from '@nestjs/passport';
 import { ApiTags } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
 import { ApiEndpoint } from '../../common/decorators/api-response.decorator';
+import { parseUuidOrNotFound } from '../../common/pipes/parse-uuid-or-404.pipe';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { ClientDocs } from '../../common/docs/client.docs';
 import { FilterSettingsDto } from '../../common/dto/filter-settings.dto';
@@ -101,6 +102,8 @@ export class ClientController {
   ) {
     return this.clientService.getMyClients(req.user.id, {
       status: query.status,
+      direction: query.direction,
+      search: query.search,
       page: query.page,
       limit: query.limit,
     });
@@ -143,7 +146,11 @@ export class ClientController {
 
   /**
    * GET /clients/requests/pending
-   * List pending incoming requests for the authenticated user.
+   * List pending requests addressed TO the authenticated user — incoming
+   * only, in either role. This is NOT the same population as
+   * `requests/pending/count`, which also counts the invitations the caller
+   * sent; see that handler. To list a coach's outgoing invitations, use
+   * `GET /clients?status=PENDING&direction=outgoing`.
    */
   @Get('requests/pending')
   @UseGuards(AuthGuard('jwt'))
@@ -154,9 +161,14 @@ export class ClientController {
 
   /**
    * GET /clients/requests/pending/count
-   * Returns the total count of pending client_request rows where the
-   * authenticated instructor is sender or recipient (used for the
-   * Pending-requests badge on the clients page).
+   * Counts pending client_request rows in BOTH directions — invitations the
+   * instructor sent and requests addressed to them — and reports each
+   * separately alongside the total.
+   *
+   * The total alone read as a contradiction next to
+   * `GET /clients/requests/pending`, which lists incoming rows only: one
+   * outgoing invitation made the badge say "1 pending" over an empty list.
+   * Same numbers, but now the shape says which is which.
    */
   @Get('requests/pending/count')
   @UseGuards(AuthGuard('jwt'), RolesGuard)
@@ -315,7 +327,9 @@ export class ClientController {
    * roster, a bookmark, or a refresh — instead of only from the table.
    *
    * Declared after every literal `@Get` above it: a wildcard param route
-   * registered earlier would swallow `/clients/invites` and friends.
+   * registered earlier would swallow `/clients/invites` and friends. A
+   * segment that is not a UUID still lands here, so the pipe answers 404
+   * rather than complaining about a uuid the caller never meant to send.
    */
   @Get(':clientId')
   @UseGuards(AuthGuard('jwt'), RolesGuard)
@@ -323,7 +337,7 @@ export class ClientController {
   @ApiEndpoint(ClientDocs.getClient)
   async getClient(
     @Request() req: AuthenticatedRequest,
-    @Param('clientId', ParseUUIDPipe) clientId: string,
+    @Param('clientId', parseUuidOrNotFound()) clientId: string,
   ) {
     return this.clientService.getClientForInstructor(req.user.id, clientId);
   }
@@ -338,7 +352,7 @@ export class ClientController {
   @ApiEndpoint({ ...ClientDocs.updateClient, body: UpdateClientDto })
   async updateClient(
     @Request() req: AuthenticatedRequest,
-    @Param('clientId', ParseUUIDPipe) clientId: string,
+    @Param('clientId', parseUuidOrNotFound()) clientId: string,
     @Body() dto: UpdateClientDto,
   ) {
     return this.clientService.updateClient(req.user.id, clientId, dto);
@@ -355,7 +369,7 @@ export class ClientController {
   @ApiEndpoint(ClientDocs.archiveClient)
   async archiveClient(
     @Request() req: AuthenticatedRequest,
-    @Param('clientId', ParseUUIDPipe) clientId: string,
+    @Param('clientId', parseUuidOrNotFound()) clientId: string,
   ) {
     return this.clientService.updateClient(req.user.id, clientId, {
       status: InstructorClientStatus.ARCHIVED,

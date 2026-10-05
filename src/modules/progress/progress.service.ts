@@ -66,12 +66,19 @@ export interface RosterClient {
   activePlans: number;
   /**
    * Why this client needs looking at, or null when they don't:
+   *   NO_PLAN       — no active plan at all, so nothing is being asked of them
    *   NEVER_STARTED — assigned work, nothing ever logged
    *   SILENT        — no workout in 14+ days
    *   DROPPED       — adherence fell 20+ points against the prior window
    *   BEHIND        — under half the work due in the window
    */
-  attention: 'NEVER_STARTED' | 'SILENT' | 'DROPPED' | 'BEHIND' | null;
+  attention:
+    | 'NO_PLAN'
+    | 'NEVER_STARTED'
+    | 'SILENT'
+    | 'DROPPED'
+    | 'BEHIND'
+    | null;
 }
 
 export interface RosterSummary {
@@ -446,9 +453,9 @@ export class ProgressService {
 
   /**
    * One reason, most urgent first, so the UI has something to say
-   * rather than a bare flag. Ordering is deliberate: never-started
-   * outranks silent, which outranks a drop, which outranks merely
-   * being behind.
+   * rather than a bare flag. Ordering is deliberate: having no plan
+   * outranks never-started, which outranks silent, which outranks a
+   * drop, which outranks merely being behind.
    */
   private _attentionReason(input: {
     activePlans: number;
@@ -457,8 +464,10 @@ export class ProgressService {
     adherencePercent: number | null;
     previousAdherencePercent: number | null;
   }): RosterClient['attention'] {
-    // Someone with no active plan has nothing to be behind on.
-    if (input.activePlans === 0) return null;
+    // Someone with no active plan has nothing to be behind on — but that is
+    // the coach's omission, not the client being fine. Returning null here
+    // sorted them into "On track" beside people who are actually training.
+    if (input.activePlans === 0) return 'NO_PLAN';
 
     if (input.lastWorkoutAt == null) return 'NEVER_STARTED';
     if ((input.daysSince ?? 0) >= 14) return 'SILENT';

@@ -13,6 +13,15 @@ export class HealthService {
   constructor(private readonly configService: ConfigService) {}
 
   /**
+   * Commit SHA of the running build, so "is my change live?" is one
+   * request to `/health`. Railway sets RAILWAY_GIT_COMMIT_SHA on every
+   * deploy from GitHub; null locally.
+   */
+  getCommit(): string | null {
+    return this.configService.get<string>('RAILWAY_GIT_COMMIT_SHA') ?? null;
+  }
+
+  /**
    * Build the app-config payload. Static feature flags today; once we
    * have a real flag store (LaunchDarkly, GrowthBook, our own table)
    * this is the swap point.

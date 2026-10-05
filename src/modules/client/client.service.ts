@@ -11,9 +11,10 @@ import {
 import { InjectModel } from '@nestjs/sequelize';
 import { randomBytes } from 'crypto';
 import { WINSTON_MODULE_NEST_PROVIDER } from 'nest-winston';
-import { Op } from 'sequelize';
+import { col, fn, Op, where as whereFn } from 'sequelize';
 import { Sequelize } from 'sequelize-typescript';
 import { FilterSettingsDto } from '../../common/dto/filter-settings.dto';
+import { ClientDirection } from './dto/list-clients.dto';
 import {
   buildPaginatedResponse,
   PaginatedResponse,
@@ -44,6 +45,59 @@ import {
   InstructorClientStatus,
 } from './entities/instructor-client.entity';
 import { apiError, toLocale } from '../../common/i18n';
+
+/**
+ * The two instructor_client statuses that describe a real relationship.
+ *
+ * PENDING is deliberately absent: a pending relationship is a row in
+ * client_request, not here. Nothing has written a PENDING instructor_client
+ * row since the invitation flow moved (see `sendInvitation`), so any left in
+ * the table are orphans — with no request behind them there is nothing to
+ * accept, decline or withdraw, and they block re-inviting the person they
+ * name. Every query that lists relationships narrows to this.
+ */
+/**
+ * Split a search term into tokens, each of which must match somewhere.
+ *
+ * Whitespace-separated so "anna popescu" can land across two columns, which
+ * a single LIKE never could. Capped at five so a pasted paragraph cannot
+ * turn into a hundred-predicate query, and ignored below two characters —
+ * one letter matches most of a roster and is not a search.
+ */
+function searchTokens(search?: string): string[] {
+  const term = (search ?? '').trim();
+  if (term.length < 2) return [];
+  return term.split(/\s+/).filter(Boolean).slice(0, 5);
+}
+
+/**
+ * The same search applied to already-built rows, for the pending half of
+ * the list. Matches exactly what the row puts on screen: the display name
+ * and the address — including `invitedEmail`, which is all an email-only
+ * invitation has.
+ */
+function matchClientRows(rows: ClientRow[], tokens: string[]): ClientRow[] {
+  if (tokens.length === 0) return rows;
+
+  return rows.filter((row) => {
+    const haystack = [
+      row.client?.firstName,
+      row.client?.lastName,
+      [row.client?.firstName, row.client?.lastName].filter(Boolean).join(' '),
+      row.client?.email,
+      row.invitedEmail,
+    ]
+      .filter(Boolean)
+      .join(' ')
+      .toLowerCase();
+
+    return tokens.every((token) => haystack.includes(token.toLowerCase()));
+  });
+}
+
+const SETTLED_CLIENT_STATUSES = {
+  [Op.in]: [InstructorClientStatus.ACTIVE, InstructorClientStatus.ARCHIVED],
+};
 
 // ---------------------------------------------------------------------------
 // Local shape types for getMyClients / enrichWithGroupMemberships
@@ -135,28 +189,49 @@ export class ClientService {
    */
   async getMyClients(
     instructorId: string,
-    filters: { status?: InstructorClientStatus; page?: number; limit?: number },
+    filters: {
+      status?: InstructorClientStatus;
+      direction?: ClientDirection;
+      search?: string;
+      page?: number;
+      limit?: number;
+    },
   ): Promise<PaginatedResponse<ClientRow>> {
     const page = filters.page || 1;
     const limit = filters.limit || 20;
     const offset = (page - 1) * limit;
+    const tokens = searchTokens(filters.search);
 
-    // PENDING items live in client_request (email invites, user invites, requests).
-    if (filters.status === InstructorClientStatus.PENDING) {
-      return this.getMyPendingClients(instructorId, page, limit, offset);
+    // Only a pending row has a direction, so asking for one narrows to
+    // client_request and drops settled relationships entirely.
+    if (
+      filters.status === InstructorClientStatus.PENDING ||
+      filters.direction !== undefined
+    ) {
+      return this.getMyPendingClients(instructorId, page, limit, offset, {
+        direction: filters.direction,
+        tokens,
+      });
     }
 
-    // No filter: fetch all instructor_client rows + pending client_request rows,
-    // merge in-memory sorted by createdAt DESC, then paginate.
+    // No filter: fetch settled instructor_client rows + pending client_request
+    // rows, merge in-memory sorted by createdAt DESC, then paginate.
+    //
+    // PENDING instructor_client rows are excluded on purpose. Nothing creates
+    // them any more — the invitation flow lives entirely in client_request —
+    // so any that survive are orphans from a removed flow. Including them put
+    // ghost rows in the list that `?status=PENDING` could never return (that
+    // branch reads client_request) and that have no request to accept,
+    // decline or withdraw. See migration 061.
     if (filters.status === undefined) {
       const [icRows, pendingRows]: [InstructorClient[], ClientRow[]] =
         await Promise.all([
           this.instructorClientModel.findAll({
-            where: { instructorId },
-            include: [this.clientUserInclude()],
+            where: { instructorId, status: SETTLED_CLIENT_STATUSES },
+            include: [this.clientUserInclude(tokens)],
             order: [['createdAt', 'DESC']],
           }),
-          this.getRawPendingClients(instructorId),
+          this.getRawPendingClients(instructorId, { tokens }),
         ]);
 
       const enriched = await this.enrichWithGroupMemberships(
@@ -176,11 +251,13 @@ export class ClientService {
       );
     }
 
-    // ACTIVE / ARCHIVED: DB-paginated query on instructor_client.
+    // ACTIVE / ARCHIVED: DB-paginated query on instructor_client. The search
+    // narrows inside the query rather than after it, so a coach on page 1
+    // can find client #85 without paging to them first.
     const { rows, count: totalItems } =
       await this.instructorClientModel.findAndCountAll({
         where: { instructorId, status: filters.status },
-        include: [this.clientUserInclude()],
+        include: [this.clientUserInclude(tokens)],
         order: [['createdAt', 'DESC']],
         limit,
         offset,
@@ -224,7 +301,9 @@ export class ClientService {
       defaultSortField: 'createdAt',
     });
 
-    const where = { [Op.and]: [{ instructorId }, opts.where] };
+    const where = {
+      [Op.and]: [{ instructorId, status: SETTLED_CLIENT_STATUSES }, opts.where],
+    };
     const include = [
       {
         model: User,
@@ -348,31 +427,74 @@ export class ClientService {
    */
   async getPendingRequestsCount(
     instructorId: string,
-  ): Promise<{ count: number }> {
-    const count = await this.clientRequestModel.count({
-      where: {
-        [Op.or]: [
-          {
-            fromUserId: instructorId,
-            type: ClientRequestType.INSTRUCTOR_TO_CLIENT,
-          },
-          {
-            toUserId: instructorId,
-            type: ClientRequestType.CLIENT_TO_INSTRUCTOR,
-          },
-        ],
-        status: ClientRequestStatus.PENDING,
-        expiresAt: { [Op.gt]: new Date() },
-      },
-    });
-    return { count };
+  ): Promise<{ count: number; incoming: number; outgoing: number }> {
+    const live = {
+      status: ClientRequestStatus.PENDING,
+      expiresAt: { [Op.gt]: new Date() },
+    };
+
+    const [outgoing, incoming] = await Promise.all([
+      this.clientRequestModel.count({
+        where: {
+          ...live,
+          fromUserId: instructorId,
+          type: ClientRequestType.INSTRUCTOR_TO_CLIENT,
+        },
+      }),
+      this.clientRequestModel.count({
+        where: {
+          ...live,
+          toUserId: instructorId,
+          type: ClientRequestType.CLIENT_TO_INSTRUCTOR,
+        },
+      }),
+    ]);
+
+    // `count` keeps its old meaning (both directions) so existing callers
+    // are unaffected; the split is what makes the number explainable.
+    return { count: incoming + outgoing, incoming, outgoing };
   }
 
-  private clientUserInclude() {
-    return {
+  /**
+   * The client user on a settled relationship row.
+   *
+   * With search tokens the include turns `required`, which makes Sequelize
+   * emit an INNER JOIN and pushes the term into the same query that
+   * paginates — so `total` counts matches, not the whole roster.
+   */
+  private clientUserInclude(tokens: string[] = []) {
+    const base = {
       model: User,
       as: 'client',
       attributes: USER_SAFE_ATTRIBUTES,
+    };
+    if (tokens.length === 0) return base;
+
+    // Concatenated so one token can straddle the two columns ("anna pop"),
+    // which a per-column LIKE can never match.
+    const fullName = fn(
+      'concat_ws',
+      ' ',
+      col('client.first_name'),
+      col('client.last_name'),
+    );
+
+    return {
+      ...base,
+      required: true,
+      where: {
+        [Op.and]: tokens.map((token) => {
+          const like = `%${token}%`;
+          return {
+            [Op.or]: [
+              { email: { [Op.iLike]: like } },
+              { firstName: { [Op.iLike]: like } },
+              { lastName: { [Op.iLike]: like } },
+              whereFn(fullName, { [Op.iLike]: like }),
+            ],
+          };
+        }),
+      },
     };
   }
 
@@ -455,63 +577,45 @@ export class ClientService {
     page: number,
     limit: number,
     offset: number,
+    opts: { direction?: ClientDirection; tokens?: string[] } = {},
   ): Promise<PaginatedResponse<ClientRow>> {
-    const where = {
-      [Op.or]: [
-        // Invitations the instructor sent (both email-only and to registered users)
-        {
-          fromUserId: instructorId,
-          type: ClientRequestType.INSTRUCTOR_TO_CLIENT,
-        },
-        // Requests from users wanting to be this instructor's client
-        {
-          toUserId: instructorId,
-          type: ClientRequestType.CLIENT_TO_INSTRUCTOR,
-        },
-      ],
-      status: ClientRequestStatus.PENDING,
-      expiresAt: { [Op.gt]: new Date() },
-    };
+    // Paginated in memory off the same reader the unfiltered list uses.
+    // A search has to match the name the row *displays*, which for an
+    // invitation is one of two possible users or a bare address — a
+    // predicate the SQL cannot express without re-deriving that choice,
+    // and getting it subtly different from what the row shows. The set is
+    // invitations in flight for one coach, so it is small by construction.
+    const rows = await this.getRawPendingClients(instructorId, opts);
 
-    const { rows, count: totalItems } =
-      await this.clientRequestModel.findAndCountAll({
-        where,
-        include: [
-          {
-            model: User,
-            as: 'fromUser',
-            attributes: USER_SAFE_ATTRIBUTES,
-          },
-          {
-            model: User,
-            as: 'toUser',
-            attributes: USER_SAFE_ATTRIBUTES,
-          },
-        ],
-        order: [['createdAt', 'DESC']],
-        limit,
-        offset,
-      });
-
-    const data = rows.map((row) => this.toPendingClientRow(row, instructorId));
-
-    return buildPaginatedResponse(data, totalItems, page, limit);
+    return buildPaginatedResponse(
+      rows.slice(offset, offset + limit),
+      rows.length,
+      page,
+      limit,
+    );
   }
 
   private async getRawPendingClients(
     instructorId: string,
+    opts: { direction?: ClientDirection; tokens?: string[] } = {},
   ): Promise<ClientRow[]> {
+    const outgoing = {
+      fromUserId: instructorId,
+      type: ClientRequestType.INSTRUCTOR_TO_CLIENT,
+    };
+    const incoming = {
+      toUserId: instructorId,
+      type: ClientRequestType.CLIENT_TO_INSTRUCTOR,
+    };
+    const directions =
+      opts.direction === ClientDirection.INCOMING
+        ? [incoming]
+        : opts.direction === ClientDirection.OUTGOING
+          ? [outgoing]
+          : [outgoing, incoming];
+
     const where = {
-      [Op.or]: [
-        {
-          fromUserId: instructorId,
-          type: ClientRequestType.INSTRUCTOR_TO_CLIENT,
-        },
-        {
-          toUserId: instructorId,
-          type: ClientRequestType.CLIENT_TO_INSTRUCTOR,
-        },
-      ],
+      [Op.or]: directions,
       status: ClientRequestStatus.PENDING,
       expiresAt: { [Op.gt]: new Date() },
     };
@@ -533,7 +637,10 @@ export class ClientService {
       order: [['createdAt', 'DESC']],
     });
 
-    return rows.map((row) => this.toPendingClientRow(row, instructorId));
+    const mapped = rows.map((row) =>
+      this.toPendingClientRow(row, instructorId),
+    );
+    return matchClientRows(mapped, opts.tokens ?? []);
   }
 
   /**
