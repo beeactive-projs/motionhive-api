@@ -41,6 +41,17 @@ const SITEMAP_DEFAULT_LANGUAGE = 'en';
 const SITEMAP_SLUG_PATTERN = /^[^\s/?#\\]+$/;
 
 /**
+ * The public post lookup: published, stored slug and language matched
+ * exactly (no trimming or case folding). `findBySlug` serves from it and
+ * the sitemap lists from it, so the sitemap can't advertise a URL that
+ * 404s, e.g. the trimmed form of a legacy slug stored with a leading space.
+ */
+const publicPostWhere = (
+  slug: string,
+  language: string,
+): WhereOptions<BlogPost> => ({ slug, language, isPublished: true });
+
+/**
  * Public blog post response. Storage is `authorUserId` (FK) XOR
  * `guestAuthorName` (string). `authorName` / `authorInitials` /
  * `authorAvatarUrl` are computed at read time from the user join
@@ -331,7 +342,7 @@ export class BlogService {
 
   async findBySlug(slug: string, language = 'en'): Promise<BlogPostResponse> {
     const post = await this.blogPostModel.findOne({
-      where: { slug, language, isPublished: true },
+      where: publicPostWhere(slug, language),
       attributes: { exclude: ['deletedAt'] },
       include: [this.authorInclude],
     });
@@ -552,13 +563,18 @@ export class BlogService {
       .replace(/\/+$/, '');
     const rows = await this.getSitemapRows();
 
-    // slug → language → lastmod. Rows arrive newest-first, so if two rows
-    // collapse onto the same (trimmed slug, language), the newest wins and
-    // the URL is emitted once.
+    // slug → language → lastmod. Rows arrive newest-first, so the newest
+    // row wins the lastmod and each URL is emitted once.
+    //
+    // Only URLs `findBySlug` can answer are listed. The site requests the
+    // exact path segment, and `publicPostWhere` matches the stored slug and
+    // language as they are, so a row is skipped (never trimmed) unless its
+    // stored slug already is a clean segment. Trimming would list the URL
+    // of a post that 404s there.
     const translations = new Map<string, Map<string, Date>>();
     for (const row of rows) {
-      const slug = row.slug?.trim() ?? '';
-      const language = row.language?.trim() ?? '';
+      const slug = row.slug ?? '';
+      const language = row.language ?? '';
       if (!SITEMAP_SLUG_PATTERN.test(slug)) {
         this.logger.warn(
           `Sitemap: skipping ${language} post with invalid slug ${JSON.stringify(row.slug)}.`,
