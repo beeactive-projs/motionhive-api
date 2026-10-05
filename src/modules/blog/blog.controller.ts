@@ -63,8 +63,8 @@ export class BlogController {
     res.setHeader('Cache-Control', 'public, max-age=3600');
     // Bump when the sitemap's shape changes, so a deploy can be checked
     // with a HEAD request. 2 = public-site host, one URL per translation
-    // with hreflang alternates.
-    res.setHeader('X-Sitemap-Version', '2');
+    // with hreflang alternates. 3 = only URLs `GET /blog/:slug` serves.
+    res.setHeader('X-Sitemap-Version', '3');
     res.send(xml);
   }
 

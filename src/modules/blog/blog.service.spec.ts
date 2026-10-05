@@ -27,7 +27,7 @@ import { CloudinaryService } from '../../common/services/cloudinary.service';
  *     Cloudinary cover only AFTER the DB write
  *   - delete: 403 on cross-user, soft-delete + purge cover on owner
  *   - getSitemapXml: public-site host, one URL per translation with
- *     hreflang alternates, trimmed/deduped slugs, blog articles only
+ *     hreflang alternates, only URLs findBySlug serves, blog articles only
  */
 describe('BlogService (smoke — not exhaustive)', () => {
   const me = 'me-user-id';
@@ -433,26 +433,48 @@ describe('BlogService (smoke — not exhaustive)', () => {
       );
     });
 
-    it('trims a whitespace slug, pairs it with its translation and drops duplicates', async () => {
+    it('lists only the RO URL of a post published in RO only, with no EN alternate', async () => {
+      blogPostModel.findAll.mockResolvedValueOnce([row('why-gym', 'ro')]);
+      const xml = await service.getSitemapXml();
+
+      const ro = 'https://www.motionhive.fit/ro/blog/why-gym';
+      expect(locs(xml)).toEqual([ro]);
+      expect(xml).not.toContain('hreflang="en"');
+      expect(xml).not.toContain('https://www.motionhive.fit/blog/');
+      expect(urlBlock(xml, ro)).toContain(`hreflang="ro" href="${ro}"`);
+      expect(urlBlock(xml, ro)).toContain(`hreflang="x-default" href="${ro}"`);
+    });
+
+    it('skips, never trims, a stored slug the public lookup cannot match', async () => {
+      const warn = jest
+        .spyOn(Logger.prototype, 'warn')
+        .mockImplementation(() => undefined);
+      // The live case: the EN row kept a leading space, so GET
+      // /blog/why-gym?locale=en 404s and the EN URL must not be listed.
       blogPostModel.findAll.mockResolvedValueOnce([
         row(' why-gym', 'en', '2026-05-03'),
         row('why-gym', 'ro', '2026-05-10'),
-        // Older row collapsing onto the same (slug, language) as the first.
-        row('why-gym ', 'en', '2026-04-01'),
       ]);
       const xml = await service.getSitemapXml();
 
-      const all = locs(xml);
-      expect(all).toEqual([
-        'https://www.motionhive.fit/blog/why-gym',
-        'https://www.motionhive.fit/ro/blog/why-gym',
+      const ro = 'https://www.motionhive.fit/ro/blog/why-gym';
+      expect(locs(xml)).toEqual([ro]);
+      expect(xml).not.toContain('hreflang="en"');
+      expect(urlBlock(xml, ro)).toContain(`hreflang="x-default" href="${ro}"`);
+      expect(warn).toHaveBeenCalledTimes(1);
+      warn.mockRestore();
+    });
+
+    it('emits a URL once when rows repeat a (slug, language), newest lastmod first', async () => {
+      blogPostModel.findAll.mockResolvedValueOnce([
+        row('why-gym', 'en', '2026-05-03'),
+        row('why-gym', 'en', '2026-04-01'),
       ]);
-      expect(new Set(all).size).toBe(all.length);
-      expect(all.some((loc) => /\s|%20/.test(loc))).toBe(false);
-      // Newest row wins the lastmod.
-      expect(
-        urlBlock(xml, 'https://www.motionhive.fit/blog/why-gym'),
-      ).toContain('<lastmod>2026-05-03</lastmod>');
+      const xml = await service.getSitemapXml();
+
+      const en = 'https://www.motionhive.fit/blog/why-gym';
+      expect(locs(xml)).toEqual([en]);
+      expect(urlBlock(xml, en)).toContain('<lastmod>2026-05-03</lastmod>');
     });
 
     it('skips and logs posts whose slug is empty or not a single path segment', async () => {
