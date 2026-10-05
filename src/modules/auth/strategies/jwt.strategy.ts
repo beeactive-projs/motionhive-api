@@ -5,7 +5,7 @@ import { ConfigService } from '@nestjs/config';
 import { UserService } from '../../user/user.service';
 import { RoleService } from '../../role/role.service';
 import { apiError } from '../../../common/i18n';
-import type { JwtPayload } from '../types/jwt-payload';
+import { TokenTypes, type JwtPayload } from '../types/jwt-payload';
 
 @Injectable()
 export class JwtStrategy extends PassportStrategy(Strategy) {
@@ -38,7 +38,7 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     // not reach anything else — without this, the short-lived ticket would
     // be a full access token wearing a shorter expiry.
     if (payload.typ === TokenTypes.STREAM_TICKET) {
-      throw new UnauthorizedException('This token cannot be used here.');
+      throw new UnauthorizedException(apiError('common.unauthorized'));
     }
 
     const user = await this.userService.findById(payload.sub);

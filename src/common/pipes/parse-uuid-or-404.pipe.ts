@@ -1,4 +1,5 @@
 import { NotFoundException, ParseUUIDPipe } from '@nestjs/common';
+import { apiError } from '../i18n';
 
 /**
  * `ParseUUIDPipe` that answers 404 instead of 400.
@@ -14,8 +15,8 @@ import { NotFoundException, ParseUUIDPipe } from '@nestjs/common';
  * a literal prefix (`/clients/requests/:requestId/accept`) the caller clearly
  * did mean to pass an id, so a plain `ParseUUIDPipe` and its 400 is right.
  */
-export function parseUuidOrNotFound(paramName = 'resource'): ParseUUIDPipe {
+export function parseUuidOrNotFound(): ParseUUIDPipe {
   return new ParseUUIDPipe({
-    exceptionFactory: () => new NotFoundException(`No such ${paramName}.`),
+    exceptionFactory: () => new NotFoundException(apiError('common.notFound')),
   });
 }

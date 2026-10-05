@@ -43,7 +43,7 @@ export class NotificationController {
       page: query.page ?? 1,
       limit: query.limit ?? 20,
       unreadOnly: query.unreadOnly,
-      category: query.category,
+      categories: query.category,
       locale: toLocale(req.user.language),
     });
   }

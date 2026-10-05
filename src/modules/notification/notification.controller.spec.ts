@@ -88,6 +88,7 @@ describe('NotificationController', () => {
         NotificationCategory.Sessions,
         NotificationCategory.Payments,
       ],
+      locale: 'en',
     });
   });
 

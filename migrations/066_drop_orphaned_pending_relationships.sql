@@ -1,4 +1,4 @@
--- 061: delete orphaned PENDING rows from instructor_client.
+-- 066: delete orphaned PENDING rows from instructor_client.
 --
 -- A pending relationship is a `client_request` row. `instructor_client` holds
 -- the settled relationship — ACTIVE or ARCHIVED. The code that wrote PENDING

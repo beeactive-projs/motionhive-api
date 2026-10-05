@@ -337,7 +337,7 @@ export class ClientController {
   @ApiEndpoint(ClientDocs.getClient)
   async getClient(
     @Request() req: AuthenticatedRequest,
-    @Param('clientId', parseUuidOrNotFound('client')) clientId: string,
+    @Param('clientId', parseUuidOrNotFound()) clientId: string,
   ) {
     return this.clientService.getClientForInstructor(req.user.id, clientId);
   }
@@ -352,7 +352,7 @@ export class ClientController {
   @ApiEndpoint({ ...ClientDocs.updateClient, body: UpdateClientDto })
   async updateClient(
     @Request() req: AuthenticatedRequest,
-    @Param('clientId', parseUuidOrNotFound('client')) clientId: string,
+    @Param('clientId', parseUuidOrNotFound()) clientId: string,
     @Body() dto: UpdateClientDto,
   ) {
     return this.clientService.updateClient(req.user.id, clientId, dto);
@@ -369,7 +369,7 @@ export class ClientController {
   @ApiEndpoint(ClientDocs.archiveClient)
   async archiveClient(
     @Request() req: AuthenticatedRequest,
-    @Param('clientId', parseUuidOrNotFound('client')) clientId: string,
+    @Param('clientId', parseUuidOrNotFound()) clientId: string,
   ) {
     return this.clientService.updateClient(req.user.id, clientId, {
       status: InstructorClientStatus.ARCHIVED,
