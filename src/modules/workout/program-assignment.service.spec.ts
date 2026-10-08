@@ -51,7 +51,7 @@ describe('ProgramAssignmentService (smoke — not exhaustive)', () => {
     findAll: jest.fn(),
     count: jest.fn(),
   };
-  const assignedExerciseModel = { create: jest.fn() };
+  const assignedExerciseModel = { create: jest.fn(), findAll: jest.fn() };
   const assignedSetModel = { bulkCreate: jest.fn() };
   const programModel = { findByPk: jest.fn() };
   const instructorClientModel = { findOne: jest.fn() };
@@ -784,6 +784,8 @@ describe('ProgramAssignmentService (smoke — not exhaustive)', () => {
           estimatedDurationMinutes: 50,
         },
       ]);
+      const squat = { id: 'ae-1', exercise: { name: 'Back squat' }, sets: [] };
+      assignedExerciseModel.findAll.mockResolvedValueOnce([squat]);
 
       const res = await service.getTrainingDay('me', '2026-08-06');
 
@@ -792,6 +794,12 @@ describe('ProgramAssignmentService (smoke — not exhaustive)', () => {
       // render "from Alex" without a second lookup.
       expect(res.today?.planName).toBe('12-week base');
       expect(res.week).toHaveLength(2);
+      // Only today carries its exercises; the week strip stays lean.
+      expect(res.today?.exercises).toEqual([squat]);
+      expect(assignedExerciseModel.findAll.mock.calls[0][0].where).toEqual({
+        assignedWorkoutId: 'aw-1',
+      });
+      expect(res.week[1]).not.toHaveProperty('exercises');
     });
 
     it('reports a rest day as null, not as the next workout', async () => {
@@ -813,6 +821,7 @@ describe('ProgramAssignmentService (smoke — not exhaustive)', () => {
 
       expect(res.today).toBeNull();
       expect(res.week).toHaveLength(1);
+      expect(assignedExerciseModel.findAll).not.toHaveBeenCalled();
     });
   });
 

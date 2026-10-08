@@ -686,8 +686,35 @@ export class ProgramAssignmentService {
     // than an error or a silent fallback to the next workout.
     const todaysWorkout = week.find((w) => w.scheduledDate === today) ?? null;
 
+    // Today alone carries its exercises, so the card can say what the
+    // session holds without a second read. One workout's worth, never
+    // the week's.
+    const todaysExercises = todaysWorkout
+      ? await this.assignedExerciseModel.findAll({
+          where: { assignedWorkoutId: todaysWorkout.assignedWorkoutId },
+          order: [['orderIndex', 'ASC']],
+          include: [
+            {
+              model: Exercise,
+              as: 'exercise',
+              // `translations` lets the content interceptor answer in
+              // the reader's language.
+              attributes: ['id', 'name', 'translations'],
+            },
+            {
+              model: AssignedSet,
+              as: 'sets',
+              separate: true,
+              order: [['orderIndex', 'ASC']],
+            },
+          ],
+        })
+      : [];
+
     return {
-      today: todaysWorkout,
+      today: todaysWorkout
+        ? { ...todaysWorkout, exercises: todaysExercises }
+        : null,
       week,
       activePlans: activePlans.map((p) => ({
         id: p.id,

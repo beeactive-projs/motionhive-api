@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   Inject,
   Injectable,
   NotFoundException,
@@ -123,6 +124,15 @@ export class WorkoutLogService {
   ): Promise<WorkoutLog> {
     if (dto.assignedWorkoutId && dto.programId) {
       throw new BadRequestException(apiError('workout.startOneSource'));
+    }
+
+    // One session at a time, whichever way it starts. Two open logs split
+    // the work between them, and "resume" can only point at one.
+    const open = await this.findInProgressForUser(userId);
+    if (open) {
+      throw new ConflictException(
+        apiError('workout.alreadyInProgress', { name: open.name }),
+      );
     }
 
     if (dto.programId) {
@@ -787,6 +797,35 @@ export class WorkoutLogService {
   }
 
   /**
+   * Remove one set mid-session: the extra row added by mistake, or a set
+   * the user is not going to do. Deleted rather than flagged: unlike a
+   * skipped exercise, a set that was never done carries nothing a coach
+   * needs to see. The rows left keep their `orderIndex`; a gap is harmless
+   * because every read sorts by it.
+   */
+  async removeSetFromLog(
+    workoutLogId: string,
+    setId: string,
+    userId: string,
+  ): Promise<void> {
+    const log = await this._loadOwnedLog(workoutLogId, userId);
+    if (log.status !== WorkoutLogStatus.InProgress) {
+      throw new BadRequestException(
+        apiError('workout.cannotEditNotInProgress'),
+      );
+    }
+    const set = await this.loggedSetModel.findByPk(setId, {
+      include: [
+        { model: LoggedExercise, as: 'exercise', attributes: ['workoutLogId'] },
+      ],
+    });
+    if (!set || set.exercise?.workoutLogId !== workoutLogId) {
+      throw new NotFoundException(apiError('workout.setNotFound'));
+    }
+    await set.destroy();
+  }
+
+  /**
    * "Last time you did this" — most-recent completed log set for this
    * exercise. Powers the `LastTimeHint` component on the active log.
    * Returns up to 6 actual rows (one workout's worth), newest first.
@@ -1254,12 +1293,18 @@ export class WorkoutLogService {
       },
       include: [
         // Eager-load the program name so the row subtitle ("12-week
-        // hypertrophy base · W5") doesn't need a follow-up fetch.
+        // hypertrophy base · W5") doesn't need a follow-up fetch, and the
+        // kind so a row can tell a coach's plan from a self-scheduled one.
         // Nullable for freestyle logs.
         {
           model: ProgramAssignment,
           as: 'assignment',
-          attributes: ['id', 'programNameSnapshot', 'masterProgramId'],
+          attributes: [
+            'id',
+            'programNameSnapshot',
+            'masterProgramId',
+            'assignmentKind',
+          ],
           required: false,
         },
         // The routine it was started from, so a history row can say

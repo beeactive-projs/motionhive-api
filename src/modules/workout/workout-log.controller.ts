@@ -129,6 +129,16 @@ export class WorkoutLogController {
     );
   }
 
+  @Delete('workout-logs/:id/sets/:setId')
+  @HttpCode(204)
+  async removeSet(
+    @Request() req: AuthenticatedRequest,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Param('setId', ParseUUIDPipe) setId: string,
+  ): Promise<void> {
+    await this.workoutLogService.removeSetFromLog(id, setId, req.user.id);
+  }
+
   @Post('workout-logs/:id/exercises/:exerciseId/sets')
   async addSet(
     @Request() req: AuthenticatedRequest,
