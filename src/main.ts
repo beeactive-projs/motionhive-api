@@ -232,7 +232,8 @@ A comprehensive REST API for managing fitness training sessions, trainers, and c
     // succeeds, the response is thrown away, and a login looks like wrong
     // credentials.
     'capacitor://localhost', // iOS
-    'http://localhost', // Android
+    'https://localhost', // Android, Capacitor 6+ default androidScheme
+    'http://localhost', // Android, androidScheme 'http'
     'ionic://localhost', // iOS, Capacitor 2 and earlier
   ];
 
