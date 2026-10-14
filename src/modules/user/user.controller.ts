@@ -58,7 +58,7 @@ export class UserController {
   @ApiEndpoint({
     summary: 'Search users',
     description:
-      'Partial-match search on email/first/last name. Supports optional role filter and excluding users already connected to the calling instructor.',
+      'Partial-match search on first/last name and handle, or an exact match on the whole email address. Never returns emails. Supports optional role filter and excluding users already connected to the calling instructor.',
     auth: true,
     responses: [
       { status: 200, description: 'Matching users' },
