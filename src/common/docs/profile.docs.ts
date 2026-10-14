@@ -296,7 +296,9 @@ export const ProfileDocs = {
       'more — coaches connected to the profile owner see COACHES_ONLY fields, ' +
       'and the owner themselves sees every field. Returns the audience tier ' +
       'so the UI does not have to recompute it. Fields not visible to the ' +
-      'viewer are returned as `null`.',
+      'viewer are returned as `null`. `sharedGroups` lists the groups a ' +
+      'signed-in viewer and the owner are both active members of (empty for ' +
+      'a guest or the owner).',
     auth: false,
     responses: [
       {
@@ -318,6 +320,9 @@ export const ProfileDocs = {
           displayRoles: [],
           memberSince: '2024-08-12T10:00:00.000Z',
           isInstructor: false,
+          sharedGroups: [
+            { id: 'group-uuid', name: 'Morning Crew', logoUrl: null },
+          ],
         },
       },
       ApiStandardResponses.NotFound,

@@ -73,6 +73,7 @@ describe('ProfileService (smoke — not exhaustive)', () => {
 
   const groupService = {
     listPublicGroupsForInstructor: jest.fn(),
+    sharedGroups: jest.fn(),
   };
 
   const venueService = {
@@ -579,11 +580,56 @@ describe('ProfileService (smoke — not exhaustive)', () => {
       instructorProfileModel.findOne.mockResolvedValueOnce(null);
       roleService.getUserRoles.mockResolvedValueOnce([]);
 
+      groupService.sharedGroups.mockResolvedValueOnce([
+        { id: 'g-1', name: 'Morning Crew', logoUrl: null },
+      ]);
+
       const out = await service.getPublicUserProfileByHandle(
         'client',
         'coach-1',
       );
       expect(out.audience).toBe('COACH');
+      // Groups in common are looked up for the signed-in viewer.
+      expect(groupService.sharedGroups).toHaveBeenCalledWith(
+        'coach-1',
+        'client-1',
+      );
+      expect(out.sharedGroups).toEqual([
+        { id: 'g-1', name: 'Morning Crew', logoUrl: null },
+      ]);
+    });
+
+    it('has no groups in common for a guest or for your own profile', async () => {
+      const user = {
+        id: me,
+        handle: 'me-handle',
+        firstName: 'Me',
+        lastName: 'Self',
+        avatarUrl: null,
+        email: null,
+        phone: null,
+        city: null,
+        countryCode: null,
+        language: null,
+        timezone: null,
+        privacySettings: {},
+        createdAt: new Date(),
+      } as unknown as User;
+      groupService.sharedGroups.mockClear();
+      instructorProfileModel.findOne.mockResolvedValue(null);
+      roleService.getUserRoles.mockResolvedValue([]);
+
+      jest.spyOn(User, 'findOne').mockResolvedValueOnce(user);
+      const guest = await service.getPublicUserProfileByHandle(
+        'me-handle',
+        null,
+      );
+      jest.spyOn(User, 'findOne').mockResolvedValueOnce(user);
+      const own = await service.getPublicUserProfileByHandle('me-handle', me);
+
+      expect(guest.sharedGroups).toEqual([]);
+      expect(own.sharedGroups).toEqual([]);
+      expect(groupService.sharedGroups).not.toHaveBeenCalled();
     });
   });
 });
