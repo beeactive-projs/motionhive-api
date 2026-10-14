@@ -27,6 +27,7 @@ import { WorkoutLog } from './entities/workout-log.entity';
 import { ProgramSource, WorkoutLogStatus } from './entities/workout.enums';
 import { SaveRoutineMode } from './dto/save-log-as-routine.dto';
 import { WorkoutLogService } from './workout-log.service';
+import { CoachAccessService } from './coach-access.service';
 import {
   fakeTx,
   makeSilentLogger,
@@ -102,6 +103,9 @@ describe('WorkoutLogService (smoke — not exhaustive)', () => {
     const module = await Test.createTestingModule({
       providers: [
         WorkoutLogService,
+        // Real rule, mocked models: the coach-access tests below exercise
+        // it through instructorClientModel + assignmentModel.
+        CoachAccessService,
         { provide: getModelToken(WorkoutLog), useValue: logModel },
         {
           provide: getModelToken(LoggedExercise),

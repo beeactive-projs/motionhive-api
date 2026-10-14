@@ -4,6 +4,7 @@ import { Sequelize } from 'sequelize-typescript';
 import { WINSTON_MODULE_NEST_PROVIDER } from 'nest-winston';
 
 import { Exercise } from '../exercise/entities/exercise.entity';
+import { CoachAccessService } from '../workout/coach-access.service';
 import { ProgressService } from './progress.service';
 import { makeSilentLogger } from '../../../test/helpers/sequelize-mocks';
 
@@ -47,6 +48,10 @@ describe('ProgressService — streaks', () => {
       providers: [
         ProgressService,
         { provide: getModelToken(Exercise), useValue: { findByPk: jest.fn() } },
+        {
+          provide: CoachAccessService,
+          useValue: { readableAssignmentIds: jest.fn() },
+        },
         { provide: Sequelize, useValue: { query: jest.fn() } },
         { provide: WINSTON_MODULE_NEST_PROVIDER, useValue: makeSilentLogger() },
       ],

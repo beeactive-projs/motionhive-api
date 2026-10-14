@@ -25,10 +25,6 @@ import {
 } from '../../common/i18n';
 import { escapeLikeWildcards } from '../../common/utils/search.utils';
 import { ListWorkoutLogsQueryDto } from './dto/list-workout-logs.query.dto';
-import {
-  InstructorClient,
-  InstructorClientStatus,
-} from '../client/entities/instructor-client.entity';
 import { Exercise } from '../exercise/entities/exercise.entity';
 import { ExerciseVisibility } from '../exercise/entities/exercise.enums';
 import { AssignedExercise } from './entities/assigned-exercise.entity';
@@ -61,6 +57,8 @@ import {
 import { NotificationService } from '../notification/notification.service';
 import { User } from '../user/entities/user.entity';
 import { clientCompletedWorkoutForInstructor } from './notifications';
+import { CoachAccessService } from './coach-access.service';
+import { estimateOneRepMaxEpley } from './one-rep-max.estimate';
 
 /**
  * WorkoutLogService — the client-side surface. Three core flows:
@@ -101,12 +99,11 @@ export class WorkoutLogService {
     private readonly prescribedSetModel: typeof PrescribedSet,
     @InjectModel(ProgramWorkout)
     private readonly programWorkoutModel: typeof ProgramWorkout,
-    @InjectModel(InstructorClient)
-    private readonly instructorClientModel: typeof InstructorClient,
     @InjectModel(ProgramAssignment)
     private readonly assignmentModel: typeof ProgramAssignment,
     @InjectModel(User) private readonly userModel: typeof User,
     private readonly notificationService: NotificationService,
+    private readonly coachAccess: CoachAccessService,
     private readonly sequelize: Sequelize,
     @Inject(WINSTON_MODULE_NEST_PROVIDER)
     private readonly logger: LoggerService,
@@ -1228,19 +1225,15 @@ export class WorkoutLogService {
   }
 
   /**
-   * Compute an Epley-estimated 1RM from a single heavy set. Returns
-   * null when not enough info (no reps, or no weight, or > 12 reps —
-   * Epley breaks down beyond ~10 reps).
-   *
-   *   1RM ≈ weight × (1 + reps / 30)
+   * Epley-estimated 1RM from a single set. Thin alias for the shared
+   * `estimateOneRepMaxEpley` (one-rep-max.estimate.ts), which the
+   * coach's progress view also uses so both agree to the decimal.
    */
   estimateOneRepMaxEpley(
     reps: number | null,
     weightKg: number | null,
   ): number | null {
-    if (reps == null || weightKg == null) return null;
-    if (reps < 1 || reps > 12 || weightKg <= 0) return null;
-    return Math.round(weightKg * (1 + reps / 30) * 100) / 100;
+    return estimateOneRepMaxEpley(reps, weightKg);
   }
 
   // ────────────────────────────────────────────────────────────────────
@@ -1491,26 +1484,6 @@ export class WorkoutLogService {
   // ────────────────────────────────────────────────────────────────────
 
   /**
-   * Asserts the caller is the ACTIVE instructor for clientId. 404 on
-   * any other state — including PENDING and ARCHIVED — so we don't
-   * leak the existence of a past or unconfirmed relationship.
-   */
-  private async _assertActiveCoachOf(
-    instructorId: string,
-    clientId: string,
-  ): Promise<void> {
-    const link = await this.instructorClientModel.findOne({
-      where: {
-        instructorId,
-        clientId,
-        status: InstructorClientStatus.ACTIVE,
-      },
-      attributes: ['id'],
-    });
-    if (!link) throw new NotFoundException(apiError('workout.clientNotFound'));
-  }
-
-  /**
    * Coach view of a client's workout history. Same shape as
    * `listForUser` (PR-tagged plain rows). Gated by ACTIVE coach link.
    */
@@ -1519,39 +1492,13 @@ export class WorkoutLogService {
     clientId: string,
     query: PaginationDto,
   ) {
-    await this._assertActiveCoachOf(instructorId, clientId);
-    const assignmentIds = await this._visibleAssignmentIds(
+    // 404 unless ACTIVE; then the allow-list (see CoachAccessService).
+    const assignmentIds = await this.coachAccess.readableAssignmentIds(
       instructorId,
       clientId,
     );
     // `null` = the client shares everything with this coach.
     return this.listForUser(clientId, query, assignmentIds ?? undefined);
-  }
-
-  /**
-   * Which of this client's logs this coach may read in detail.
-   *
-   * Returns the coach's own assignment ids, or `null` meaning "no
-   * restriction" when the client has opted in via `shareOffPlan`.
-   *
-   * `share_off_plan` has existed since migration 056, documented as the
-   * client-owned toggle for whether a coach may see training logged
-   * outside their plan, and defaulting to false — but nothing ever read
-   * it, so every coach could read every freestyle session their client
-   * logged, including its private note. Presence still leaks through
-   * roster adherence (the coach can tell you trained); the content no
-   * longer does.
-   */
-  private async _visibleAssignmentIds(
-    instructorId: string,
-    clientId: string,
-  ): Promise<string[] | null> {
-    const assignments = await this.assignmentModel.findAll({
-      where: { instructorId, clientId, deletedAt: null },
-      attributes: ['id', 'shareOffPlan'],
-    });
-    if (assignments.some((a) => a.shareOffPlan)) return null;
-    return assignments.map((a) => a.id);
   }
 
   /**
@@ -1567,13 +1514,15 @@ export class WorkoutLogService {
       attributes: ['userId', 'programAssignmentId'],
     });
     if (!stub) throw new NotFoundException(apiError('workout.logNotFound'));
-    await this._assertActiveCoachOf(instructorId, stub.userId);
 
     // Same gate as the list: an off-plan session is the client's own
     // business unless they shared it. 404 rather than 403 — consistent
     // with the rest of the coach surface, and it does not confirm that
     // a private session exists.
-    const visible = await this._visibleAssignmentIds(instructorId, stub.userId);
+    const visible = await this.coachAccess.readableAssignmentIds(
+      instructorId,
+      stub.userId,
+    );
     if (
       visible !== null &&
       (!stub.programAssignmentId || !visible.includes(stub.programAssignmentId))

@@ -18,6 +18,7 @@ import { Program } from './entities/program.entity';
 import { ProgramAssignment } from './entities/program-assignment.entity';
 import { ProgramWorkout } from './entities/program-workout.entity';
 import { WorkoutLog } from './entities/workout-log.entity';
+import { CoachAccessService } from './coach-access.service';
 import { ProgramAssignmentController } from './program-assignment.controller';
 import { ProgramAssignmentService } from './program-assignment.service';
 import { ProgramController } from './program.controller';
@@ -59,11 +60,18 @@ import { WorkoutLogService } from './workout-log.service';
     WorkoutLogController,
     InstructorWorkoutLogController,
   ],
-  providers: [ProgramService, ProgramAssignmentService, WorkoutLogService],
+  providers: [
+    ProgramService,
+    ProgramAssignmentService,
+    WorkoutLogService,
+    CoachAccessService,
+  ],
   exports: [
     ProgramService,
     ProgramAssignmentService,
     WorkoutLogService,
+    // The coach read rule; ProgressModule scopes its aggregates with it.
+    CoachAccessService,
     SequelizeModule,
   ],
 })
