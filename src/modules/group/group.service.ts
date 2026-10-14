@@ -276,6 +276,42 @@ export class GroupService {
     });
   }
   /**
+   * Groups two people are both active members of — "groups in common" on a
+   * profile. Owners hold a membership row, so a coach's own groups count.
+   * Nothing here is news to the viewer: they are a member of every group it
+   * returns and can already see who else is in it.
+   */
+  async sharedGroups(
+    viewerId: string,
+    otherUserId: string,
+    limit = 10,
+  ): Promise<{ id: string; name: string; logoUrl: string | null }[]> {
+    const mine = await this.memberModel.findAll({
+      where: { userId: viewerId, leftAt: null },
+      attributes: ['groupId'],
+    });
+    if (mine.length === 0) return [];
+
+    const theirs = await this.memberModel.findAll({
+      where: {
+        userId: otherUserId,
+        leftAt: null,
+        groupId: { [Op.in]: mine.map((m) => m.groupId) },
+      },
+      attributes: ['groupId'],
+    });
+    if (theirs.length === 0) return [];
+
+    const groups = await this.groupModel.findAll({
+      where: { id: { [Op.in]: theirs.map((m) => m.groupId) }, isActive: true },
+      attributes: ['id', 'name', 'logoUrl'],
+      order: [['name', 'ASC']],
+      limit,
+    });
+    return groups.map((g) => ({ id: g.id, name: g.name, logoUrl: g.logoUrl }));
+  }
+
+  /**
    * Get all groups owned by the instructor
    */
   async getInstructorsGroups(instructorId: string): Promise<Group[]> {
@@ -703,10 +739,17 @@ export class GroupService {
       ...(dto.city && { city: { [Op.iLike]: `%${dto.city}%` } }),
       ...(dto.country && { country: dto.country }),
       ...(andClauses.length > 0 && { [Op.and]: andClauses }),
+      // Accent- and case-blind, as exercise and program search are: someone
+      // typing "forta" is looking for "Forță", and most phones type without
+      // diacritics. `fold_for_search` is the shared unaccent + lower (063).
       ...(term && {
         [Op.or]: [
-          { name: { [Op.iLike]: term } },
-          { description: { [Op.iLike]: term } },
+          literal(
+            `fold_for_search("Group"."name") LIKE fold_for_search(${sequelize.escape(term)})`,
+          ),
+          literal(
+            `fold_for_search(COALESCE("Group"."description", '')) LIKE fold_for_search(${sequelize.escape(term)})`,
+          ),
         ],
       }),
     };

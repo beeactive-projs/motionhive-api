@@ -191,6 +191,11 @@ export class ProgramAssignmentService {
     // Resolved before the transaction opens: a day-count mismatch is a bad
     // request and should be refused before anything is written.
     const dayMap = this.buildDayMap(program.workouts ?? [], dto.daysOfWeek);
+    const scheduleStart = this.scheduleStart(
+      program.workouts ?? [],
+      dto.startDate,
+      dayMap,
+    );
 
     const created = await this.sequelize.transaction(async (tx) => {
       const assignment = await this.assignmentModel.create(
@@ -202,7 +207,7 @@ export class ProgramAssignmentService {
           programNameSnapshot: programName,
           status: ProgramAssignmentStatus.Active,
           startDate: dto.startDate,
-          endDate: this.computeEndDate(program, dto.startDate, dayMap),
+          endDate: this.computeEndDate(program, scheduleStart, dayMap),
           completionPercent: 0,
           notes: dto.notes?.trim() || null,
         },
@@ -212,7 +217,7 @@ export class ProgramAssignmentService {
       await this.cloneTree(
         assignment.id,
         program,
-        dto.startDate,
+        scheduleStart,
         tx,
         dayMap,
         clientLocale,
@@ -686,8 +691,35 @@ export class ProgramAssignmentService {
     // than an error or a silent fallback to the next workout.
     const todaysWorkout = week.find((w) => w.scheduledDate === today) ?? null;
 
+    // Today alone carries its exercises, so the card can say what the
+    // session holds without a second read. One workout's worth, never
+    // the week's.
+    const todaysExercises = todaysWorkout
+      ? await this.assignedExerciseModel.findAll({
+          where: { assignedWorkoutId: todaysWorkout.assignedWorkoutId },
+          order: [['orderIndex', 'ASC']],
+          include: [
+            {
+              model: Exercise,
+              as: 'exercise',
+              // `translations` lets the content interceptor answer in
+              // the reader's language.
+              attributes: ['id', 'name', 'translations'],
+            },
+            {
+              model: AssignedSet,
+              as: 'sets',
+              separate: true,
+              order: [['orderIndex', 'ASC']],
+            },
+          ],
+        })
+      : [];
+
     return {
-      today: todaysWorkout,
+      today: todaysWorkout
+        ? { ...todaysWorkout, exercises: todaysExercises }
+        : null,
       week,
       activePlans: activePlans.map((p) => ({
         id: p.id,
@@ -1117,6 +1149,38 @@ export class ProgramAssignmentService {
 
     // ISO 1=Mon..7=Sun on the way in; `dayIndex` is 0=Mon..6=Sun.
     return new Map(programDays.map((d, i) => [d, chosen[i] - 1]));
+  }
+
+  /**
+   * The date a weekday-mapped schedule counts from.
+   *
+   * With weekdays picked, week 0 is the week holding the start date and its
+   * Monday anchors the grid, so a weekday earlier in that week than the start
+   * date put a session before the plan began. Assigned today, that session
+   * was already in the past (the nightly auto-skip then marked it skipped
+   * before the client saw it), and for a one-session routine the end date
+   * fell before the start, which the table's date-order check refuses — a
+   * 500 on assign.
+   *
+   * So when anything in week 0 would land before the start, the whole plan
+   * moves a week later. Everything shifts together, the program's days keep
+   * their order, and the first session is the first picked weekday on or
+   * after the start date. Without a mapping nothing changes: days count
+   * forward from the start and never land before it.
+   */
+  private scheduleStart(
+    workouts: ProgramWorkout[],
+    startDate: string,
+    dayMap: ReadonlyMap<number, number> | null,
+  ): string {
+    if (!dayMap) return startDate;
+    const startIndex = this._isoWeekdayToDayIndex(startDate);
+    const landsEarly = workouts.some(
+      (pw) =>
+        pw.weekIndex === 0 &&
+        (dayMap.get(pw.dayIndex) ?? startIndex) < startIndex,
+    );
+    return landsEarly ? this.addDays(startDate, 7) : startDate;
   }
 
   private computeEndDate(

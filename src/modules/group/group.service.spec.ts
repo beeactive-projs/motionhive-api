@@ -1,3 +1,4 @@
+import { Op } from 'sequelize';
 import {
   BadRequestException,
   ForbiddenException,
@@ -573,6 +574,63 @@ describe('GroupService', () => {
           action: JoinRequestDecision.APPROVE,
         }),
       ).rejects.toBeInstanceOf(NotFoundException);
+    });
+  });
+
+  describe('sharedGroups', () => {
+    it('returns only groups both people are active members of', async () => {
+      memberModel.findAll
+        .mockResolvedValueOnce([{ groupId: 'g-1' }, { groupId: 'g-2' }])
+        .mockResolvedValueOnce([{ groupId: 'g-2' }]);
+      groupModel.findAll.mockResolvedValueOnce([
+        { id: 'g-2', name: 'Morning Crew', logoUrl: null },
+      ]);
+
+      const out = await service.sharedGroups('viewer-1', 'other-1');
+
+      expect(memberModel.findAll).toHaveBeenNthCalledWith(
+        1,
+        expect.objectContaining({
+          where: { userId: 'viewer-1', leftAt: null },
+        }),
+      );
+      expect(memberModel.findAll).toHaveBeenNthCalledWith(
+        2,
+        expect.objectContaining({
+          where: expect.objectContaining({ userId: 'other-1', leftAt: null }),
+        }),
+      );
+      expect(out).toEqual([{ id: 'g-2', name: 'Morning Crew', logoUrl: null }]);
+    });
+
+    it('stops early when the viewer is in no groups', async () => {
+      memberModel.findAll.mockResolvedValueOnce([]);
+      groupModel.findAll.mockClear();
+
+      expect(await service.sharedGroups('viewer-1', 'other-1')).toEqual([]);
+      expect(groupModel.findAll).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('discoverGroups search', () => {
+    it('matches without accents or case, as exercise search does', async () => {
+      // "forta" must find "Forță": most phones type without diacritics.
+      const escape = jest.fn((v: string) => `'${v}'`);
+      (groupModel.sequelize as unknown as { escape: typeof escape }).escape =
+        escape;
+
+      await service.discoverGroups({ search: 'forta' }, null);
+
+      const { where } = groupModel.findAndCountAll.mock.calls[0][0] as {
+        where: Record<symbol, unknown>;
+      };
+      const clauses = JSON.stringify(where[Op.or]);
+      expect(clauses).toContain('fold_for_search(\\"Group\\".\\"name\\")');
+      expect(clauses).toContain(
+        'fold_for_search(COALESCE(\\"Group\\".\\"description\\"',
+      );
+      // The term goes through escape, never straight into the SQL.
+      expect(escape).toHaveBeenCalledWith('%forta%');
     });
   });
 });

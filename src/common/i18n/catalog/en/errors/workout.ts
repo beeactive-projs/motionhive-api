@@ -70,4 +70,6 @@ export const workout = {
   sameExerciseSwap: 'That is already the exercise being logged.',
   cannotDiscardFinished:
     'Only a workout in progress can be cancelled. Finished workouts stay in your history.',
+  alreadyInProgress:
+    '{name} is still in progress. Finish or discard it before starting another workout.',
 };

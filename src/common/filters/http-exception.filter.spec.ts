@@ -67,6 +67,23 @@ describe('HttpExceptionFilter', () => {
     ).toBe('Nu ai permisiunea să faci asta.');
   });
 
+  it("answers an unknown route in the reader's language, never with the path", () => {
+    // Nest's router throws this for a path no controller serves — what an
+    // app newer than its API asks for.
+    const body = run(
+      new NotFoundException('Cannot GET /coach/clients/c-1/progress'),
+      {
+        headers: { 'accept-language': 'ro' },
+      },
+    );
+    expect(body.statusCode).toBe(404);
+    expect(body.message).not.toContain('Cannot GET');
+    expect(body.message).toBe(
+      run(new NotFoundException(), { headers: { 'accept-language': 'ro' } })
+        .message,
+    );
+  });
+
   it('keeps an uncatalogued message as it was thrown', () => {
     expect(
       run(new BadRequestException('Stripe said no'), {

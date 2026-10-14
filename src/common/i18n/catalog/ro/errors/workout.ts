@@ -76,4 +76,6 @@ export const workout: Catalog['errors']['workout'] = {
   sameExerciseSwap: 'Acesta e deja exercițiul pe care îl înregistrezi.',
   cannotDiscardFinished:
     'Poți anula doar un antrenament în desfășurare. Antrenamentele terminate rămân în istoricul tău.',
+  alreadyInProgress:
+    '{name} este încă în desfășurare. Termină-l sau renunță la el înainte să începi alt antrenament.',
 };

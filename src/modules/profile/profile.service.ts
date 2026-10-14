@@ -723,12 +723,17 @@ export class ProfileService {
 
     // Cheap parallel check — we want both the instructor flag (for the
     // FE branch) and the role list (for the public role badges).
-    const [instructorProfile, roles] = await Promise.all([
+    const [instructorProfile, roles, sharedGroups] = await Promise.all([
       this.instructorProfileModel.findOne({
         where: { userId: user.id },
         attributes: ['id'],
       }),
       this.roleService.getUserRoles(user.id),
+      // Groups in common: only for a signed-in viewer looking at someone
+      // else. A guest has none, and your own profile has nothing "in common".
+      viewerId && audience !== 'OWNER'
+        ? this.groupService.sharedGroups(viewerId, user.id)
+        : Promise.resolve([]),
     ]);
 
     const settings = user.privacySettings ?? {};
@@ -761,6 +766,7 @@ export class ProfileService {
         .filter((name) => !HIDDEN_DISPLAY_ROLES.has(name)),
       memberSince: user.createdAt,
       isInstructor: !!instructorProfile,
+      sharedGroups,
     };
   }
 

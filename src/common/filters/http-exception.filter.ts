@@ -60,6 +60,14 @@ const GENERIC_BY_STATUS_TEXT: Record<string, ErrorKey> = {
   'Payload Too Large': 'common.tooLarge',
 };
 
+/**
+ * Nest's own 404 for a route that does not exist: "Cannot GET /coach/…".
+ * An app newer than the API it talks to asks for exactly these, and the
+ * sentence is English with a path in it, so it is answered as a plain
+ * not-found in the caller's language instead. The log keeps the original.
+ */
+const UNKNOWN_ROUTE = /^Cannot (GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS) \//;
+
 @Catch()
 export class HttpExceptionFilter implements ExceptionFilter {
   constructor(
@@ -150,7 +158,9 @@ export class HttpExceptionFilter implements ExceptionFilter {
     // carries Nest's English status text ("Not Found", "Unauthorized");
     // answer those with our own sentence, in the caller's language.
     if (clientMessage === null && typeof message === 'string') {
-      const generic = GENERIC_BY_STATUS_TEXT[message];
+      const generic: ErrorKey | undefined =
+        GENERIC_BY_STATUS_TEXT[message] ??
+        (UNKNOWN_ROUTE.test(message) ? 'common.notFound' : undefined);
       if (generic) {
         clientMessage = translate(
           requestLocale(request as RequestWithUser),

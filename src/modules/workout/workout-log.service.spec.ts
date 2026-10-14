@@ -1,4 +1,8 @@
-import { BadRequestException, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  NotFoundException,
+} from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { getModelToken } from '@nestjs/sequelize';
 import { Sequelize } from 'sequelize-typescript';
@@ -23,6 +27,7 @@ import { WorkoutLog } from './entities/workout-log.entity';
 import { ProgramSource, WorkoutLogStatus } from './entities/workout.enums';
 import { SaveRoutineMode } from './dto/save-log-as-routine.dto';
 import { WorkoutLogService } from './workout-log.service';
+import { CoachAccessService } from './coach-access.service';
 import {
   fakeTx,
   makeSilentLogger,
@@ -98,6 +103,9 @@ describe('WorkoutLogService (smoke — not exhaustive)', () => {
     const module = await Test.createTestingModule({
       providers: [
         WorkoutLogService,
+        // Real rule, mocked models: the coach-access tests below exercise
+        // it through instructorClientModel + assignmentModel.
+        CoachAccessService,
         { provide: getModelToken(WorkoutLog), useValue: logModel },
         {
           provide: getModelToken(LoggedExercise),
@@ -161,6 +169,18 @@ describe('WorkoutLogService (smoke — not exhaustive)', () => {
       await expect(
         service.start('me', { assignedWorkoutId: 'aw-1' }),
       ).rejects.toThrow(NotFoundException);
+    });
+
+    it('refuses to start while another workout is in progress', async () => {
+      logModel.findOne.mockResolvedValueOnce({
+        id: 'wl-open',
+        name: 'Push day',
+      });
+
+      await expect(service.start('me', { name: 'Freestyle' })).rejects.toThrow(
+        ConflictException,
+      );
+      expect(logModel.create).not.toHaveBeenCalled();
     });
 
     it('rejects passing both an assigned workout and a program', async () => {
@@ -880,6 +900,49 @@ describe('WorkoutLogService (smoke — not exhaustive)', () => {
         destroy,
       });
       await service.removeExerciseFromLog('wl-1', 'le-1', 'me');
+      expect(destroy).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  // ─── Mid-session: remove set ─────────────────────────────────────
+
+  describe('removeSetFromLog', () => {
+    const inProgressLog = {
+      id: 'wl-1',
+      userId: 'me',
+      status: WorkoutLogStatus.InProgress,
+    };
+
+    it('refuses on a completed log', async () => {
+      logModel.findByPk.mockResolvedValueOnce({
+        ...inProgressLog,
+        status: WorkoutLogStatus.Completed,
+      });
+      await expect(
+        service.removeSetFromLog('wl-1', 'ls-1', 'me'),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('404s when the set belongs to a different log', async () => {
+      logModel.findByPk.mockResolvedValueOnce(inProgressLog);
+      loggedSetModel.findByPk.mockResolvedValueOnce({
+        id: 'ls-1',
+        exercise: { workoutLogId: 'wl-OTHER' },
+      });
+      await expect(
+        service.removeSetFromLog('wl-1', 'ls-1', 'me'),
+      ).rejects.toThrow(NotFoundException);
+    });
+
+    it('destroys the row on the happy path', async () => {
+      const destroy = jest.fn().mockResolvedValue(undefined);
+      logModel.findByPk.mockResolvedValueOnce(inProgressLog);
+      loggedSetModel.findByPk.mockResolvedValueOnce({
+        id: 'ls-1',
+        exercise: { workoutLogId: 'wl-1' },
+        destroy,
+      });
+      await service.removeSetFromLog('wl-1', 'ls-1', 'me');
       expect(destroy).toHaveBeenCalledTimes(1);
     });
   });

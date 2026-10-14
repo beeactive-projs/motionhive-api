@@ -7,6 +7,9 @@ import { Sequelize } from 'sequelize-typescript';
 
 import { DEFAULT_LOCALE, apiError, type Locale } from '../../common/i18n';
 import { Exercise } from '../exercise/entities/exercise.entity';
+import { CoachAccessService } from '../workout/coach-access.service';
+import { OneRepMaxSource } from '../workout/entities/workout.enums';
+import { estimateOneRepMaxEpley } from '../workout/one-rep-max.estimate';
 import { ProgressRange } from './dto/progress-range.enum';
 import { RosterWindow } from './dto/roster.query.dto';
 
@@ -47,6 +50,57 @@ export interface ProgressOverview {
   /** Lifetime, not windowed — used to pick the empty/near-empty state. */
   lifetimeWorkouts: number;
 }
+
+/** `GET /progress/exercises/:id` and its coach twin. */
+export interface ExerciseHistory {
+  exercise: Exercise;
+  /** Oldest first so the sparkline reads left to right. */
+  oneRepMaxSeries: Array<{
+    weightKg: number;
+    recordedAt: Date;
+    source: string;
+  }>;
+  /** Newest first, capped at 100. */
+  sessions: Array<{
+    workoutLogId: string;
+    performedAt: Date;
+    workoutName: string;
+    setCount: number;
+    topWeightKg: number | null;
+    topReps: number | null;
+    bestDurationSeconds: number | null;
+    bestDistanceMeters: number | null;
+  }>;
+}
+
+/**
+ * Whose logs a progress read covers, and which of them.
+ *
+ *   assignmentIds === null → every completed log of `userId`: the
+ *     trainee reading their own progress, or a coach the client shares
+ *     off-plan training with.
+ *   assignmentIds = [...]  → only logs started from one of these
+ *     assignments: a coach whose client has not shared off-plan work.
+ *     Freestyle sessions, self-scheduled plans and other coaches' plans
+ *     all fall outside it. Empty means nothing is visible.
+ *
+ * The allow-list comes from CoachAccessService, the same rule the
+ * coach's log history uses, so the numbers and the logs behind them
+ * cannot disagree.
+ */
+interface LogScope {
+  userId: string;
+  assignmentIds: string[] | null;
+}
+
+/** One point of an estimated-1RM progression. */
+interface OneRepMaxPoint {
+  weightKg: number;
+  recordedAt: Date;
+}
+
+/** How many recent records the overview shows. */
+const RECENT_RECORDS_LIMIT = 10;
 
 export interface RosterClient {
   clientId: string;
@@ -109,6 +163,7 @@ export interface RosterSummary {
 export class ProgressService {
   constructor(
     @InjectModel(Exercise) private readonly exerciseModel: typeof Exercise,
+    private readonly coachAccess: CoachAccessService,
     private readonly sequelize: Sequelize,
     @Inject(WINSTON_MODULE_NEST_PROVIDER)
     private readonly logger: LoggerService,
@@ -120,19 +175,85 @@ export class ProgressService {
     /** The reader's language, for the exercise names of recent records. */
     locale: Locale = DEFAULT_LOCALE,
   ): Promise<ProgressOverview> {
+    return this._overview({ userId, assignmentIds: null }, range, locale);
+  }
+
+  /**
+   * A coach reading one client's overview: the trainee's own screen,
+   * computed over only the logs this coach may read. 404 unless the
+   * caller is the client's ACTIVE coach.
+   */
+  async overviewForCoach(
+    instructorId: string,
+    clientId: string,
+    range: ProgressRange,
+    /** The coach's language, for the exercise names of recent records. */
+    locale: Locale = DEFAULT_LOCALE,
+  ): Promise<ProgressOverview> {
+    const scope = await this._coachScope(instructorId, clientId);
+    return this._overview(scope, range, locale);
+  }
+
+  /**
+   * Every session of one exercise, newest first, with the top set of
+   * each. This is where the stored 1RM history pays off.
+   */
+  async exerciseHistory(
+    userId: string,
+    exerciseId: string,
+  ): Promise<ExerciseHistory> {
+    return this._exerciseHistory({ userId, assignmentIds: null }, exerciseId);
+  }
+
+  /**
+   * A coach reading one client's history for one exercise, scoped like
+   * `overviewForCoach`. The relationship is checked before the exercise,
+   * so a stranger learns nothing from the exercise id either.
+   */
+  async exerciseHistoryForCoach(
+    instructorId: string,
+    clientId: string,
+    exerciseId: string,
+  ): Promise<ExerciseHistory> {
+    const scope = await this._coachScope(instructorId, clientId);
+    return this._exerciseHistory(scope, exerciseId);
+  }
+
+  private async _coachScope(
+    instructorId: string,
+    clientId: string,
+  ): Promise<LogScope> {
+    return {
+      userId: clientId,
+      assignmentIds: await this.coachAccess.readableAssignmentIds(
+        instructorId,
+        clientId,
+      ),
+    };
+  }
+
+  private async _overview(
+    scope: LogScope,
+    range: ProgressRange,
+    locale: Locale,
+  ): Promise<ProgressOverview> {
     const days = RANGE_DAYS[range];
 
     const [totals, previous, weekly, daily, records, lifetime, weeks] =
       await Promise.all([
-        this._totals(userId, days, 0),
-        this._totals(userId, days, days),
-        this._weeklyVolume(userId, days),
-        this._dailyActivity(userId, days),
-        this._recentRecords(userId, locale),
-        this._lifetimeWorkouts(userId),
+        this._totals(scope, days, 0),
+        this._totals(scope, days, days),
+        this._weeklyVolume(scope, days),
+        this._dailyActivity(scope, days),
+        // A restricted coach gets records rebuilt from the logs they may
+        // read; see `_derivedOneRepMaxSeries` for why not one_rep_max.
+        scope.assignmentIds === null
+          ? this._recentRecords(scope.userId, locale)
+          : this._derivedRecentRecords(scope, locale),
+        this._lifetimeWorkouts(scope),
         // Streaks look past the window on purpose: a 9-week run is still
         // a 9-week run when you are looking at the last 4 weeks.
-        this._activeWeeks(userId),
+        this._activeWeeks(scope),
       ]);
 
     return {
@@ -147,11 +268,10 @@ export class ProgressService {
     };
   }
 
-  /**
-   * Every session of one exercise, newest first, with the top set of
-   * each. This is where the stored 1RM history pays off.
-   */
-  async exerciseHistory(userId: string, exerciseId: string) {
+  private async _exerciseHistory(
+    scope: LogScope,
+    exerciseId: string,
+  ): Promise<ExerciseHistory> {
     const exercise = await this.exerciseModel.findByPk(exerciseId, {
       attributes: [
         'id',
@@ -164,6 +284,7 @@ export class ProgressService {
     });
     if (!exercise) throw new NotFoundException(apiError('exercise.notFound'));
 
+    const scoped = this._scopeFilter(scope, 'wl.program_assignment_id');
     const sessions = await this.sequelize.query<{
       workoutLogId: string;
       performedAt: Date;
@@ -193,38 +314,20 @@ export class ProgressService {
         AND le.exercise_id = :exerciseId
         AND ls.is_completed = TRUE
         AND wl.status = 'COMPLETED'
+        ${scoped.sql}
       GROUP BY wl.id, wl.completed_at, wl.started_at, wl.name
       ORDER BY "performedAt" DESC
       LIMIT 100
       `,
       {
-        replacements: { userId, exerciseId },
+        replacements: { userId: scope.userId, exerciseId, ...scoped.params },
         type: QueryTypes.SELECT,
       },
     );
 
-    const oneRepMaxes = await this.sequelize.query<{
-      weightKg: string;
-      recordedAt: Date;
-      source: string;
-    }>(
-      `
-      SELECT weight_kg AS "weightKg", recorded_at AS "recordedAt", source
-      FROM one_rep_max
-      WHERE user_id = :userId AND exercise_id = :exerciseId
-      ORDER BY recorded_at ASC
-      `,
-      { replacements: { userId, exerciseId }, type: QueryTypes.SELECT },
-    );
-
     return {
       exercise,
-      // Oldest first so the sparkline reads left to right.
-      oneRepMaxSeries: oneRepMaxes.map((r) => ({
-        weightKg: Number(r.weightKg),
-        recordedAt: r.recordedAt,
-        source: r.source,
-      })),
+      oneRepMaxSeries: await this._oneRepMaxSeries(scope, exerciseId),
       sessions: sessions.map((s) => ({
         workoutLogId: s.workoutLogId,
         performedAt: s.performedAt,
@@ -481,8 +584,32 @@ export class ProgressService {
 
   // ── Internals ────────────────────────────────────────────────────
 
+  /**
+   * The scope as a WHERE fragment on the given workout_log column, plus
+   * the replacements it binds. Empty for an unrestricted read, so the
+   * trainee's own queries run unfiltered exactly as before. An empty
+   * allow-list matches nothing: a coach who assigned nothing has nothing
+   * to see, and `IN ()` is not valid SQL anyway.
+   *
+   * `column` is always a literal from this file, never input.
+   */
+  private _scopeFilter(
+    scope: LogScope,
+    column: string,
+  ): { sql: string; params: { assignmentIds?: string[] } } {
+    if (scope.assignmentIds === null) return { sql: '', params: {} };
+    if (scope.assignmentIds.length === 0) {
+      return { sql: 'AND FALSE', params: {} };
+    }
+    return {
+      sql: `AND ${column} IN (:assignmentIds)`,
+      params: { assignmentIds: scope.assignmentIds },
+    };
+  }
+
   /** `offsetDays` shifts the window back, for period-on-period deltas. */
-  private async _totals(userId: string, days: number, offsetDays: number) {
+  private async _totals(scope: LogScope, days: number, offsetDays: number) {
+    const scoped = this._scopeFilter(scope, 'program_assignment_id');
     const [row] = await this.sequelize.query<{
       workouts: string;
       volumeKg: string | null;
@@ -497,6 +624,7 @@ export class ProgressService {
           AND status = 'COMPLETED'
           AND COALESCE(completed_at, started_at) >= NOW() - (:fromDays || ' days')::INTERVAL
           AND COALESCE(completed_at, started_at) <  NOW() - (:toDays || ' days')::INTERVAL
+          ${scoped.sql}
       ),
       sets AS (
         SELECT
@@ -516,9 +644,10 @@ export class ProgressService {
       `,
       {
         replacements: {
-          userId,
+          userId: scope.userId,
           fromDays: days + offsetDays,
           toDays: offsetDays,
+          ...scoped.params,
         },
         type: QueryTypes.SELECT,
       },
@@ -532,7 +661,8 @@ export class ProgressService {
     };
   }
 
-  private async _weeklyVolume(userId: string, days: number) {
+  private async _weeklyVolume(scope: LogScope, days: number) {
+    const scoped = this._scopeFilter(scope, 'wl.program_assignment_id');
     const rows = await this.sequelize.query<{
       weekStart: Date;
       volumeKg: string | null;
@@ -550,10 +680,14 @@ export class ProgressService {
       WHERE wl.user_id = :userId
         AND wl.status = 'COMPLETED'
         AND COALESCE(wl.completed_at, wl.started_at) >= NOW() - (:days || ' days')::INTERVAL
+        ${scoped.sql}
       GROUP BY 1
       ORDER BY 1 ASC
       `,
-      { replacements: { userId, days }, type: QueryTypes.SELECT },
+      {
+        replacements: { userId: scope.userId, days, ...scoped.params },
+        type: QueryTypes.SELECT,
+      },
     );
 
     return rows.map((r) => ({
@@ -563,7 +697,8 @@ export class ProgressService {
     }));
   }
 
-  private async _dailyActivity(userId: string, days: number) {
+  private async _dailyActivity(scope: LogScope, days: number) {
+    const scoped = this._scopeFilter(scope, 'program_assignment_id');
     const rows = await this.sequelize.query<{ day: Date; workouts: string }>(
       `
       SELECT
@@ -573,10 +708,14 @@ export class ProgressService {
       WHERE user_id = :userId
         AND status = 'COMPLETED'
         AND COALESCE(completed_at, started_at) >= NOW() - (:days || ' days')::INTERVAL
+        ${scoped.sql}
       GROUP BY 1
       ORDER BY 1 ASC
       `,
-      { replacements: { userId, days }, type: QueryTypes.SELECT },
+      {
+        replacements: { userId: scope.userId, days, ...scoped.params },
+        type: QueryTypes.SELECT,
+      },
     );
 
     return rows.map((r) => ({
@@ -586,16 +725,21 @@ export class ProgressService {
   }
 
   /** Distinct ISO weeks with at least one completed workout, newest first. */
-  private async _activeWeeks(userId: string): Promise<string[]> {
+  private async _activeWeeks(scope: LogScope): Promise<string[]> {
+    const scoped = this._scopeFilter(scope, 'program_assignment_id');
     const rows = await this.sequelize.query<{ weekStart: Date }>(
       `
       SELECT DISTINCT
         DATE_TRUNC('week', COALESCE(completed_at, started_at))::DATE AS "weekStart"
       FROM workout_log
       WHERE user_id = :userId AND status = 'COMPLETED'
+        ${scoped.sql}
       ORDER BY 1 DESC
       `,
-      { replacements: { userId }, type: QueryTypes.SELECT },
+      {
+        replacements: { userId: scope.userId, ...scoped.params },
+        type: QueryTypes.SELECT,
+      },
     );
     return rows.map((r) => this._isoDate(r.weekStart));
   }
@@ -649,11 +793,16 @@ export class ProgressService {
     return { currentWeeks: current, bestWeeks: best };
   }
 
-  private async _lifetimeWorkouts(userId: string): Promise<number> {
+  private async _lifetimeWorkouts(scope: LogScope): Promise<number> {
+    const scoped = this._scopeFilter(scope, 'program_assignment_id');
     const [row] = await this.sequelize.query<{ total: string }>(
       `SELECT COUNT(*) AS "total" FROM workout_log
-       WHERE user_id = :userId AND status = 'COMPLETED'`,
-      { replacements: { userId }, type: QueryTypes.SELECT },
+       WHERE user_id = :userId AND status = 'COMPLETED'
+       ${scoped.sql}`,
+      {
+        replacements: { userId: scope.userId, ...scoped.params },
+        type: QueryTypes.SELECT,
+      },
     );
     return Number(row?.total ?? 0);
   }
@@ -696,24 +845,235 @@ export class ProgressService {
       JOIN exercise e ON e.id = r.exercise_id
       WHERE r.rn = 1
       ORDER BY r.recorded_at DESC
-      LIMIT 10
+      LIMIT :limit
       `,
-      { replacements: { userId, locale }, type: QueryTypes.SELECT },
+      {
+        replacements: { userId, locale, limit: RECENT_RECORDS_LIMIT },
+        type: QueryTypes.SELECT,
+      },
     );
 
-    return rows.map((r) => {
-      const weightKg = Number(r.weightKg);
-      const prior = r.priorKg == null ? null : Number(r.priorKg);
-      return {
-        exerciseId: r.exerciseId,
-        exerciseName: r.exerciseName,
-        weightKg,
-        recordedAt: r.recordedAt.toISOString(),
-        // A first-ever lift is a record in full, not an improvement of 0.
-        deltaKg:
-          prior == null ? weightKg : Math.round((weightKg - prior) * 100) / 100,
-      };
+    return rows.map((r) =>
+      this._toRecord(
+        r.exerciseId,
+        r.exerciseName,
+        Number(r.weightKg),
+        r.recordedAt,
+        r.priorKg == null ? null : Number(r.priorKg),
+      ),
+    );
+  }
+
+  private _toRecord(
+    exerciseId: string,
+    exerciseName: string,
+    weightKg: number,
+    recordedAt: Date,
+    priorKg: number | null,
+  ): ProgressOverview['records'][number] {
+    return {
+      exerciseId,
+      exerciseName,
+      weightKg,
+      recordedAt: recordedAt.toISOString(),
+      // A first-ever lift is a record in full, not an improvement of 0.
+      deltaKg:
+        priorKg == null
+          ? weightKg
+          : Math.round((weightKg - priorKg) * 100) / 100,
+    };
+  }
+
+  /**
+   * 1RM history for one exercise, oldest first so the sparkline reads
+   * left to right. The stored history for an unrestricted read; for a
+   * restricted coach, the progression rebuilt from visible logs (see
+   * `_derivedOneRepMaxSeries`).
+   */
+  private async _oneRepMaxSeries(
+    scope: LogScope,
+    exerciseId: string,
+  ): Promise<ExerciseHistory['oneRepMaxSeries']> {
+    if (scope.assignmentIds !== null) {
+      const derived = await this._derivedOneRepMaxSeries(scope, exerciseId);
+      return (derived.get(exerciseId) ?? []).map((p) => ({
+        weightKg: p.weightKg,
+        recordedAt: p.recordedAt,
+        // Rebuilt the way the completion flow writes its rows.
+        source: OneRepMaxSource.EstimatedEpley,
+      }));
+    }
+
+    const rows = await this.sequelize.query<{
+      weightKg: string;
+      recordedAt: Date;
+      source: string;
+    }>(
+      `
+      SELECT weight_kg AS "weightKg", recorded_at AS "recordedAt", source
+      FROM one_rep_max
+      WHERE user_id = :userId AND exercise_id = :exerciseId
+      ORDER BY recorded_at ASC
+      `,
+      {
+        replacements: { userId: scope.userId, exerciseId },
+        type: QueryTypes.SELECT,
+      },
+    );
+    return rows.map((r) => ({
+      weightKg: Number(r.weightKg),
+      recordedAt: r.recordedAt,
+      source: r.source,
+    }));
+  }
+
+  /**
+   * `_recentRecords` for a restricted coach: the latest point of each
+   * exercise's rebuilt progression, the improvement measured against the
+   * point before it, newest first.
+   */
+  private async _derivedRecentRecords(scope: LogScope, locale: Locale) {
+    const series = await this._derivedOneRepMaxSeries(scope);
+
+    const latest = [...series]
+      .map(([exerciseId, points]) => ({
+        exerciseId,
+        last: points[points.length - 1],
+        priorKg: points.length > 1 ? points[points.length - 2].weightKg : null,
+      }))
+      .sort((a, b) => b.last.recordedAt.getTime() - a.last.recordedAt.getTime())
+      .slice(0, RECENT_RECORDS_LIMIT);
+    if (latest.length === 0) return [];
+
+    const names = await this.sequelize.query<{ id: string; name: string }>(
+      `
+      SELECT id, COALESCE(translations -> :locale ->> 'name', name) AS "name"
+      FROM exercise
+      WHERE id IN (:ids)
+      `,
+      {
+        replacements: { ids: latest.map((r) => r.exerciseId), locale },
+        type: QueryTypes.SELECT,
+      },
+    );
+    const nameById = new Map(names.map((n) => [n.id, n.name]));
+
+    return latest.flatMap((r) => {
+      const name = nameById.get(r.exerciseId);
+      // Same as the inner JOIN on exercise in `_recentRecords`.
+      if (name === undefined) return [];
+      return [
+        this._toRecord(
+          r.exerciseId,
+          name,
+          r.last.weightKg,
+          r.last.recordedAt,
+          r.priorKg,
+        ),
+      ];
     });
+  }
+
+  /**
+   * Estimated-1RM progression per exercise, oldest first, rebuilt from
+   * only the logs in `scope`. Used for a restricted coach instead of the
+   * one_rep_max table.
+   *
+   * Why not filter one_rep_max: its rows carry no link to the log they
+   * came from, and MANUAL / TESTED entries come from no log at all. Even
+   * the auto-estimated rows are written only when a session beats the
+   * client's best across *all* their training, so whether a row exists
+   * for an on-plan session, and what its delta is measured against,
+   * depends on their off-plan lifting. Any filter over that table would
+   * leak hidden training through which rows are missing.
+   *
+   * So this replays what the completion flow does (`_writePrsFromLog` in
+   * WorkoutLogService): the best Epley estimate per session per
+   * exercise, kept when it beats the best before it, recorded at the
+   * session's completion time. Same estimate function, so on-plan
+   * numbers match the client's own to the decimal, but "the best before
+   * it" only ever means an earlier visible session. Nothing outside the
+   * allow-list can move a number. Manual and tested 1RMs stay with the
+   * client unless they share off-plan work.
+   */
+  private async _derivedOneRepMaxSeries(
+    scope: LogScope,
+    exerciseId?: string,
+  ): Promise<Map<string, OneRepMaxPoint[]>> {
+    const scoped = this._scopeFilter(scope, 'wl.program_assignment_id');
+    const rows = await this.sequelize.query<{
+      workoutLogId: string;
+      exerciseId: string;
+      performedAt: Date;
+      reps: number;
+      weightKg: string;
+    }>(
+      `
+      -- The heaviest completed set per session, exercise and rep count.
+      -- At a fixed rep count the estimate only grows with the load, so
+      -- these are the only sets that can be a session's best; the
+      -- estimate itself is taken in code by the shared function.
+      SELECT
+        wl.id                                    AS "workoutLogId",
+        le.exercise_id                           AS "exerciseId",
+        COALESCE(wl.completed_at, wl.started_at) AS "performedAt",
+        ls.reps                                  AS "reps",
+        MAX(ls.weight_kg)                        AS "weightKg"
+      FROM workout_log wl
+      JOIN logged_exercise le ON le.workout_log_id = wl.id
+      JOIN logged_set ls      ON ls.logged_exercise_id = le.id AND ls.is_completed = TRUE
+      WHERE wl.user_id = :userId
+        AND wl.status = 'COMPLETED'
+        AND le.exercise_id IS NOT NULL
+        ${exerciseId ? 'AND le.exercise_id = :exerciseId' : ''}
+        AND ls.reps IS NOT NULL
+        AND ls.weight_kg IS NOT NULL
+        ${scoped.sql}
+      GROUP BY wl.id, le.exercise_id, wl.completed_at, wl.started_at, ls.reps
+      ORDER BY "performedAt" ASC, wl.id ASC
+      `,
+      {
+        replacements: {
+          userId: scope.userId,
+          ...(exerciseId ? { exerciseId } : {}),
+          ...scoped.params,
+        },
+        type: QueryTypes.SELECT,
+      },
+    );
+
+    // Best estimate per (exercise, session). Rows arrive in session
+    // order, so insertion order is session order too.
+    const sessionBest = new Map<
+      string,
+      { exerciseId: string; recordedAt: Date; best: number }
+    >();
+    for (const r of rows) {
+      const est = estimateOneRepMaxEpley(r.reps, Number(r.weightKg));
+      if (est == null) continue;
+      const key = `${r.exerciseId}:${r.workoutLogId}`;
+      const cur = sessionBest.get(key);
+      if (!cur) {
+        sessionBest.set(key, {
+          exerciseId: r.exerciseId,
+          recordedAt: r.performedAt,
+          best: est,
+        });
+      } else if (est > cur.best) {
+        cur.best = est;
+      }
+    }
+
+    // A session is a record when it beats every earlier visible one.
+    const series = new Map<string, OneRepMaxPoint[]>();
+    for (const s of sessionBest.values()) {
+      const points = series.get(s.exerciseId) ?? [];
+      const prior = points.length ? points[points.length - 1].weightKg : 0;
+      if (s.best <= prior) continue;
+      points.push({ weightKg: s.best, recordedAt: s.recordedAt });
+      series.set(s.exerciseId, points);
+    }
+    return series;
   }
 
   private _isoDate(d: Date | string): string {

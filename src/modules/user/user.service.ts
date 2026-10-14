@@ -30,6 +30,7 @@ import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { CryptoService } from '../../common/services';
 import { apiError } from '../../common/i18n';
+import { escapeLikeWildcards } from '../../common/utils/search.utils';
 import { CloudinaryService } from '../../common/services/cloudinary.service';
 import { InstructorProfile } from '../profile/entities/instructor-profile.entity';
 import { GroupMember } from '../group/entities/group-member.entity';
@@ -164,9 +165,10 @@ export class UserService {
   }
 
   /**
-   * Search active users by partial match on email, first name, or last name.
-   * Intended for pickers like "invite a client" — always case-insensitive,
-   * always capped at 20 results, never returns sensitive fields.
+   * Search active users by partial match on name or handle, or by their
+   * whole email address. Intended for pickers like "invite a client":
+   * always case-insensitive, always capped at 20 results, never returns
+   * the email or any other private field.
    *
    * @param params.q - Partial match (min 2 chars). Matched via ILIKE.
    * @param params.role - Optional role name filter (e.g. 'USER').
@@ -185,7 +187,6 @@ export class UserService {
   }): Promise<
     Array<{
       id: string;
-      email: string;
       firstName: string | null;
       lastName: string | null;
       avatarUrl: string | null;
@@ -201,7 +202,22 @@ export class UserService {
     // columns. Split on whitespace and require every token to match
     // somewhere, so tokens may land in different columns. Capped so a pasted
     // paragraph can't turn into a hundred-predicate query.
-    const tokens = term.split(/\s+/).filter(Boolean).slice(0, 5);
+    // A leading "@" is how the result row shows a handle, so it is how
+    // people type one back.
+    const tokens = term
+      .split(/\s+/)
+      .map((token) => token.replace(/^@/, ''))
+      .filter(Boolean)
+      .slice(0, 5);
+
+    // An email is private (privacy_settings defaults it to ONLY_ME), so it
+    // is never returned and never matched in part: "elena.d" must not
+    // confirm whose address starts that way. The whole address still finds
+    // its owner, which is how a coach adds someone they already know.
+    // Stored lowercase, so this is an equality on the unique index.
+    const exactEmail = /^[^\s@]+@[^\s@]+$/.test(term)
+      ? term.toLowerCase()
+      : null;
 
     const notInUserIds: string[] = [];
     if (params.excludeUserId) notInUserIds.push(params.excludeUserId);
@@ -240,7 +256,7 @@ export class UserService {
     }
 
     // One token matches if it appears in any searchable column. `handle` is
-    // in the list because the result row displays it — searching what you
+    // in the list because the result row displays it: searching what you
     // were just shown used to return nobody. The concatenated full name
     // catches "elena dum" as a single token too.
     const fullName = fn(
@@ -250,10 +266,9 @@ export class UserService {
       col('User.last_name'),
     );
     const tokenMatches = tokens.map((token) => {
-      const like = `%${token}%`;
+      const like = `%${escapeLikeWildcards(token)}%`;
       return {
         [Op.or]: [
-          { email: { [Op.iLike]: like } },
           { firstName: { [Op.iLike]: like } },
           { lastName: { [Op.iLike]: like } },
           { handle: { [Op.iLike]: like } },
@@ -265,7 +280,9 @@ export class UserService {
     const where: Record<string, unknown> = {
       isActive: true,
       [Op.and]: [
-        ...tokenMatches,
+        exactEmail
+          ? { [Op.or]: [{ email: exactEmail }, { [Op.and]: tokenMatches }] }
+          : { [Op.and]: tokenMatches },
         // Hard block: users with staff roles (admin/super/support) never
         // appear in pickers, regardless of any other role they carry.
         literal(
@@ -297,14 +314,7 @@ export class UserService {
     const rows = await this.userModel.findAll({
       where,
       include,
-      attributes: [
-        'id',
-        'email',
-        'firstName',
-        'lastName',
-        'avatarUrl',
-        'handle',
-      ],
+      attributes: ['id', 'firstName', 'lastName', 'avatarUrl', 'handle'],
       limit,
       order: [
         ['firstName', 'ASC'],
@@ -314,7 +324,6 @@ export class UserService {
 
     return rows.map((u) => ({
       id: u.id,
-      email: u.email,
       firstName: u.firstName,
       lastName: u.lastName,
       avatarUrl: u.avatarUrl,

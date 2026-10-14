@@ -51,7 +51,7 @@ describe('ProgramAssignmentService (smoke — not exhaustive)', () => {
     findAll: jest.fn(),
     count: jest.fn(),
   };
-  const assignedExerciseModel = { create: jest.fn() };
+  const assignedExerciseModel = { create: jest.fn(), findAll: jest.fn() };
   const assignedSetModel = { bulkCreate: jest.fn() };
   const programModel = { findByPk: jest.fn() };
   const instructorClientModel = { findOne: jest.fn() };
@@ -513,11 +513,11 @@ describe('ProgramAssignmentService (smoke — not exhaustive)', () => {
       expect(assignmentModel.create).not.toHaveBeenCalled();
     });
 
-    it('does not back-fill before the start date', async () => {
-      // 2026-06-11 is a Thursday; mapping to Mon/Wed would put week 0 in the
-      // past. The grid is anchored on the start week's Monday, so those
-      // sessions sit earlier in the same week — which is the program's own
-      // shape, not a back-fill of a week that already happened.
+    it('never schedules a session before the start date', async () => {
+      // 2026-06-11 is a Thursday; Mon/Wed of that week are already behind
+      // it. Those sessions used to land there anyway, in the past, where the
+      // nightly auto-skip marked them skipped before the client saw them.
+      // The whole plan moves a week instead, in its own order.
       setup();
 
       await service.assignProgramToClient(me, 'Coach Co.', {
@@ -528,7 +528,68 @@ describe('ProgramAssignmentService (smoke — not exhaustive)', () => {
       });
 
       const dates = scheduled().map((w) => w.date);
-      expect(dates).toEqual(['2026-06-08', '2026-06-10', '2026-06-15']);
+      expect(dates).toEqual(['2026-06-15', '2026-06-17', '2026-06-22']);
+      expect(assignmentModel.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          startDate: '2026-06-11',
+          endDate: '2026-06-22',
+        }),
+        expect.anything(),
+      );
+    });
+
+    it('keeps the start week when every session is on or after the start', async () => {
+      // Thursday start, Thu/Sat picked: nothing lands early, nothing moves.
+      setup();
+
+      await service.assignProgramToClient(me, 'Coach Co.', {
+        programId: 'prog-1',
+        clientId: 'c-1',
+        startDate: '2026-06-11',
+        daysOfWeek: [4, 6],
+      });
+
+      expect(scheduled().map((w) => w.date)).toEqual([
+        '2026-06-11',
+        '2026-06-13',
+        '2026-06-18',
+      ]);
+    });
+
+    it('assigns a one-session routine to a weekday earlier than the start', async () => {
+      // The 500 this fixes: a routine's only session on Monday, assigned on
+      // a Wednesday, ended two days before it started and the table's
+      // date-order check refused the row. It now lands the next Monday.
+      const routine = twoDayProgram();
+      routine.workouts = [routine.workouts[0]];
+      programModel.findByPk.mockResolvedValueOnce(routine);
+      instructorClientModel.findOne.mockResolvedValueOnce({
+        id: 'ic-1',
+        status: InstructorClientStatus.ACTIVE,
+      });
+      userModel.findByPk.mockResolvedValueOnce({
+        id: 'c-1',
+        firstName: 'Cli',
+        lastName: 'Ent',
+      });
+      assignmentModel.create.mockResolvedValueOnce({ id: 'pa-1' });
+      assignedWorkoutModel.create.mockResolvedValue({ id: 'aw-x' });
+
+      await service.assignProgramToClient(me, 'Coach Co.', {
+        programId: 'prog-1',
+        clientId: 'c-1',
+        startDate: '2026-06-10', // Wednesday
+        daysOfWeek: [1],
+      });
+
+      expect(scheduled().map((w) => w.date)).toEqual(['2026-06-15']);
+      expect(assignmentModel.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          startDate: '2026-06-10',
+          endDate: '2026-06-15',
+        }),
+        expect.anything(),
+      );
     });
   });
 
@@ -784,6 +845,8 @@ describe('ProgramAssignmentService (smoke — not exhaustive)', () => {
           estimatedDurationMinutes: 50,
         },
       ]);
+      const squat = { id: 'ae-1', exercise: { name: 'Back squat' }, sets: [] };
+      assignedExerciseModel.findAll.mockResolvedValueOnce([squat]);
 
       const res = await service.getTrainingDay('me', '2026-08-06');
 
@@ -792,6 +855,12 @@ describe('ProgramAssignmentService (smoke — not exhaustive)', () => {
       // render "from Alex" without a second lookup.
       expect(res.today?.planName).toBe('12-week base');
       expect(res.week).toHaveLength(2);
+      // Only today carries its exercises; the week strip stays lean.
+      expect(res.today?.exercises).toEqual([squat]);
+      expect(assignedExerciseModel.findAll.mock.calls[0][0].where).toEqual({
+        assignedWorkoutId: 'aw-1',
+      });
+      expect(res.week[1]).not.toHaveProperty('exercises');
     });
 
     it('reports a rest day as null, not as the next workout', async () => {
@@ -813,6 +882,7 @@ describe('ProgramAssignmentService (smoke — not exhaustive)', () => {
 
       expect(res.today).toBeNull();
       expect(res.week).toHaveLength(1);
+      expect(assignedExerciseModel.findAll).not.toHaveBeenCalled();
     });
   });
 
