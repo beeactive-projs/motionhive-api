@@ -47,19 +47,4 @@ export const UserDocs = {
       ApiStandardResponses.Unauthorized,
     ],
   } as ApiEndpointOptions,
-
-  deleteAccount: {
-    summary: 'Delete account (GDPR)',
-    description:
-      'Soft-delete your account. Account is deactivated and data is preserved for the legally required retention period.',
-    auth: true,
-    responses: [
-      {
-        status: 200,
-        description: 'Account deleted',
-        example: { message: 'Account deleted successfully' },
-      },
-      ApiStandardResponses.Unauthorized,
-    ],
-  } as ApiEndpointOptions,
 };

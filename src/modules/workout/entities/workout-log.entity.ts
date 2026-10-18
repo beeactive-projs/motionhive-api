@@ -79,6 +79,17 @@ export class WorkoutLog extends Model {
   @Column({ type: DataType.INTEGER, allowNull: true })
   declare durationSeconds: number | null;
 
+  /** When the current pause began; null while the clock is running. */
+  @Column({ type: DataType.DATE, allowNull: true })
+  declare pausedAt: Date | null;
+
+  /**
+   * Every finished pause, summed. The duration and the live clock both
+   * subtract it, so time spent away is not counted as training.
+   */
+  @Column({ type: DataType.INTEGER, allowNull: false, defaultValue: 0 })
+  declare pausedSeconds: number;
+
   @Column({ type: DataType.TEXT, allowNull: true })
   declare notes: string | null;
 

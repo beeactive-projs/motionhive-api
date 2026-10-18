@@ -324,6 +324,7 @@ Rows in `payment_consent` are NEVER deleted, including under GDPR erasure.
 | `payment_intent.payment_failed` | PaymentService | Upsert `payment` (failed) |
 | `charge.refunded` | PaymentService | Update `payment.amount_refunded_cents` |
 | `charge.dispute.created` | DisputeService | Flag + notify instructor |
+| `charge.dispute.updated` / `charge.dispute.closed` | DisputeService | Refresh status + deadline of a tracked dispute (never creates one). Add both to the endpoint's events in the Stripe dashboard. |
 | `payout.paid` | ConnectService | Optional — notify instructor |
 | `payout.failed` | ConnectService | Alert instructor |
 

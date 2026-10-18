@@ -123,6 +123,7 @@ describe('Messaging IDOR — non-participant access', () => {
             emitMessageDeleted: jest.fn(),
             emitConversationRead: jest.fn(),
             emitConversationMuted: jest.fn(),
+            emitConversationUnread: jest.fn(),
           },
         },
         { provide: WINSTON_MODULE_NEST_PROVIDER, useValue: makeSilentLogger() },
@@ -179,6 +180,13 @@ describe('Messaging IDOR — non-participant access', () => {
   it('markRead: non-participant gets 404, no update is issued', async () => {
     await expect(
       service.markRead(NON_PARTICIPANT, SOMEONE_ELSES_CONVO),
+    ).rejects.toBeInstanceOf(NotFoundException);
+    expect(part.update).not.toHaveBeenCalled();
+  });
+
+  it('markUnread: non-participant gets 404, no update is issued', async () => {
+    await expect(
+      service.markUnread(NON_PARTICIPANT, SOMEONE_ELSES_CONVO),
     ).rejects.toBeInstanceOf(NotFoundException);
     expect(part.update).not.toHaveBeenCalled();
   });

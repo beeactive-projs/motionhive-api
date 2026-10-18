@@ -225,4 +225,18 @@ export const AuthDocs = {
       ApiStandardResponses.Unauthorized,
     ],
   } as ApiEndpointOptions,
+
+  restoreAccount: {
+    summary: 'Keep an account scheduled for deletion',
+    description:
+      'During the 30-day cooling-off, signing in (password, Google or Facebook) answers 403 with `code: ACCOUNT_SCHEDULED_FOR_DELETION`, a `restoreTicket` and `scheduledFor`. Posting that ticket here cancels the deletion, reactivates the account and signs it in. Subscriptions, sessions and groups ended at the request stay ended.',
+    responses: [
+      {
+        status: 200,
+        description: 'Account kept and signed in (same body as login)',
+      },
+      ApiStandardResponses.BadRequest,
+      ApiStandardResponses.TooManyRequests,
+    ],
+  } as ApiEndpointOptions,
 };

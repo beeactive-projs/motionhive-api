@@ -103,6 +103,23 @@ export function clientInvitationReceived(
   };
 }
 
+/**
+ * Client: their coach closed their MotionHive account. The plans the coach
+ * assigned are copies, so they stay; the message says so. Lands on the
+ * coaches tab, where the coach is no longer listed.
+ */
+export function coachLeftForClient(
+  clientId: string,
+  coachName: string | null,
+): NotifyParams {
+  return {
+    userId: clientId,
+    type: NotificationType.COACH_LEFT,
+    message: { key: 'client.coachLeft', params: { name: coachName } },
+    data: { screen: 'profile', queryParams: { tab: 'coaches' } },
+  };
+}
+
 /** Instructor — client ended the coaching relationship. */
 export function clientRelationshipEndedForInstructor(
   instructorId: string,

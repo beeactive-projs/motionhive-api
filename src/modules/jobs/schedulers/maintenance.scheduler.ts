@@ -42,4 +42,11 @@ export class MaintenanceScheduler {
   async cleanupClientRequests(): Promise<void> {
     await this.daily('maintenance.cleanup_client_requests');
   }
+
+  // 04:40 UTC whatever the server's zone: account deletion gives people
+  // this exact time as their erasure date (ERASURE_RUN_UTC).
+  @Cron('0 40 4 * * *', { timeZone: 'UTC' })
+  async eraseAccounts(): Promise<void> {
+    await this.daily('maintenance.erase_accounts');
+  }
 }

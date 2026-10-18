@@ -856,6 +856,50 @@ export class WorkoutLogService {
   }
 
   // ────────────────────────────────────────────────────────────────────
+  // Pause / resume
+  // ────────────────────────────────────────────────────────────────────
+
+  /**
+   * Stop the workout's clock while the person is away from it. Pausing
+   * an already paused workout keeps the original start of the pause.
+   */
+  async pause(workoutLogId: string, userId: string): Promise<WorkoutLog> {
+    const log = await this._loadOwnedLog(workoutLogId, userId);
+    if (log.status !== WorkoutLogStatus.InProgress) {
+      throw new BadRequestException(
+        apiError('workout.cannotEditNotInProgress'),
+      );
+    }
+    if (!log.pausedAt) await log.update({ pausedAt: new Date() });
+    return log;
+  }
+
+  /** Start the clock again, folding the pause into `pausedSeconds`. */
+  async resume(workoutLogId: string, userId: string): Promise<WorkoutLog> {
+    const log = await this._loadOwnedLog(workoutLogId, userId);
+    if (log.status !== WorkoutLogStatus.InProgress) {
+      throw new BadRequestException(
+        apiError('workout.cannotEditNotInProgress'),
+      );
+    }
+    if (log.pausedAt) {
+      await log.update({
+        pausedAt: null,
+        pausedSeconds: this._pausedSecondsAt(log, new Date()),
+      });
+    }
+    return log;
+  }
+
+  /** Paused time up to `at`, counting a pause still open at that moment. */
+  private _pausedSecondsAt(log: WorkoutLog, at: Date): number {
+    const open = log.pausedAt
+      ? Math.max(0, Math.round((at.getTime() - log.pausedAt.getTime()) / 1000))
+      : 0;
+    return (log.pausedSeconds ?? 0) + open;
+  }
+
+  // ────────────────────────────────────────────────────────────────────
   // Discard
   // ────────────────────────────────────────────────────────────────────
 
@@ -945,9 +989,12 @@ export class WorkoutLogService {
     }
 
     const completedAt = new Date();
+    // Finishing from a pause ends the pause there: it was not training.
+    const pausedSeconds = this._pausedSecondsAt(log, completedAt);
     const durationSeconds = Math.max(
       0,
-      Math.round((completedAt.getTime() - log.startedAt.getTime()) / 1000),
+      Math.round((completedAt.getTime() - log.startedAt.getTime()) / 1000) -
+        pausedSeconds,
     );
 
     await this.sequelize.transaction(async (tx) => {
@@ -956,6 +1003,8 @@ export class WorkoutLogService {
           status: WorkoutLogStatus.Completed,
           completedAt,
           durationSeconds,
+          pausedAt: null,
+          pausedSeconds,
           ...(dto.feelingRating !== undefined && {
             feelingRating: dto.feelingRating,
           }),
@@ -1549,6 +1598,8 @@ export class WorkoutLogService {
         'id',
         'name',
         'startedAt',
+        'pausedAt',
+        'pausedSeconds',
         'assignedWorkoutId',
         'programAssignmentId',
       ],

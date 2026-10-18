@@ -106,6 +106,8 @@ import { PaymentPublicController } from './payment-public.controller';
   exports: [
     StripeService,
     CustomerService,
+    // Account deletion ends subscriptions on both sides through it.
+    SubscriptionService,
     PaymentRemindersService,
     BalanceCacheService,
     DisputeService,

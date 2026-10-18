@@ -27,4 +27,8 @@ export const client = {
     title: 'Coaching ended',
     body: '{name, select, null {A client} other {{name}}} ended the coaching relationship.',
   },
+  coachLeft: {
+    title: 'Your coach left MotionHive',
+    body: '{name, select, null {Your coach} other {{name}}} closed their MotionHive account. The plans they gave you stay in your account.',
+  },
 };

@@ -719,6 +719,23 @@ export function dataCard(rows: string): string {
 }
 
 /**
+ * A one-time code, shown large and spaced so it reads at a glance and is
+ * easy to type on a phone. Digits only: anything else is dropped rather
+ * than rendered, so a caller can never smuggle markup through it.
+ */
+export function codeBlock(code: string): string {
+  const digits = code.replace(/[^0-9]/g, '');
+  return `
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:0 0 20px;">
+      <tr>
+        <td align="center" style="background-color:${COLORS.honey50};border:1px solid ${COLORS.honey100};border-radius:12px;padding:18px 12px;">
+          <span style="font-family:'SFMono-Regular',Menlo,Consolas,'Courier New',monospace;font-size:32px;font-weight:700;letter-spacing:0.3em;color:${COLORS.navy900};">${digits}</span>
+        </td>
+      </tr>
+    </table>`;
+}
+
+/**
  * Person card — avatar + name + role. Use in the Incoming Request
  * category to put a face on the request.
  *

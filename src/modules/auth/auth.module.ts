@@ -4,6 +4,7 @@ import { PassportModule } from '@nestjs/passport';
 import { SequelizeModule } from '@nestjs/sequelize';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { AuthService } from './auth.service';
+import { AccountDeletionModule } from '../account-deletion/account-deletion.module';
 import { AuthController } from './auth.controller';
 import { JwtStrategy } from './strategies/jwt.strategy';
 import { RefreshToken } from './entities/refresh-token.entity';
@@ -25,6 +26,8 @@ import { EmailVerifierService } from '../../common/services/email-verifier.servi
     // link any guest stripe_customer rows to a newly-registered user
     // on every signup path (email/password, Google, Facebook).
     PaymentModule,
+    // Every sign-in checks for a deletion in its cooling-off.
+    AccountDeletionModule,
     SequelizeModule.forFeature([RefreshToken]),
     JwtModule.registerAsync({
       imports: [ConfigModule],

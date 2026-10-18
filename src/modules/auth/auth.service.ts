@@ -32,6 +32,7 @@ import { CustomerService } from '../payment/services/customer.service';
 import { EmailService } from '../../common/services/email.service';
 import { CryptoService } from '../../common/services/crypto.service';
 import { EmailVerifierService } from '../../common/services/email-verifier.service';
+import { AccountDeletionService } from '../account-deletion/account-deletion.service';
 import {
   ClientRequest,
   ClientRequestStatus,
@@ -81,6 +82,7 @@ export class AuthService {
     private readonly emailService: EmailService,
     private readonly cryptoService: CryptoService,
     private readonly emailVerifier: EmailVerifierService,
+    private readonly accountDeletionService: AccountDeletionService,
     @Inject(WINSTON_MODULE_NEST_PROVIDER)
     private readonly logger: LoggerService,
   ) {}
@@ -224,6 +226,11 @@ export class AuthService {
 
       throw new UnauthorizedException(apiError('auth.invalidCredentials'));
     }
+
+    // Only now that the password is proven: an account in its deletion
+    // cooling-off answers with the offer to keep it instead of tokens.
+    // Asking earlier would tell anyone the account is being deleted.
+    await this.accountDeletionService.assertSignInAllowed(user);
 
     await this.userService.resetFailedAttempts(user);
     await user.update({ lastLoginAt: new Date() });
@@ -848,16 +855,17 @@ export class AuthService {
     profile: OAuthProfile,
   ) {
     const transaction = await this.sequelize.transaction();
+    let found: Awaited<ReturnType<UserService['findOrCreateFromOAuth']>>;
     try {
-      const { user, isNewUser } = await this.userService.findOrCreateFromOAuth(
+      found = await this.userService.findOrCreateFromOAuth(
         provider,
         profile,
         transaction,
       );
 
-      if (isNewUser) {
+      if (found.isNewUser) {
         await this.roleService.assignRoleToUserByName(
-          user.id,
+          found.user.id,
           'USER',
           undefined,
           undefined,
@@ -866,37 +874,63 @@ export class AuthService {
       }
 
       await transaction.commit();
-
-      // Link any pre-existing guest stripe_customer rows. Only on the
-      // new-user path — existing users have either already been linked
-      // at first signup OR are covered by the one-time backfill.
-      if (isNewUser) {
-        this.linkGuestStripeCustomers(user.id, user.email);
-      }
-
-      const tokens = await this.generateAndStoreTokens(user.id, user.email);
-      const roles = await this.roleService.getUserRoles(user.id);
-      const roleNames = roles.map((r) => r.name);
-
-      this.logger.log(
-        `User signed in with ${provider}: ${user.email}`,
-        'AuthService',
-      );
-
-      return {
-        ...tokens,
-        user: {
-          id: user.id,
-          email: user.email,
-          firstName: user.firstName,
-          lastName: user.lastName,
-          isEmailVerified: user.isEmailVerified,
-          roles: roleNames,
-        },
-      };
     } catch (error) {
       await transaction.rollback();
       throw error;
     }
+
+    // Everything below runs after the commit, outside the try: a throw here
+    // must not try to roll back a finished transaction.
+    const { user, isNewUser } = found;
+
+    // The provider vouched for them: an account in its deletion cooling-off
+    // answers with the offer to keep it instead of tokens.
+    if (!isNewUser) {
+      await this.accountDeletionService.assertSignInAllowed(user);
+    }
+
+    // Link any pre-existing guest stripe_customer rows. Only on the
+    // new-user path — existing users have either already been linked
+    // at first signup OR are covered by the one-time backfill.
+    if (isNewUser) {
+      this.linkGuestStripeCustomers(user.id, user.email);
+    }
+
+    const tokens = await this.generateAndStoreTokens(user.id, user.email);
+    const roles = await this.roleService.getUserRoles(user.id);
+    const roleNames = roles.map((r) => r.name);
+
+    this.logger.log(
+      `User signed in with ${provider}: ${user.email}`,
+      'AuthService',
+    );
+
+    return {
+      ...tokens,
+      user: {
+        id: user.id,
+        email: user.email,
+        firstName: user.firstName,
+        lastName: user.lastName,
+        isEmailVerified: user.isEmailVerified,
+        roles: roleNames,
+      },
+    };
+  }
+
+  /**
+   * Keep an account scheduled for deletion and sign it in, given the ticket
+   * a sign-in answered with during the cooling-off.
+   */
+  async restoreAccount(ticket: string) {
+    const user = await this.accountDeletionService.restore(ticket);
+    await user.update({ lastLoginAt: new Date() });
+
+    const tokens = await this.generateAndStoreTokens(user.id, user.email);
+    const roles = await this.roleService.getUserRoles(user.id);
+    const roleNames = roles.map((role) => role.name);
+
+    this.logger.log(`Account kept and signed in: ${user.email}`, 'AuthService');
+    return this.buildAuthResponse(user, tokens, roleNames);
   }
 }

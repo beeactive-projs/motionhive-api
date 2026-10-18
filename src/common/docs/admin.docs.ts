@@ -53,6 +53,22 @@ export const AdminDocs = {
     auth: true,
     responses: [{ status: 200, description: 'Updated role list' }],
   },
+  scheduleUserDeletion: {
+    summary: 'Delete an account on an emailed request',
+    description:
+      'For someone who asked by email to delete their account. `requestEmail` must be the account sign-in email the request came from. Same as confirming in the app: deactivates now, winds down, emails the person, erases within 30 days. ADMIN+ (audited).',
+    auth: true,
+    responses: [
+      { status: 201, description: 'Updated user detail, with the deletion' },
+      { status: 400, description: 'requestEmail is not the sign-in email' },
+      { status: 404, description: 'User not found' },
+      {
+        status: 409,
+        description:
+          'Already scheduled, or a payment dispute needs their answer',
+      },
+    ],
+  },
   restoreUser: {
     summary: 'Restore deleted user',
     description: 'Undo a soft-delete (paranoid restore). SUPER_ADMIN only.',

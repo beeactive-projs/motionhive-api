@@ -2,6 +2,7 @@ import { Inject } from '@nestjs/common';
 import type { LoggerService } from '@nestjs/common';
 import { Processor } from '@nestjs/bullmq';
 import { WINSTON_MODULE_NEST_PROVIDER } from 'nest-winston';
+import { AccountErasureService } from '../../../account-deletion/account-erasure.service';
 import { MaintenanceService } from '../../../maintenance/maintenance.service';
 import { JobHandler, MultiJobWorker } from '../../common/multi-job.worker';
 import { QueueName } from '../../job-registry';
@@ -16,6 +17,7 @@ export class MaintenanceWorker extends MultiJobWorker {
     @Inject(WINSTON_MODULE_NEST_PROVIDER)
     logger: LoggerService,
     private readonly maintenance: MaintenanceService,
+    private readonly accountErasure: AccountErasureService,
   ) {
     super(logger);
   }
@@ -36,6 +38,12 @@ export class MaintenanceWorker extends MultiJobWorker {
     cleanup_client_requests: async (_p, ctx) => {
       const r = await this.maintenance.expireStaleClientRequests(new Date());
       ctx.log.log(`client requests expired=${r.expired}`);
+    },
+    erase_accounts: async (_p, ctx) => {
+      const r = await this.accountErasure.runDaily(new Date());
+      ctx.log.log(
+        `accounts erased=${r.erased} failed=${r.failed} kept=${r.kept} wind-downs finished=${r.woundDown}`,
+      );
     },
   };
 }

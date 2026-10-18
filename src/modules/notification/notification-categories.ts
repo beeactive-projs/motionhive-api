@@ -100,6 +100,7 @@ export const TYPE_TO_CATEGORY: Record<NotificationType, NotificationCategory> =
     [NotificationType.CLIENT_INVITATION_RECEIVED]:
       NotificationCategory.Coaching,
     [NotificationType.CLIENT_RELATIONSHIP_ENDED]: NotificationCategory.Coaching,
+    [NotificationType.COACH_LEFT]: NotificationCategory.Coaching,
 
     // Groups
     [NotificationType.GROUP_INVITATION_RECEIVED]: NotificationCategory.Groups,
@@ -108,6 +109,7 @@ export const TYPE_TO_CATEGORY: Record<NotificationType, NotificationCategory> =
     [NotificationType.GROUP_MEMBER_JOINED]: NotificationCategory.Groups,
     [NotificationType.GROUP_MEMBER_LEFT]: NotificationCategory.Groups,
     [NotificationType.GROUP_MEMBER_REMOVED]: NotificationCategory.Groups,
+    [NotificationType.GROUP_CLOSED]: NotificationCategory.Groups,
     [NotificationType.GROUP_MEMBER_ROLE_CHANGED]: NotificationCategory.Groups,
     [NotificationType.GROUP_OWNERSHIP_TRANSFERRED]: NotificationCategory.Groups,
     [NotificationType.GROUP_JOIN_REQUEST_RECEIVED]: NotificationCategory.Groups,

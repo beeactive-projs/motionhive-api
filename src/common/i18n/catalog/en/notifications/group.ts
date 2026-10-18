@@ -7,6 +7,10 @@ export const group = {
     title: 'Removed from group',
     body: 'You\'ve been removed from {group, select, null {a group} other {"{group}"}}.',
   },
+  closed: {
+    title: 'A group was closed',
+    body: '{group, select, null {A group you were in} other {"{group}"}} was closed because the person who ran it left MotionHive.',
+  },
   joinRequestReceived: {
     title: 'New request to join your group',
     body: '{name, select, null {Someone} other {{name}}} requested to join{group, select, null {} other { "{group}"}}.',

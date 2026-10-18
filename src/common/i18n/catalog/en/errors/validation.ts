@@ -11,6 +11,7 @@ export const validation = {
     'Password must contain at least 8 characters, including uppercase, lowercase, number, and special character (!@#$%^&*...).',
   dateInPast: 'Choose a date and time in the future.',
   invalidEmail: 'Enter a valid email address.',
+  invalidCode: 'Enter the 6-digit code from the email.',
   invalidPhone:
     'Enter the phone number with the country code, for example +40712345678.',
   invalidHandle:

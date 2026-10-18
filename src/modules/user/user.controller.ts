@@ -3,7 +3,6 @@ import {
   Get,
   Post,
   Patch,
-  Delete,
   Body,
   Query,
   UseGuards,
@@ -30,7 +29,9 @@ import { apiError } from '../../common/i18n';
  * Handles user-related endpoints:
  * - GET    /users/me → Get current user profile
  * - PATCH  /users/me → Update user core fields
- * - DELETE /users/me → Delete account (GDPR)
+ *
+ * Deleting the account lives in AccountDeletionModule (/users/me/deletion):
+ * a code, a wind-down and a 30-day cooling-off, not a one-call soft delete.
  *
  * All endpoints require JWT authentication.
  */
@@ -153,16 +154,5 @@ export class UserController {
   })
   async exportData(@Request() req: AuthenticatedRequest) {
     return this.userService.exportUserData(req.user.id);
-  }
-
-  /**
-   * Delete account (GDPR - soft delete)
-   */
-  @Delete('me')
-  @Throttle({ default: { limit: 1, ttl: 3600000 } })
-  @ApiEndpoint(UserDocs.deleteAccount)
-  async deleteAccount(@Request() req: AuthenticatedRequest) {
-    await this.userService.deleteAccount(req.user.id);
-    return { message: 'Account deleted successfully' };
   }
 }

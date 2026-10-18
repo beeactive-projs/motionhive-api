@@ -727,6 +727,88 @@ describe('WorkoutLogService (smoke — not exhaustive)', () => {
       expect(args.durationSeconds).toBeGreaterThanOrEqual(60);
       expect(args.feelingRating).toBe(4);
     });
+
+    // Time spent paused was not training: past pauses and one still open
+    // at Finish both come off the duration.
+    it('leaves paused time out of durationSeconds', async () => {
+      const now = Date.now();
+      const update = jest.fn().mockResolvedValue(undefined);
+      const log = {
+        id: 'wl-1',
+        userId: 'me',
+        status: WorkoutLogStatus.InProgress,
+        startedAt: new Date(now - 3_600_000), // an hour ago
+        pausedSeconds: 1_200, // 20 min paused earlier
+        pausedAt: new Date(now - 600_000), // and paused for the last 10
+        programAssignmentId: null,
+        assignedWorkoutId: null,
+        update,
+      };
+      logModel.findByPk.mockResolvedValueOnce(log);
+
+      await service.complete('wl-1', {}, 'me');
+
+      const args = update.mock.calls[0][0];
+      expect(args.durationSeconds).toBeGreaterThanOrEqual(1_799);
+      expect(args.durationSeconds).toBeLessThanOrEqual(1_801);
+      expect(args.pausedAt).toBeNull();
+      expect(args.pausedSeconds).toBeGreaterThanOrEqual(1_799);
+    });
+  });
+
+  describe('pause and resume', () => {
+    const openLog = (fields: Record<string, unknown> = {}) => ({
+      id: 'wl-1',
+      userId: 'me',
+      status: WorkoutLogStatus.InProgress,
+      pausedAt: null,
+      pausedSeconds: 0,
+      update: jest.fn().mockResolvedValue(undefined),
+      ...fields,
+    });
+
+    it('stamps pausedAt on a running workout', async () => {
+      const log = openLog();
+      logModel.findByPk.mockResolvedValueOnce(log);
+      await service.pause('wl-1', 'me');
+      expect(log.update).toHaveBeenCalledWith({ pausedAt: expect.any(Date) });
+    });
+
+    it('keeps the original start of a pause when paused again', async () => {
+      const log = openLog({ pausedAt: new Date(Date.now() - 60_000) });
+      logModel.findByPk.mockResolvedValueOnce(log);
+      await service.pause('wl-1', 'me');
+      expect(log.update).not.toHaveBeenCalled();
+    });
+
+    it('folds the pause into pausedSeconds on resume', async () => {
+      const log = openLog({
+        pausedAt: new Date(Date.now() - 90_000),
+        pausedSeconds: 30,
+      });
+      logModel.findByPk.mockResolvedValueOnce(log);
+      await service.resume('wl-1', 'me');
+      const args = log.update.mock.calls[0][0];
+      expect(args.pausedAt).toBeNull();
+      expect(args.pausedSeconds).toBeGreaterThanOrEqual(119);
+      expect(args.pausedSeconds).toBeLessThanOrEqual(121);
+    });
+
+    it('does nothing when resuming a running workout', async () => {
+      const log = openLog();
+      logModel.findByPk.mockResolvedValueOnce(log);
+      await service.resume('wl-1', 'me');
+      expect(log.update).not.toHaveBeenCalled();
+    });
+
+    it('refuses to pause a finished workout', async () => {
+      logModel.findByPk.mockResolvedValueOnce(
+        openLog({ status: WorkoutLogStatus.Completed }),
+      );
+      await expect(service.pause('wl-1', 'me')).rejects.toThrow(
+        BadRequestException,
+      );
+    });
   });
 
   // ─── Epley 1RM estimate ──────────────────────────────────────────

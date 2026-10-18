@@ -1,4 +1,7 @@
-import type { NotifyParams } from '../notification/notification.service';
+import type {
+  NotifyManyParams,
+  NotifyParams,
+} from '../notification/notification.service';
 import { NotificationType } from '../notification/notification.service';
 import { GroupMemberRole } from './entities/group-member.entity';
 
@@ -39,6 +42,21 @@ export function groupMemberLeft(
       params: { name: memberName, group: group.name },
     },
     data: { screen: 'groups', entityId: group.id },
+  };
+}
+
+/**
+ * Members: the group closed because its owner closed their account. The
+ * group is gone, so this lands on the list.
+ *
+ * Returns `NotifyManyParams` (no `userId`): the caller fans out to every
+ * member at once via notifyMany.
+ */
+export function groupClosedForMembers(group: GroupRef): NotifyManyParams {
+  return {
+    type: NotificationType.GROUP_CLOSED,
+    message: { key: 'group.closed', params: { group: group.name } },
+    data: { screen: 'groups' },
   };
 }
 

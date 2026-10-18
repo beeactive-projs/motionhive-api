@@ -32,7 +32,36 @@ export class DisputeService {
     dispute: Stripe.Dispute,
     tx: Transaction,
     outbox?: NotificationOutbox,
+    /**
+     * For `charge.dispute.updated` / `.closed`: refresh a dispute we already
+     * track, never create one. A first sighting on a later event must not
+     * announce "dispute opened" for something that may be long settled.
+     */
+    opts: { onlyExisting?: boolean } = {},
   ): Promise<void> {
+    const existing = await this.disputeModel.findOne({
+      where: { stripeDisputeId: dispute.id },
+      transaction: tx,
+    });
+    if (!existing && opts.onlyExisting) return;
+
+    const dueBy = dispute.evidence_details?.due_by
+      ? new Date(dispute.evidence_details.due_by * 1000)
+      : null;
+
+    if (existing) {
+      // Status / deadline can change across dispute.updated events.
+      await existing.update(
+        {
+          status: dispute.status,
+          evidenceDueBy: dueBy,
+          reason: dispute.reason ?? null,
+        },
+        { transaction: tx },
+      );
+      return;
+    }
+
     const chargeId =
       typeof dispute.charge === 'string' ? dispute.charge : dispute.charge?.id;
     if (!chargeId) {
@@ -48,28 +77,6 @@ export class DisputeService {
       // Race / out-of-band: the originating payment row isn't here yet.
       // Orphan → reconciliation sweep revisits once it appears.
       throw new OrphanedWebhookError('charge', chargeId);
-    }
-
-    const dueBy = dispute.evidence_details?.due_by
-      ? new Date(dispute.evidence_details.due_by * 1000)
-      : null;
-
-    const existing = await this.disputeModel.findOne({
-      where: { stripeDisputeId: dispute.id },
-      transaction: tx,
-    });
-
-    if (existing) {
-      // Status / deadline can change across dispute.updated events.
-      await existing.update(
-        {
-          status: dispute.status,
-          evidenceDueBy: dueBy,
-          reason: dispute.reason ?? null,
-        },
-        { transaction: tx },
-      );
-      return;
     }
 
     const created = await this.disputeModel.create(

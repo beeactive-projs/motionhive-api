@@ -197,6 +197,25 @@ export class WorkoutLogController {
     await this.workoutLogService.discard(id, req.user.id);
   }
 
+  /** Stop the clock while away; finishing or resuming ends the pause. */
+  @Post('workout-logs/:id/pause')
+  @HttpCode(200)
+  async pause(
+    @Request() req: AuthenticatedRequest,
+    @Param('id', ParseUUIDPipe) id: string,
+  ) {
+    return this.workoutLogService.pause(id, req.user.id);
+  }
+
+  @Post('workout-logs/:id/resume')
+  @HttpCode(200)
+  async resume(
+    @Request() req: AuthenticatedRequest,
+    @Param('id', ParseUUIDPipe) id: string,
+  ) {
+    return this.workoutLogService.resume(id, req.user.id);
+  }
+
   @Post('workout-logs/:id/complete')
   async complete(
     @Request() req: AuthenticatedRequest,

@@ -19,6 +19,7 @@ describe('MaintenanceScheduler', () => {
     ['cleanupLockouts', 'maintenance.cleanup_lockouts'],
     ['cleanupInvitations', 'maintenance.cleanup_invitations'],
     ['cleanupClientRequests', 'maintenance.cleanup_client_requests'],
+    ['eraseAccounts', 'maintenance.erase_accounts'],
   ])('%s enqueues %s with a deterministic jobId', async (method, jobName) => {
     await (scheduler as unknown as Record<string, () => Promise<void>>)[
       method

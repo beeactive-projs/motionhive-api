@@ -71,6 +71,21 @@ describe('messaging stream ticket', () => {
       expect(userService.findById).not.toHaveBeenCalled();
     });
 
+    it('refuses an account-restore ticket too', async () => {
+      // Any narrow token is refused, not just the stream one: a restore
+      // ticket is minted for a deactivated account and opens one route.
+      const strategy = new JwtStrategy(configService, userService, roleService);
+      const ticket = jwtService.sign({
+        sub: 'u-1',
+        typ: TokenTypes.ACCOUNT_RESTORE,
+      });
+
+      await expect(
+        strategy.validate(jwtService.verify<JwtPayload>(ticket)),
+      ).rejects.toBeInstanceOf(UnauthorizedException);
+      expect(userService.findById).not.toHaveBeenCalled();
+    });
+
     it('still accepts a normal access token', async () => {
       const strategy = new JwtStrategy(configService, userService, roleService);
       (userService.findById as jest.Mock).mockResolvedValue({
@@ -113,6 +128,19 @@ describe('messaging stream ticket', () => {
 
       await expect(
         strategy().validate(req({}), payload),
+      ).rejects.toBeInstanceOf(UnauthorizedException);
+    });
+
+    it('refuses an account-restore ticket, however it arrives', async () => {
+      const payload = jwtService.verify<JwtPayload>(
+        jwtService.sign({ sub: 'u-1', typ: TokenTypes.ACCOUNT_RESTORE }),
+      );
+
+      await expect(
+        strategy().validate(req({ ticket: 'x' }), payload),
+      ).rejects.toBeInstanceOf(UnauthorizedException);
+      await expect(
+        strategy().validate(req({ token: 'x' }), payload),
       ).rejects.toBeInstanceOf(UnauthorizedException);
     });
 

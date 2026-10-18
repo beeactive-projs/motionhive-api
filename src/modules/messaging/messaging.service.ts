@@ -9,7 +9,7 @@ import {
 import { InjectModel } from '@nestjs/sequelize';
 import { WINSTON_MODULE_NEST_PROVIDER } from 'nest-winston';
 import { randomUUID } from 'crypto';
-import { col, fn, Op, UniqueConstraintError } from 'sequelize';
+import { col, fn, Op, Transaction, UniqueConstraintError } from 'sequelize';
 import { Sequelize } from 'sequelize-typescript';
 import {
   buildPaginatedResponse,
@@ -49,6 +49,11 @@ export interface ConversationListItem {
   lastMessagePreview: string | null;
   unreadCount: number;
   muted: boolean;
+  /**
+   * The caller marked the thread unread ("come back to this"). Independent
+   * of `unreadCount`, which only counts real unread messages.
+   */
+  markedUnread: boolean;
   /**
    * For DIRECT conversations only: the *other* participant. null for groups.
    */
@@ -495,6 +500,7 @@ export class MessagingService {
           plaintext.length > 200 ? plaintext.slice(0, 200) : plaintext,
         unreadCount: 0,
         muted: false,
+        markedUnread: false,
         otherUser: {
           id: recipient.id,
           firstName: recipient.firstName,
@@ -635,7 +641,7 @@ export class MessagingService {
   async getUnreadCount(userId: string): Promise<{ count: number }> {
     const participants = await this.participantModel.findAll({
       where: { userId, leftAt: null },
-      attributes: ['conversationId', 'lastReadAt'],
+      attributes: ['conversationId', 'lastReadAt', 'markedUnread'],
     });
 
     if (participants.length === 0) {
@@ -654,6 +660,13 @@ export class MessagingService {
     let total = 0;
     for (const count of byConversation.values()) {
       total += count;
+    }
+    // A thread marked unread with nothing actually unread still asks to be
+    // come back to, so it counts as one.
+    for (const p of participants) {
+      if (p.markedUnread && !byConversation.get(p.conversationId)) {
+        total += 1;
+      }
     }
 
     return { count: total };
@@ -686,6 +699,10 @@ export class MessagingService {
     // between assertParticipant and here) we still emit — the event
     // is idempotent and the FE side-effect (clear local unread) is
     // safe to repeat.
+    // Reading also answers a "mark as unread". Only rows that carry the
+    // flag are touched, so the affected count says whether the reader's
+    // other sessions need telling.
+    let clearedMark = false;
     await this.sequelize.transaction(async (tx) => {
       await this.participantModel.update(
         { lastReadAt: upTo },
@@ -694,7 +711,23 @@ export class MessagingService {
           transaction: tx,
         },
       );
+      const [cleared] = await this.participantModel.update(
+        { markedUnread: false },
+        {
+          where: { conversationId, userId, leftAt: null, markedUnread: true },
+          transaction: tx,
+        },
+      );
+      clearedMark = cleared > 0;
     });
+
+    if (clearedMark) {
+      this.emitter.emitConversationUnread([userId], {
+        conversationId,
+        userId,
+        markedUnread: false,
+      });
+    }
 
     // Tell the *other* participants the conversation was read (powers
     // future read-receipt indicators on the FE — v1 just relies on it
@@ -710,6 +743,33 @@ export class MessagingService {
     });
 
     return { lastReadAt: upTo };
+  }
+
+  /**
+   * "Mark as unread": a flag on the caller's participant row, cleared by
+   * the next mark-read. It deliberately leaves `lastReadAt` alone — moving
+   * that back would do nothing when the caller sent the last message, and
+   * would take back the read receipt the other participant already saw.
+   */
+  async markUnread(
+    userId: string,
+    conversationId: string,
+  ): Promise<{ markedUnread: true }> {
+    await this.assertParticipant(userId, conversationId);
+
+    await this.participantModel.update(
+      { markedUnread: true },
+      { where: { conversationId, userId, leftAt: null } },
+    );
+
+    // Same fan-out as mute: the actor's other sessions/tabs only.
+    this.emitter.emitConversationUnread([userId], {
+      conversationId,
+      userId,
+      markedUnread: true,
+    });
+
+    return { markedUnread: true };
   }
 
   async muteConversation(
@@ -808,6 +868,9 @@ export class MessagingService {
       deletedById: userId,
       body: this.setMessageBody(DELETED_BODY_TOMBSTONE),
     });
+    // The inbox row quoted this message if it was the latest one; without
+    // this it kept showing the deleted words.
+    await this.refreshPreview(message.conversationId);
 
     // Tell the other participants the message was removed so the FE
     // can replace it with the "[deleted]" tombstone in place.
@@ -817,6 +880,63 @@ export class MessagingService {
     });
 
     return this.toMessageView(message);
+  }
+
+  /**
+   * Account erasure: every message this person ever sent becomes the same
+   * tombstone a single delete leaves (with any metadata cleared too), and
+   * each of their conversations gets its inbox preview rebuilt from what is
+   * left, so their words survive nowhere. No live events: the account is
+   * gone, and the other side sees the tombstones on its next load.
+   *
+   * Safe to run twice. Returns how many messages it touched.
+   */
+  async eraseMessagesFrom(userId: string): Promise<number> {
+    const now = new Date();
+    return this.sequelize.transaction(async (tx) => {
+      const conversations = await this.participantModel.findAll({
+        where: { userId },
+        attributes: ['conversationId'],
+        transaction: tx,
+      });
+
+      const [count] = await this.messageModel.update(
+        {
+          deletedAt: fn('COALESCE', col('deleted_at'), now),
+          deletedById: userId,
+          body: this.setMessageBody(DELETED_BODY_TOMBSTONE),
+          metadata: null,
+        },
+        { where: { senderId: userId }, transaction: tx },
+      );
+
+      for (const { conversationId } of conversations) {
+        await this.refreshPreview(conversationId, tx);
+      }
+      return count;
+    });
+  }
+
+  /**
+   * Rebuild a conversation's inbox preview from its latest message that is
+   * still there, the way a send writes it (first 200 characters); null when
+   * none is left.
+   */
+  private async refreshPreview(
+    conversationId: string,
+    transaction?: Transaction,
+  ): Promise<void> {
+    const latest = await this.messageModel.findOne({
+      where: { conversationId, deletedAt: null },
+      order: [['createdAt', 'DESC']],
+      attributes: ['body'],
+      transaction,
+    });
+    const text = latest ? this.getMessageBody(latest.body) : null;
+    await this.conversationModel.update(
+      { lastMessagePreview: text ? text.slice(0, 200) : null },
+      { where: { id: conversationId }, transaction },
+    );
   }
 
   // =========================================================================
@@ -1089,6 +1209,7 @@ export class MessagingService {
       lastMessagePreview: conversation.lastMessagePreview,
       unreadCount,
       muted,
+      markedUnread: !!participant.markedUnread,
       otherUser,
       lastReadByOther,
     };

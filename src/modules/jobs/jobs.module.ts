@@ -4,6 +4,7 @@ import { NotificationModule } from '../notification/notification.module';
 import { SessionModule } from '../session/session.module';
 import { WorkoutModule } from '../workout/workout.module';
 import { PaymentModule } from '../payment/payment.module';
+import { AccountDeletionModule } from '../account-deletion/account-deletion.module';
 import { MaintenanceModule } from '../maintenance/maintenance.module';
 import { JobsService } from './jobs.service';
 import { QUEUE_DEFAULTS, QueueName } from './job-registry';
@@ -125,6 +126,7 @@ export class JobsModule {
         WorkoutModule,
         PaymentModule,
         MaintenanceModule,
+        AccountDeletionModule,
       ],
       providers: [
         JobsService,

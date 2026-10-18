@@ -1,3 +1,4 @@
+import { account } from './account';
 import { auth } from './auth';
 import { client } from './client';
 import { feedback } from './feedback';
@@ -20,6 +21,7 @@ import { waitlist } from './waitlist';
  * renderer escapes everything, so a tag would be shown as text.
  */
 export const email = {
+  account,
   auth,
   client,
   feedback,

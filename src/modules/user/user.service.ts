@@ -668,38 +668,6 @@ export class UserService {
   }
 
   /**
-   * Soft-delete a user account (GDPR right to erasure).
-   *
-   * Sets isActive=false and calls Sequelize's paranoid destroy(), which sets
-   * deletedAt rather than issuing a DELETE. The record is retained for audit
-   * purposes but is excluded from all normal queries automatically.
-   *
-   * Caller (AuthService) is responsible for revoking active tokens before
-   * or after this call.
-   *
-   * @param userId - The user's UUID
-   * @throws NotFoundException if no user exists with that ID
-   */
-  async deleteAccount(userId: string): Promise<void> {
-    const user = await this.findById(userId);
-    if (!user) {
-      throw new NotFoundException(apiError('user.notFound'));
-    }
-    user.isActive = false;
-    await user.save();
-    await user.destroy(); // Soft delete (paranoid: true)
-
-    // Pull the user out of the search index. We also remove the
-    // matching instructor row (keyed on userId) since they share an
-    // entity_id space — the upsertInstructor call from any future
-    // profile reactivation will put it back.
-    await this.searchIndexService.removeIfExists('user', userId);
-    await this.searchIndexService.removeIfExists('instructor', userId);
-
-    this.logger.log(`Account deleted (soft): ${userId}`, 'UserService');
-  }
-
-  /**
    * Export all data held for a user (GDPR Article 20 — Right to Data Portability).
    *
    * Collects and returns a single JSON blob containing all records linked to
@@ -749,7 +717,7 @@ export class UserService {
       }),
       SessionParticipant.findAll({
         where: { userId },
-        attributes: ['sessionId', 'status', 'checkedInAt', 'createdAt'],
+        attributes: ['instanceId', 'status', 'checkedInAt', 'createdAt'],
       }),
       InstructorClient.findAll({
         where: { [Op.or]: [{ instructorId: userId }, { clientId: userId }] },

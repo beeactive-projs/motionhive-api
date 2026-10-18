@@ -3,6 +3,7 @@ import { WINSTON_MODULE_NEST_PROVIDER } from 'nest-winston';
 import { UnrecoverableError } from 'bullmq';
 import { MaintenanceWorker } from './maintenance.worker';
 import { MaintenanceService } from '../../../maintenance/maintenance.service';
+import { AccountErasureService } from '../../../account-deletion/account-erasure.service';
 import { makeSilentLogger } from '../../../../../test/helpers/sequelize-mocks';
 
 const fakeJob = (name: string) =>
@@ -22,6 +23,11 @@ describe('MaintenanceWorker', () => {
     expireStaleInvitations: jest.fn().mockResolvedValue({ expired: 0 }),
     expireStaleClientRequests: jest.fn().mockResolvedValue({ expired: 0 }),
   };
+  const accountErasure = {
+    runDaily: jest
+      .fn()
+      .mockResolvedValue({ woundDown: 0, erased: 0, failed: 0, kept: 0 }),
+  };
 
   beforeEach(async () => {
     jest.clearAllMocks();
@@ -29,6 +35,7 @@ describe('MaintenanceWorker', () => {
       providers: [
         MaintenanceWorker,
         { provide: MaintenanceService, useValue: maintenance },
+        { provide: AccountErasureService, useValue: accountErasure },
         { provide: WINSTON_MODULE_NEST_PROVIDER, useValue: makeSilentLogger() },
       ],
     }).compile();
@@ -40,6 +47,7 @@ describe('MaintenanceWorker', () => {
     ['cleanup_lockouts', () => maintenance.clearExpiredLockouts],
     ['cleanup_invitations', () => maintenance.expireStaleInvitations],
     ['cleanup_client_requests', () => maintenance.expireStaleClientRequests],
+    ['erase_accounts', () => accountErasure.runDaily],
   ])(
     'routes %s to the right MaintenanceService method',
     async (name, getFn) => {

@@ -9,6 +9,12 @@
 export const TokenTypes = {
   /** Opens `GET /messaging/stream` and nothing else. See the ticket service. */
   STREAM_TICKET: 'messaging-stream',
+  /**
+   * Proves a password or OAuth sign-in just succeeded for an account that is
+   * scheduled for deletion, and opens `POST /auth/restore-account` and
+   * nothing else. See `AccountDeletionService.issueRestoreTicket`.
+   */
+  ACCOUNT_RESTORE: 'account-restore',
 } as const;
 
 export type TokenType = (typeof TokenTypes)[keyof typeof TokenTypes];

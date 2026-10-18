@@ -31,6 +31,12 @@ export type AuthenticatedUser = Omit<
   | 'sequelize'
 > & {
   roles: string[];
+  /**
+   * Set only when an admin is impersonating this user: the admin's id (the
+   * token's `act_as` claim). Actions that must be the person themselves,
+   * like deleting the account, refuse when it is present.
+   */
+  impersonatedBy?: string;
 };
 
 /**

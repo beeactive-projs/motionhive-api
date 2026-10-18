@@ -23,6 +23,7 @@ import { AdminUsersService } from '../services/admin-users.service';
 import { ListUsersDto } from '../dto/list-users.dto';
 import { UpdateUserStatusDto } from '../dto/update-user-status.dto';
 import { AssignRoleDto } from '../dto/assign-role.dto';
+import { ScheduleUserDeletionDto } from '../dto/schedule-user-deletion.dto';
 
 /**
  * Cross-tenant user management. Class gated to ADMIN+SUPER_ADMIN; the
@@ -73,6 +74,22 @@ export class AdminUsersController {
     @Param('id', ParseUUIDPipe) id: string,
   ) {
     return this.users.resendVerification(req.user.id, id, req.ip ?? null);
+  }
+
+  @Post(':id/deletion')
+  @Roles('ADMIN', 'SUPER_ADMIN')
+  @ApiEndpoint(AdminDocs.scheduleUserDeletion)
+  scheduleDeletion(
+    @Request() req: AuthenticatedRequest,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: ScheduleUserDeletionDto,
+  ) {
+    return this.users.scheduleDeletion(
+      req.user.id,
+      id,
+      dto.requestEmail,
+      req.ip ?? null,
+    );
   }
 
   @Post(':id/roles')

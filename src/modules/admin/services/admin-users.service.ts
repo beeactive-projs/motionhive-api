@@ -17,6 +17,7 @@ import { Role } from '../../role/entities/role.entity';
 import { UserRole } from '../../role/entities/user-role.entity';
 import { RoleService } from '../../role/role.service';
 import { AuthService } from '../../auth/auth.service';
+import { AccountDeletionService } from '../../account-deletion/account-deletion.service';
 import { User } from '../../user/entities/user.entity';
 import { InstructorProfile } from '../../profile/entities/instructor-profile.entity';
 import { Group } from '../../group/entities/group.entity';
@@ -93,6 +94,7 @@ export class AdminUsersService {
     @InjectModel(Post) private readonly postModel: typeof Post,
     private readonly roleService: RoleService,
     private readonly authService: AuthService,
+    private readonly accountDeletionService: AccountDeletionService,
     private readonly audit: AdminAuditService,
     @Inject(WINSTON_MODULE_NEST_PROVIDER)
     private readonly logger: LoggerService,
@@ -182,6 +184,7 @@ export class AdminUsersService {
       instructorProfile,
       stripeAccount,
       latestRefresh,
+      deletion,
     ] = await Promise.all([
       this.groupModel.count({ where: { instructorId: id } }),
       this.sessionInstanceModel.count({ where: { instructorId: id } }),
@@ -195,6 +198,7 @@ export class AdminUsersService {
         where: { userId: id },
         order: [['expiresAt', 'DESC']],
       }),
+      this.accountDeletionService.latestFor(id),
     ]);
 
     return {
@@ -233,6 +237,15 @@ export class AdminUsersService {
             revoked: !!latestRefresh.revokedAt,
             deviceInfo: latestRefresh.deviceInfo,
             ipAddress: latestRefresh.ipAddress,
+          }
+        : null,
+      // A deletion under way or done, so nobody acts on a request twice.
+      deletion: deletion
+        ? {
+            status: deletion.status,
+            requestedAt: deletion.requestedAt,
+            scheduledFor: deletion.scheduledFor,
+            erasedAt: deletion.erasedAt,
           }
         : null,
     };
@@ -409,6 +422,34 @@ export class AdminUsersService {
       'AdminUsersService',
     );
     return { sent: true };
+  }
+
+  /**
+   * Act on a deletion request someone emailed us: the same deactivate,
+   * wind-down and 30-day erasure as deleting in the app. The audit row
+   * keeps no email, so nothing personal outlives the erasure here.
+   */
+  async scheduleDeletion(
+    adminId: string,
+    id: string,
+    requestEmail: string,
+    ip: string | null = null,
+  ) {
+    const { scheduledFor } =
+      await this.accountDeletionService.scheduleOnRequest(id, requestEmail);
+    await this.audit.record({
+      adminUserId: adminId,
+      action: 'user.deletion.schedule',
+      targetType: 'user',
+      targetId: id,
+      meta: { scheduledFor },
+      ip,
+    });
+    this.logger.log(
+      `Admin ${adminId} scheduled deletion of user ${id} for ${scheduledFor}`,
+      'AdminUsersService',
+    );
+    return this.getUserDetail(id);
   }
 
   async restoreUser(adminId: string, id: string) {

@@ -71,6 +71,7 @@ describe('MessagingService — Stage 2 core', () => {
     emitMessageDeleted: jest.Mock;
     emitConversationRead: jest.Mock;
     emitConversationMuted: jest.Mock;
+    emitConversationUnread: jest.Mock;
     subscribeForUser: jest.Mock;
   };
   let userFindByPkSpy: jest.SpyInstance;
@@ -163,6 +164,7 @@ describe('MessagingService — Stage 2 core', () => {
       emitMessageDeleted: jest.fn(),
       emitConversationRead: jest.fn(),
       emitConversationMuted: jest.fn(),
+      emitConversationUnread: jest.fn(),
       subscribeForUser: jest.fn(),
     };
 
@@ -474,7 +476,87 @@ describe('MessagingService — Stage 2 core', () => {
       const after = Date.now();
       expect(lastReadAt.getTime()).toBeGreaterThanOrEqual(before);
       expect(lastReadAt.getTime()).toBeLessThanOrEqual(after);
+      // One write for the read position, one to clear a "mark as unread".
+      expect(part.update).toHaveBeenCalledTimes(2);
+      expect(part.update.mock.calls[0][0]).toEqual({ lastReadAt });
+    });
+
+    it('clears a "mark as unread" and tells the reader\'s other sessions', async () => {
+      part.findOne.mockResolvedValue({ id: 'p-1' });
+      part.update
+        .mockResolvedValueOnce([1]) // lastReadAt
+        .mockResolvedValueOnce([1]); // markedUnread: the row carried the flag
+
+      await service.markRead('user-1', 'conv-1');
+
+      const [values, options] = part.update.mock.calls[1];
+      expect(values).toEqual({ markedUnread: false });
+      expect(options.where).toEqual({
+        conversationId: 'conv-1',
+        userId: 'user-1',
+        leftAt: null,
+        markedUnread: true,
+      });
+      expect(emitter.emitConversationUnread).toHaveBeenCalledWith(['user-1'], {
+        conversationId: 'conv-1',
+        userId: 'user-1',
+        markedUnread: false,
+      });
+    });
+
+    it('stays quiet towards the reader when nothing was marked unread', async () => {
+      // markRead also fires on every burst of live messages; an event
+      // per read would be noise on every one of the reader's devices.
+      part.findOne.mockResolvedValue({ id: 'p-1' });
+      part.update.mockResolvedValueOnce([1]).mockResolvedValueOnce([0]);
+
+      await service.markRead('user-1', 'conv-1');
+
+      expect(emitter.emitConversationUnread).not.toHaveBeenCalled();
+    });
+  });
+
+  // ─────────────────────────── markUnread ───────────────────────────
+
+  describe('markUnread', () => {
+    it('sets the flag without moving the read position', async () => {
+      part.findOne.mockResolvedValue({ id: 'p-1' });
+
+      const result = await service.markUnread('user-1', 'conv-1');
+
+      expect(result).toEqual({ markedUnread: true });
       expect(part.update).toHaveBeenCalledTimes(1);
+      const [values, options] = part.update.mock.calls[0];
+      expect(values).toEqual({ markedUnread: true });
+      expect(options.where).toEqual({
+        conversationId: 'conv-1',
+        userId: 'user-1',
+        leftAt: null,
+      });
+      // The other participant's read receipt depends on lastReadAt.
+      expect(emitter.emitConversationRead).not.toHaveBeenCalled();
+    });
+
+    it('emits a conversation.unread SSE event to the actor only', async () => {
+      part.findOne.mockResolvedValue({ id: 'p-1' });
+
+      await service.markUnread('user-1', 'conv-1');
+
+      expect(emitter.emitConversationUnread).toHaveBeenCalledWith(['user-1'], {
+        conversationId: 'conv-1',
+        userId: 'user-1',
+        markedUnread: true,
+      });
+    });
+
+    it('404s for a non-participant', async () => {
+      safety.assertParticipant.mockRejectedValueOnce(
+        new NotFoundException('Conversation not found.'),
+      );
+      await expect(
+        service.markUnread('user-x', 'conv-1'),
+      ).rejects.toBeInstanceOf(NotFoundException);
+      expect(part.update).not.toHaveBeenCalled();
     });
 
     it('clamps a future upToIso to now() — clients cannot mark unread-by-default messages as read', async () => {
@@ -630,6 +712,28 @@ describe('MessagingService — Stage 2 core', () => {
       );
       expect(view.body).toBe('[deleted]');
       expect(view.deletedAt).not.toBeNull();
+    });
+
+    it('rebuilds the inbox preview, so the deleted words stop showing there', async () => {
+      msg.findByPk.mockResolvedValue({
+        id: 'm-2',
+        senderId: 'u',
+        conversationId: 'c-1',
+        kind: MessageKind.TEXT,
+        body: 'secret',
+        deletedAt: null,
+        createdAt: new Date(),
+        update: jest.fn().mockResolvedValue(undefined),
+      });
+      // The message before it is now the latest one left.
+      msg.findOne.mockResolvedValue({ body: 'see you Monday' });
+
+      await service.deleteOwnMessage('u', 'm-2');
+
+      expect(conv.update).toHaveBeenCalledWith(
+        { lastMessagePreview: 'see you Monday' },
+        expect.objectContaining({ where: { id: 'c-1' } }),
+      );
     });
 
     it('idempotent on already-deleted message (returns view, no update)', async () => {
@@ -1376,6 +1480,18 @@ describe('MessagingService — Stage 2 core', () => {
       expect(msg.findAll).toHaveBeenCalledTimes(1);
       // The old shape was one count() per conversation, serially.
       expect(msg.count).not.toHaveBeenCalled();
+    });
+
+    it('getUnreadCount counts a thread marked unread as one when nothing in it is unread', async () => {
+      part.findAll.mockResolvedValue([
+        { conversationId: 'c1', lastReadAt: null, markedUnread: true },
+        { conversationId: 'c2', lastReadAt: null, markedUnread: true },
+        { conversationId: 'c3', lastReadAt: null, markedUnread: false },
+      ]);
+      // c1 has real unread messages, so its mark adds nothing on top.
+      msg.findAll.mockResolvedValue([{ conversationId: 'c1', count: 3 }]);
+
+      expect(await service.getUnreadCount(me)).toEqual({ count: 4 });
     });
 
     it('getUnreadCount asks nothing further when the user has no threads', async () => {

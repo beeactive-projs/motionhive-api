@@ -268,6 +268,14 @@ export class CloudinaryService {
     }
   }
 
+  /**
+   * A person's own folder for one resource (their avatars, say). Account
+   * erasure deletes it in one prefix call; see `deleteFolder`.
+   */
+  buildUserFolder(resource: UploadContext['resource'], userId: string): string {
+    return this.buildFolder({ resource, userId });
+  }
+
   /** Path used by the per-post folder. Exposed so callers can build it
    *  without depending on the env-prefix internals. */
   buildPostFolder(userId: string, postId: string): string {

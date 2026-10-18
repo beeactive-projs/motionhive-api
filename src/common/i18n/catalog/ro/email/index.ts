@@ -1,4 +1,5 @@
 import type { Catalog } from '../..';
+import { account } from './account';
 import { auth } from './auth';
 import { client } from './client';
 import { feedback } from './feedback';
@@ -10,6 +11,7 @@ import { subscription } from './subscription';
 import { waitlist } from './waitlist';
 
 export const email: Catalog['email'] = {
+  account,
   auth,
   client,
   feedback,

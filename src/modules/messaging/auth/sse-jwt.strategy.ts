@@ -83,6 +83,12 @@ export class SseJwtStrategy extends PassportStrategy(
   async validate(req: Request, payload: JwtPayload) {
     const isTicket = payload.typ === TokenTypes.STREAM_TICKET;
 
+    // Any other narrow token (an account-restore ticket) has no business on
+    // the stream, whichever way it arrives.
+    if (payload.typ !== undefined && !isTicket) {
+      throw new UnauthorizedException();
+    }
+
     // A ticket is for the URL. Anywhere else it is a caller that could have
     // sent a real token and chose the weaker thing, so refuse it.
     if (isTicket && typeof req.query?.ticket !== 'string') {
