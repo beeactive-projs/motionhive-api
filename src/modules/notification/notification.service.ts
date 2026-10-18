@@ -206,7 +206,7 @@ export class NotificationService {
     // Pre-load user emails + languages (single query).
     const users = await this.userModel.findAll({
       where: { id: { [Op.in]: uniqueUserIds } },
-      attributes: ['id', 'email', 'firstName', 'language'],
+      attributes: ['id', 'email', 'firstName', 'language', 'isActive'],
     });
     const userById = new Map(users.map((u) => [u.id, u]));
 
@@ -222,6 +222,11 @@ export class NotificationService {
         ? { ...resolved, ...params.channelOverride }
         : resolved;
       const user = userById.get(userId);
+      // A deactivated account (closing, or switched off by support) gets
+      // nothing: no inbox row, no email, no push. Otherwise someone deleting
+      // their account would be emailed about everything it winds down, and
+      // reminders would keep reaching an account that is gone.
+      if (user?.isActive === false) continue;
 
       const { receipt, delivered } = await this.deliverToUser({
         notification,

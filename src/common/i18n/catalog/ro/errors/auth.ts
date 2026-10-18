@@ -5,6 +5,8 @@ export const auth: Catalog['errors']['auth'] = {
   accountLocked:
     'Contul tău e blocat temporar după prea multe încercări nereușite de autentificare. Încearcă din nou peste {minutes, plural, one {# minut} few {# minute} other {# de minute}}.',
   accountDeactivated: 'Acest cont a fost dezactivat.',
+  accountScheduledForDeletion:
+    'Acest cont este programat pentru ștergere pe {date}. Îl mai poți păstra.',
   noPasswordToChange:
     'Te autentifici cu Google sau Facebook, așa că nu ai o parolă de schimbat.',
   currentPasswordIncorrect: 'Parola actuală nu este corectă.',

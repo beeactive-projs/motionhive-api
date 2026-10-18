@@ -1,4 +1,4 @@
-import { UnauthorizedException } from '@nestjs/common';
+import { ForbiddenException, UnauthorizedException } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { getModelToken } from '@nestjs/sequelize';
 import { JwtService } from '@nestjs/jwt';
@@ -16,6 +16,7 @@ import { EmailService } from '../../common/services/email.service';
 import { CryptoService } from '../../common/services/crypto.service';
 import { EmailVerifierService } from '../../common/services/email-verifier.service';
 import { makeSilentLogger } from '../../../test/helpers/sequelize-mocks';
+import { AccountDeletionService } from '../account-deletion/account-deletion.service';
 
 // AuthService smoke tests — not exhaustive. The goal is to catch
 // "login is completely broken" regressions, not to re-test bcrypt.
@@ -48,6 +49,7 @@ describe('AuthService (smoke)', () => {
   let cryptoService: { hashToken: jest.Mock; generateToken: jest.Mock };
   let emailService: { sendEmailVerification: jest.Mock };
   let emailVerifier: { assertDeliverable: jest.Mock };
+  let accountDeletion: { assertSignInAllowed: jest.Mock; restore: jest.Mock };
   let configService: { get: jest.Mock };
 
   const tx = {
@@ -96,6 +98,10 @@ describe('AuthService (smoke)', () => {
     emailService = {
       sendEmailVerification: jest.fn().mockResolvedValue(undefined),
     };
+    accountDeletion = {
+      assertSignInAllowed: jest.fn().mockResolvedValue(undefined),
+      restore: jest.fn(),
+    };
     emailVerifier = {
       assertDeliverable: jest.fn().mockResolvedValue(undefined),
     };
@@ -133,6 +139,7 @@ describe('AuthService (smoke)', () => {
         { provide: EmailService, useValue: emailService },
         { provide: CryptoService, useValue: cryptoService },
         { provide: EmailVerifierService, useValue: emailVerifier },
+        { provide: AccountDeletionService, useValue: accountDeletion },
         { provide: WINSTON_MODULE_NEST_PROVIDER, useValue: makeSilentLogger() },
       ],
     }).compile();
@@ -222,6 +229,31 @@ describe('AuthService (smoke)', () => {
 
     expect(userService.incrementFailedAttempts).toHaveBeenCalledWith(userRow);
     expect(userService.resetFailedAttempts).not.toHaveBeenCalled();
+  });
+
+  it('asks about a pending deletion only once the password is proven', async () => {
+    // Asking before the password check would tell anyone with an email
+    // address that the account is being deleted.
+    userService.findByEmail.mockResolvedValue({
+      id: 'u-1',
+      email: 'jane@example.com',
+      failedLoginAttempts: 0,
+      lockedUntil: null,
+    });
+    userService.validatePassword.mockResolvedValue(false);
+    await expect(
+      service.login({ email: 'jane@example.com', password: 'wrong' }),
+    ).rejects.toBeInstanceOf(UnauthorizedException);
+    expect(accountDeletion.assertSignInAllowed).not.toHaveBeenCalled();
+
+    userService.validatePassword.mockResolvedValue(true);
+    accountDeletion.assertSignInAllowed.mockRejectedValueOnce(
+      new ForbiddenException('scheduled'),
+    );
+    await expect(
+      service.login({ email: 'jane@example.com', password: 'right' }),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+    expect(refreshTokenModel.create).not.toHaveBeenCalled();
   });
 
   it('refreshAccessToken throws when the refresh token is not in the DB (revoked)', async () => {

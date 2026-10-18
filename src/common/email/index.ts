@@ -23,6 +23,23 @@ export {
 } from './auth/password-changed.template';
 
 export {
+  accountDeletionCodeTemplate,
+  accountDeletionCodeTemplateText,
+} from './account/deletion-code.template';
+export {
+  accountDeletionScheduledTemplate,
+  accountDeletionScheduledTemplateText,
+} from './account/deletion-scheduled.template';
+export {
+  accountDeletionCancelledTemplate,
+  accountDeletionCancelledTemplateText,
+} from './account/deletion-cancelled.template';
+export {
+  accountDeletionCompletedTemplate,
+  accountDeletionCompletedTemplateText,
+} from './account/deletion-completed.template';
+
+export {
   invitationTemplate,
   invitationTemplateText,
 } from './group/invitation.template';

@@ -169,6 +169,11 @@ export interface JobPayloads {
   'maintenance.cleanup_invitations': { runKey?: string };
   /** Decline PENDING client requests past their 30-day window. */
   'maintenance.cleanup_client_requests': { runKey?: string };
+  /**
+   * Account deletion, daily at 04:40 UTC: retry unfinished wind-downs, then
+   * erase the accounts whose cooling-off has run out.
+   */
+  'maintenance.erase_accounts': { runKey?: string };
 }
 
 /**
@@ -207,6 +212,7 @@ export const ALL_JOB_NAMES: ReadonlyArray<keyof JobPayloads> = [
   'maintenance.cleanup_lockouts',
   'maintenance.cleanup_invitations',
   'maintenance.cleanup_client_requests',
+  'maintenance.erase_accounts',
 ] as const;
 
 /**
@@ -326,6 +332,11 @@ export const TRIGGERABLE_JOBS: ReadonlyArray<{
     key: 'maintenance.cleanup_client_requests',
     queue: QueueName.Maintenance,
     schedule: 'daily 04:30',
+  },
+  {
+    key: 'maintenance.erase_accounts',
+    queue: QueueName.Maintenance,
+    schedule: 'daily 04:40 UTC',
   },
 ];
 

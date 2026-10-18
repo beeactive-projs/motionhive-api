@@ -1,4 +1,5 @@
 import type { Catalog } from '../..';
+import { account } from './account';
 import { analytics } from './analytics';
 import { auth } from './auth';
 import { blog } from './blog';
@@ -22,6 +23,7 @@ import { venue } from './venue';
 import { workout } from './workout';
 
 export const errors: Catalog['errors'] = {
+  account,
   analytics,
   auth,
   blog,

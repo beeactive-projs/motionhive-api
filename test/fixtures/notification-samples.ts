@@ -129,6 +129,16 @@ export const NOTIFICATION_SAMPLES: NotificationSample[] = [
     variant: 'no name',
     build: () => client.clientRelationshipEndedForInstructor(U, null),
   },
+  {
+    audience: 'client',
+    variant: 'typical',
+    build: () => client.coachLeftForClient(U, 'Dan Ionescu'),
+  },
+  {
+    audience: 'client',
+    variant: 'no name',
+    build: () => client.coachLeftForClient(U, null),
+  },
 
   // ── session ──
   {
@@ -532,6 +542,16 @@ export const NOTIFICATION_SAMPLES: NotificationSample[] = [
     audience: 'group member',
     variant: 'no group name',
     build: () => group.groupMemberRemoved(U, G0),
+  },
+  {
+    audience: 'group member',
+    variant: 'typical',
+    build: () => group.groupClosedForMembers(G),
+  },
+  {
+    audience: 'group member',
+    variant: 'no group name',
+    build: () => group.groupClosedForMembers(G0),
   },
   {
     audience: 'group owner',

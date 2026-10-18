@@ -1,5 +1,5 @@
 import * as templates from '../../src/common/email';
-import { Locale, translate } from '../../src/common/i18n';
+import { Locale, day, translate } from '../../src/common/i18n';
 import {
   NotificationMessage,
   renderNotificationMessage,
@@ -194,6 +194,82 @@ const auth: EmailSample[] = [
     subject: (locale) =>
       translate(locale, 'email.auth.passwordChanged.subject'),
     args: (locale) => [{ ...PASSWORD_CHANGED, firstName: null, locale }],
+  }),
+];
+
+// ── account ──
+
+const DELETION_SCHEDULED_FOR = new Date('2026-11-14T03:00:00Z');
+
+const account: EmailSample[] = [
+  sample('accountDeletionCodeTemplate', {
+    name: 'account/deletion-code',
+    audience: 'client',
+    variant: 'typical',
+    subject: (locale) =>
+      translate(locale, 'email.account.deletionCode.subject'),
+    args: (locale) => [
+      {
+        firstName: ANA.first,
+        code: '482913',
+        changePasswordLink: `${APP}/auth/reset-password`,
+        locale,
+      },
+    ],
+  }),
+  sample('accountDeletionCodeTemplate', {
+    name: 'account/deletion-code:no-name',
+    audience: 'client',
+    variant: 'no name',
+    subject: (locale) =>
+      translate(locale, 'email.account.deletionCode.subject'),
+    args: (locale) => [
+      {
+        firstName: null,
+        code: '482913',
+        changePasswordLink: `${APP}/auth/reset-password`,
+        locale,
+      },
+    ],
+  }),
+  sample('accountDeletionScheduledTemplate', {
+    name: 'account/deletion-scheduled',
+    audience: 'client',
+    variant: 'typical',
+    subject: (locale) =>
+      translate(locale, 'email.account.deletionScheduled.subject', {
+        date: day(DELETION_SCHEDULED_FOR),
+      }),
+    args: (locale) => [
+      {
+        firstName: ANA.first,
+        scheduledFor: DELETION_SCHEDULED_FOR,
+        signInLink: `${APP}/auth/login`,
+        locale,
+      },
+    ],
+  }),
+  sample('accountDeletionCancelledTemplate', {
+    name: 'account/deletion-cancelled',
+    audience: 'client',
+    variant: 'typical',
+    subject: (locale) =>
+      translate(locale, 'email.account.deletionCancelled.subject'),
+    args: (locale) => [
+      {
+        firstName: ANA.first,
+        changePasswordLink: `${APP}/auth/reset-password`,
+        locale,
+      },
+    ],
+  }),
+  sample('accountDeletionCompletedTemplate', {
+    name: 'account/deletion-completed',
+    audience: 'client',
+    variant: 'typical',
+    subject: (locale) =>
+      translate(locale, 'email.account.deletionCompleted.subject'),
+    args: (locale) => [{ firstName: ANA.first, locale }],
   }),
 ];
 
@@ -1243,6 +1319,7 @@ const notification: EmailSample[] = [
 
 export const EMAIL_SAMPLES: EmailSample[] = [
   ...auth,
+  ...account,
   ...group,
   ...client,
   ...social,

@@ -37,6 +37,11 @@ import {
   SessionInstanceStatus,
 } from '../session/entities/session.enums';
 import { User, USER_SAFE_ATTRIBUTES } from '../user/entities/user.entity';
+import {
+  isFieldVisible,
+  resolveLevel,
+  type PublicProfileAudience,
+} from '../profile/profile-privacy';
 import { CreateGroupDto } from './dto/create-group.dto';
 import { DiscoverGroupsDto } from './dto/discover-groups.dto';
 import { UpdateGroupDto } from './dto/update-group.dto';
@@ -515,6 +520,8 @@ export class GroupService {
           ),
         );
     }
+
+    await this.refreshSearch(groupId);
   }
 
   // =====================================================
@@ -534,7 +541,8 @@ export class GroupService {
     page: number = 1,
     limit: number = 20,
   ) {
-    await this.assertMember(groupId, userId);
+    const requester = await this.assertMember(groupId, userId);
+    const requesterIsOwner = requester.role === GroupMemberRole.OWNER;
 
     const offset = (page - 1) * limit;
 
@@ -550,7 +558,7 @@ export class GroupService {
         include: [
           {
             model: User,
-            attributes: USER_SAFE_ATTRIBUTES,
+            attributes: [...USER_SAFE_ATTRIBUTES, 'privacySettings'],
           },
         ],
         limit,
@@ -583,7 +591,19 @@ export class GroupService {
         firstName: member.user.firstName,
         lastName: member.user.lastName,
         handle: member.user.handle ?? null,
-        email: member.user.email,
+        // Only the owner sees anyone else's email, and only as far as that
+        // person's own privacy setting allows; everyone sees their own.
+        email: this.contactFor(
+          member.user,
+          'email',
+          member.userId === userId
+            ? 'OWNER'
+            : requesterIsOwner
+              ? clientIdSet.has(member.userId)
+                ? 'COACH'
+                : 'PUBLIC'
+              : null,
+        ),
         avatarId: member.user.avatarId,
         avatarUrl: member.user.avatarUrl,
       },
@@ -679,6 +699,8 @@ export class GroupService {
           ),
         );
     }
+
+    await this.refreshSearch(groupId);
   }
 
   // =====================================================
@@ -1065,6 +1087,7 @@ export class GroupService {
         `User ${userId} self-joined group ${group.name} (${groupId})`,
         'GroupService',
       );
+      await this.refreshSearch(groupId);
       return { status: 'JOINED', member };
     }
 
@@ -1157,13 +1180,16 @@ export class GroupService {
     await this.assertOwnerAndGet(groupId, requestingUserId);
     const offset = (page - 1) * limit;
 
+    const group = await this.groupModel.findByPk(groupId, {
+      attributes: ['instructorId'],
+    });
     const { rows, count } = await this.joinRequestModel.findAndCountAll({
       where: { groupId, status: GroupJoinRequestStatus.PENDING },
       include: [
         {
           model: User,
           as: 'user',
-          attributes: USER_SAFE_ATTRIBUTES,
+          attributes: [...USER_SAFE_ATTRIBUTES, 'privacySettings'],
         },
       ],
       order: [['createdAt', 'DESC']],
@@ -1171,7 +1197,43 @@ export class GroupService {
       limit,
     });
 
-    return buildPaginatedResponse(rows, count, page, limit);
+    // The owner sees a requester's email and phone only as far as that
+    // person's privacy settings allow: their coach sees "coaches only".
+    const clients = group
+      ? await this.instructorClientModel.findAll({
+          where: {
+            instructorId: group.instructorId,
+            clientId: { [Op.in]: rows.map((r) => r.userId) },
+            status: 'ACTIVE',
+          },
+          attributes: ['clientId'],
+        })
+      : [];
+    const clientIds = new Set(clients.map((c) => c.clientId));
+
+    const data = rows.map((row) => {
+      const { user, ...request } = row.get({
+        plain: true,
+      }) as GroupJoinRequest & {
+        user?: User;
+      };
+      if (!user) return request;
+      const audience: PublicProfileAudience = clientIds.has(row.userId)
+        ? 'COACH'
+        : 'PUBLIC';
+      const { privacySettings: _settings, ...safe } = user;
+      void _settings;
+      return {
+        ...request,
+        user: {
+          ...safe,
+          email: this.contactFor(user, 'email', audience),
+          phone: this.contactFor(user, 'phone', audience),
+        },
+      };
+    });
+
+    return buildPaginatedResponse(data, count, page, limit);
   }
 
   /**
@@ -1298,6 +1360,7 @@ export class GroupService {
         );
     }
 
+    await this.refreshSearch(groupId);
     return request;
   }
 
@@ -1471,6 +1534,7 @@ export class GroupService {
       'GroupService',
     );
 
+    await this.refreshSearch(group.id);
     return member;
   }
 
@@ -1551,6 +1615,7 @@ export class GroupService {
         'GroupService',
       );
 
+      await this.refreshSearch(groupId);
       return [...reactivated, ...created];
     } catch (error) {
       await transaction.rollback();
@@ -1740,6 +1805,9 @@ export class GroupService {
         : Promise.resolve(),
     ]);
 
+    // The search doc names the owner: a stale one would drop the group from
+    // search when the previous owner deletes their account.
+    await this.refreshSearch(groupId);
     return { message: 'Ownership transferred successfully' };
   }
 
@@ -1825,6 +1893,36 @@ export class GroupService {
     if (!group) throw new NotFoundException(apiError('group.notFound'));
     await this.assertOwner(groupId, userId);
     return group;
+  }
+
+  /**
+   * Re-index a group after its members or owner changed, so search shows the
+   * right member count and owner. Best effort: the change itself already
+   * happened, and a search hiccup must not report it as failed.
+   */
+  private async refreshSearch(groupId: string): Promise<void> {
+    try {
+      await this.searchIndexService.upsertGroup(groupId);
+    } catch (err) {
+      this.logger.warn(
+        `Search refresh failed for group ${groupId}: ${err instanceof Error ? err.message : String(err)}`,
+        'GroupService',
+      );
+    }
+  }
+
+  /**
+   * A person's email or phone as the viewer may see it, by that person's own
+   * privacy setting. `null` audience: the viewer may never see it.
+   */
+  private contactFor(
+    user: Pick<User, 'email' | 'phone' | 'privacySettings'>,
+    field: 'email' | 'phone',
+    audience: PublicProfileAudience | null,
+  ): string | null {
+    if (!audience) return null;
+    const level = resolveLevel(user.privacySettings, field);
+    return isFieldVisible(level, audience) ? (user[field] ?? null) : null;
   }
 
   private async assertMember(

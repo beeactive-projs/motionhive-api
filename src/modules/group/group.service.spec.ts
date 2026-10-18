@@ -633,4 +633,60 @@ describe('GroupService', () => {
       expect(escape).toHaveBeenCalledWith('%forta%');
     });
   });
+
+  describe('getMembers: whose email anyone sees', () => {
+    const person = (
+      id: string,
+      email: string,
+      privacySettings: Record<string, string> = {},
+    ) => ({
+      userId: id,
+      role: 'MEMBER',
+      user: { id, firstName: id, lastName: '', email, privacySettings },
+    });
+
+    function members(requesterRole: 'OWNER' | 'MEMBER') {
+      memberModel.findOne.mockResolvedValue({
+        userId: 'me',
+        role: requesterRole,
+      });
+      groupModel.findByPk.mockResolvedValue({ id: 'g-1', instructorId: 'me' });
+      memberModel.findAndCountAll.mockResolvedValue({
+        rows: [
+          person('me', 'me@x.io'),
+          person('client', 'client@x.io', { email: 'COACHES_ONLY' }),
+          person('stranger', 'stranger@x.io', { email: 'COACHES_ONLY' }),
+          person('open', 'open@x.io', { email: 'PUBLIC' }),
+          person('private', 'private@x.io'),
+        ],
+        count: 5,
+      });
+      instructorClientModel.findAll.mockResolvedValue([{ clientId: 'client' }]);
+      return service.getMembers('g-1', 'me');
+    }
+
+    const emails = (page: {
+      items: Array<{ userId: string; user: { email: string | null } }>;
+    }) => Object.fromEntries(page.items.map((m) => [m.userId, m.user.email]));
+
+    it('shows the owner only what each person allows', async () => {
+      expect(emails(await members('OWNER'))).toEqual({
+        me: 'me@x.io',
+        client: 'client@x.io', // "coaches only", and the owner coaches them
+        stranger: null, // "coaches only", but not their coach
+        open: 'open@x.io',
+        private: null, // the default: only them
+      });
+    });
+
+    it("shows other members no one's email but their own", async () => {
+      expect(emails(await members('MEMBER'))).toEqual({
+        me: 'me@x.io',
+        client: null,
+        stranger: null,
+        open: null,
+        private: null,
+      });
+    });
+  });
 });

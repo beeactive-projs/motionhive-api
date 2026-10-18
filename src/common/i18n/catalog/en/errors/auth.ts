@@ -3,6 +3,8 @@ export const auth = {
   accountLocked:
     'Your account is locked after too many failed sign-in attempts. Try again in {minutes, plural, one {# minute} other {# minutes}}.',
   accountDeactivated: 'This account has been deactivated.',
+  accountScheduledForDeletion:
+    'This account is scheduled for deletion on {date}. You can still keep it.',
   noPasswordToChange:
     'You sign in with Google or Facebook, so there is no password to change.',
   currentPasswordIncorrect: 'Current password is incorrect.',

@@ -7,6 +7,7 @@ export const validation: Catalog['errors']['validation'] = {
     'Parola trebuie să aibă cel puțin 8 caractere și să conțină o literă mare, o literă mică, o cifră și un caracter special (!@#$%^&*...).',
   dateInPast: 'Alege o dată și o oră din viitor.',
   invalidEmail: 'Introdu o adresă de email validă.',
+  invalidCode: 'Introdu codul de 6 cifre din email.',
   invalidPhone:
     'Introdu numărul de telefon cu prefixul țării, de exemplu +40712345678.',
   invalidHandle:

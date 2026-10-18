@@ -70,6 +70,11 @@ export class WebhookHandlerService {
     'payment_intent.payment_failed',
     'charge.refunded',
     'charge.dispute.created',
+    // Without these the local row stayed `needs_response` for ever: the
+    // deadline cron kept reminding about settled disputes, and account
+    // deletion would have treated them as open.
+    'charge.dispute.updated',
+    'charge.dispute.closed',
     // Payouts
     'payout.paid',
     'payout.failed',
@@ -404,6 +409,16 @@ export class WebhookHandlerService {
           event.data.object,
           tx,
           outbox,
+        );
+        break;
+
+      case 'charge.dispute.updated':
+      case 'charge.dispute.closed':
+        await this.disputeService.syncFromWebhook(
+          event.data.object,
+          tx,
+          outbox,
+          { onlyExisting: true },
         );
         break;
 

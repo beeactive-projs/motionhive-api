@@ -90,6 +90,8 @@ export const NOTIFICATION_DEFAULTS: Record<
   [NotificationType.CLIENT_REQUEST_DECLINED]: IN_APP_ONLY,
   [NotificationType.CLIENT_INVITATION_RECEIVED]: IN_APP_ONLY,
   [NotificationType.CLIENT_RELATIONSHIP_ENDED]: IN_APP_ONLY,
+  // Losing your coach changes your week; worth an email, unlike a request.
+  [NotificationType.COACH_LEFT]: IN_APP_AND_EMAIL,
 
   // ── Groups & invitations ─────────────────────────────────
   // IN_APP_ONLY for the same reason as the coaching block above: every
@@ -109,6 +111,7 @@ export const NOTIFICATION_DEFAULTS: Record<
   // stays emailed — via sendGroupMemberRemovedEmail /
   // sendGroupOwnershipTransferredEmail / sendGroupRoleChangedEmail.
   [NotificationType.GROUP_MEMBER_REMOVED]: IN_APP_ONLY,
+  [NotificationType.GROUP_CLOSED]: IN_APP_ONLY,
   [NotificationType.GROUP_MEMBER_ROLE_CHANGED]: IN_APP_ONLY,
   [NotificationType.GROUP_OWNERSHIP_TRANSFERRED]: IN_APP_ONLY,
   // Join requests — owner needs to act; user wants to know the outcome.

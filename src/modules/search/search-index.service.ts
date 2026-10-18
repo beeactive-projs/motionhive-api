@@ -446,6 +446,25 @@ export class SearchIndexService {
     );
   }
 
+  /**
+   * Every doc a person appears in or owns: their user and coach rows, and
+   * the groups, sessions, posts and exercises they own. Used when an account
+   * is deactivated for deletion; `upsertUser` / `upsertInstructor` put the
+   * person back if they keep it.
+   */
+  async removeAllForUser(userId: string, tx?: Transaction): Promise<void> {
+    await this._sequelize.query(
+      `DELETE FROM search_doc
+        WHERE owner_id = :id
+           OR (entity_type IN ('user', 'instructor') AND entity_id = :id)`,
+      {
+        replacements: { id: userId },
+        transaction: tx,
+        type: QueryTypes.DELETE,
+      },
+    );
+  }
+
   // ────── Backfill ──────
 
   /**

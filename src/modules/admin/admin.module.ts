@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { SequelizeModule } from '@nestjs/sequelize';
 import { AuthModule } from '../auth/auth.module';
+import { AccountDeletionModule } from '../account-deletion/account-deletion.module';
 import { RoleModule } from '../role/role.module';
 import { PaymentModule } from '../payment/payment.module';
 // NOTE: JobsService is provided by the @Global() JobsModule (registered
@@ -63,7 +64,7 @@ import { AdminAuditService } from './services/admin-audit.service';
  * Admin module — a separate operator surface (consumed by the `admin`
  * Angular app). Purely additive: it only READS existing tables (plus its
  * own append-only impersonation audit log) and reuses RoleService /
- * AuthService. No existing module is modified.
+ * AuthService / AccountDeletionService. No existing module is modified.
  */
 @Module({
   imports: [
@@ -103,6 +104,7 @@ import { AdminAuditService } from './services/admin-audit.service';
     RoleModule,
     AuthModule,
     PaymentModule,
+    AccountDeletionModule,
   ],
   controllers: [
     AdminUsersController,

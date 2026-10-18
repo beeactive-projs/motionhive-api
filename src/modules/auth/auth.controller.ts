@@ -26,6 +26,7 @@ import { VerifyEmailDto } from './dto/verify-email.dto';
 import { ResendVerificationDto } from './dto/resend-verification.dto';
 import { GoogleAuthDto } from './dto/google-auth.dto';
 import { FacebookAuthDto } from './dto/facebook-auth.dto';
+import { RestoreAccountDto } from './dto/restore-account.dto';
 import { ApiEndpoint } from '../../common/decorators/api-response.decorator';
 import { AuthDocs } from '../../common/docs/auth.docs';
 
@@ -55,6 +56,17 @@ export class AuthController {
   @ApiEndpoint({ ...AuthDocs.login, body: LoginDto })
   async login(@Body() loginDto: LoginDto) {
     return this.authService.login(loginDto);
+  }
+
+  /**
+   * Keep an account scheduled for deletion, with the ticket a sign-in
+   * answered. Signs the person in on success.
+   */
+  @Post('restore-account')
+  @Throttle({ default: { limit: 10, ttl: 900_000 } })
+  @ApiEndpoint({ ...AuthDocs.restoreAccount, body: RestoreAccountDto })
+  async restoreAccount(@Body() dto: RestoreAccountDto) {
+    return this.authService.restoreAccount(dto.ticket);
   }
 
   @Post('refresh')

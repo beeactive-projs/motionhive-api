@@ -16,6 +16,11 @@ import { UpdateFullProfileDto } from './dto/update-full-profile.dto';
 import { DiscoverInstructorsDto } from './dto/discover-instructors.dto';
 import { UpdatePrivacySettingsDto } from './dto/update-privacy-settings.dto';
 import { UpdateHandleDto } from './dto/update-handle.dto';
+import {
+  isFieldVisible,
+  resolveLevel,
+  type PublicProfileAudience,
+} from './profile-privacy';
 import { RoleService } from '../role/role.service';
 import { UserService } from '../user/user.service';
 import {
@@ -36,48 +41,10 @@ import { ReviewService } from '../review/review.service';
 import { GroupService } from '../group/group.service';
 import { VenueService } from '../venue/venue.service';
 
-/**
- * Audience tier resolved server-side per request. Order matters: when
- * a viewer is both the owner and (logically) a coach of themselves, we
- * pick the higher-privilege tier first.
- */
-export type PublicProfileAudience = 'OWNER' | 'COACH' | 'PUBLIC';
-
-/**
- * Per-field default visibility, applied when `user.privacy_settings`
- * has no entry for the field. Kept in one table so the FE helper
- * (`resolveFieldPrivacy` in core) and the server stay aligned.
- */
-const PRIVACY_DEFAULTS: Record<PrivacyControlledField, ProfilePrivacyLevel> = {
-  firstName: 'PUBLIC',
-  lastName: 'PUBLIC',
-  avatarUrl: 'PUBLIC',
-  email: 'ONLY_ME',
-  phone: 'ONLY_ME',
-  city: 'PUBLIC',
-  language: 'COACHES_ONLY',
-  timezone: 'COACHES_ONLY',
-};
-
-/**
- * Pure helper — returns true iff the field is visible to the given
- * audience tier. Exported for unit testing the matrix in isolation.
- */
-export function isFieldVisible(
-  level: ProfilePrivacyLevel,
-  audience: PublicProfileAudience,
-): boolean {
-  if (audience === 'OWNER') return true;
-  if (audience === 'COACH') return level !== 'ONLY_ME';
-  return level === 'PUBLIC';
-}
-
-function resolveLevel(
-  settings: UserPrivacySettings | null | undefined,
-  field: PrivacyControlledField,
-): ProfilePrivacyLevel {
-  return settings?.[field] ?? PRIVACY_DEFAULTS[field];
-}
+// The privacy rules live in profile-privacy.ts, which group and other
+// modules read without importing this service. Re-exported for the spec.
+export { isFieldVisible } from './profile-privacy';
+export type { PublicProfileAudience } from './profile-privacy';
 
 /**
  * Roles that are uninteresting on a public profile. `USER` is implicit
@@ -337,7 +304,8 @@ export class ProfileService {
    */
   async discoverInstructors(dto: DiscoverInstructorsDto) {
     const where: Record<string | symbol, unknown> = {};
-    const userWhere: Record<string | symbol, unknown> = {};
+    // A coach whose account is closing (or switched off) is not listed.
+    const userWhere: Record<string | symbol, unknown> = { isActive: true };
 
     if (dto.city) {
       userWhere.city = { [Op.iLike]: buildSearchTerm(dto.city) };
@@ -367,8 +335,8 @@ export class ProfileService {
         {
           model: User,
           attributes: USER_SAFE_ATTRIBUTES,
-          where: Object.keys(userWhere).length ? userWhere : undefined,
-          required: Object.keys(userWhere).length > 0,
+          where: userWhere,
+          required: true,
         },
       ],
       subQuery: false,
@@ -415,6 +383,9 @@ export class ProfileService {
       include: [
         {
           model: User,
+          // A closing (or switched off) account has no public page.
+          where: { isActive: true },
+          required: true,
           attributes: [...USER_SAFE_ATTRIBUTES, 'privacySettings'],
         },
       ],
@@ -448,10 +419,16 @@ export class ProfileService {
         {
           model: User,
           required: true,
-          where: this.sequelize.where(
-            this.sequelize.fn('LOWER', this.sequelize.col('user.handle')),
-            normalized,
-          ),
+          where: {
+            [Op.and]: [
+              this.sequelize.where(
+                this.sequelize.fn('LOWER', this.sequelize.col('user.handle')),
+                normalized,
+              ),
+              // A closing (or switched off) account has no public page.
+              { isActive: true },
+            ],
+          },
           attributes: [...USER_SAFE_ATTRIBUTES, 'privacySettings'],
         },
       ],
@@ -710,10 +687,16 @@ export class ProfileService {
     }
 
     const user = await User.findOne({
-      where: this.sequelize.where(
-        this.sequelize.fn('LOWER', this.sequelize.col('handle')),
-        normalized,
-      ),
+      where: {
+        [Op.and]: [
+          this.sequelize.where(
+            this.sequelize.fn('LOWER', this.sequelize.col('handle')),
+            normalized,
+          ),
+          // A closing (or switched off) account has no public page.
+          { isActive: true },
+        ],
+      },
     });
     if (!user) {
       throw new NotFoundException(apiError('profile.notFound'));

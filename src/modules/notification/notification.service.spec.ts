@@ -403,6 +403,31 @@ describe('NotificationService', () => {
       );
     });
 
+    it('skips a deactivated account entirely: no receipt, no email', async () => {
+      // Someone closing their account must not be emailed about everything
+      // the closing winds down, and reminders must stop reaching them.
+      notificationModel.findOne.mockResolvedValue(null);
+      notificationModel.create.mockResolvedValue(makeNotificationRow());
+      preferenceModel.findAll.mockResolvedValue([]);
+      userModel.findAll.mockResolvedValue([
+        { id: 'user-1', email: 'u1@test.io', isActive: true },
+        { id: 'user-2', email: 'u2@test.io', isActive: false },
+      ]);
+      receiptModel.findOrCreate.mockResolvedValueOnce([
+        makeReceiptRow({ id: 'r-1', userId: 'user-1' }),
+        true,
+      ]);
+
+      const result = await service.notifyMany(['user-1', 'user-2'], {
+        type: NotificationType.SESSION_CANCELLED,
+        title: 'Cancelled',
+        body: 'Session cancelled',
+      });
+
+      expect(receiptModel.findOrCreate).toHaveBeenCalledTimes(1);
+      expect(result.results).toHaveLength(1);
+    });
+
     it('renders a catalog message per recipient, in their language', async () => {
       notificationModel.findOne.mockResolvedValue(null);
       // The row comes back as stored: English text + key + raw params.

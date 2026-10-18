@@ -714,6 +714,28 @@ describe('MessagingService — Stage 2 core', () => {
       expect(view.deletedAt).not.toBeNull();
     });
 
+    it('rebuilds the inbox preview, so the deleted words stop showing there', async () => {
+      msg.findByPk.mockResolvedValue({
+        id: 'm-2',
+        senderId: 'u',
+        conversationId: 'c-1',
+        kind: MessageKind.TEXT,
+        body: 'secret',
+        deletedAt: null,
+        createdAt: new Date(),
+        update: jest.fn().mockResolvedValue(undefined),
+      });
+      // The message before it is now the latest one left.
+      msg.findOne.mockResolvedValue({ body: 'see you Monday' });
+
+      await service.deleteOwnMessage('u', 'm-2');
+
+      expect(conv.update).toHaveBeenCalledWith(
+        { lastMessagePreview: 'see you Monday' },
+        expect.objectContaining({ where: { id: 'c-1' } }),
+      );
+    });
+
     it('idempotent on already-deleted message (returns view, no update)', async () => {
       const update = jest.fn();
       msg.findByPk.mockResolvedValue({

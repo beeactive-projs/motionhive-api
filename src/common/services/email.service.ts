@@ -4,6 +4,10 @@ import { ConfigService } from '@nestjs/config';
 import { WINSTON_MODULE_NEST_PROVIDER } from 'nest-winston';
 import { Resend } from 'resend';
 import {
+  accountDeletionCancelledTemplate,
+  accountDeletionCodeTemplate,
+  accountDeletionCompletedTemplate,
+  accountDeletionScheduledTemplate,
   clientInvitationExistingUserTemplate,
   clientInvitationNewUserTemplate,
   clientRequestAcceptedTemplate,
@@ -31,7 +35,7 @@ import {
   waitlistConfirmationTemplate,
   welcomeTemplate,
 } from '../email';
-import { translate } from '../i18n';
+import { day, translate } from '../i18n';
 import type { Locale } from '../i18n';
 
 /**
@@ -658,6 +662,87 @@ export class EmailService {
       resetLink,
       locale,
     });
+    await this.send(email, subject, html);
+  }
+
+  // =====================================================
+  // ACCOUNT DELETION EMAILS
+  // =====================================================
+
+  /**
+   * The 6-digit code that confirms an account deletion. Reports whether it
+   * went out: without it the person cannot go on, so the caller tells them
+   * instead of leaving them waiting for an email that never comes.
+   */
+  async sendAccountDeletionCodeEmail(
+    email: string,
+    firstName: string | null,
+    code: string,
+    locale: Locale,
+  ): Promise<boolean> {
+    const subject = translate(locale, 'email.account.deletionCode.subject');
+    const html = accountDeletionCodeTemplate({
+      firstName,
+      code,
+      changePasswordLink: `${this.frontendUrl}/auth/reset-password`,
+      locale,
+    });
+    const result = await this.sendWithStatus(email, subject, html);
+    return result.ok;
+  }
+
+  /** The account is deactivated and will be erased on `scheduledFor`. */
+  async sendAccountDeletionScheduledEmail(
+    email: string,
+    firstName: string | null,
+    scheduledFor: Date,
+    locale: Locale,
+  ): Promise<void> {
+    const subject = translate(
+      locale,
+      'email.account.deletionScheduled.subject',
+      {
+        date: day(scheduledFor),
+      },
+    );
+    const html = accountDeletionScheduledTemplate({
+      firstName,
+      scheduledFor,
+      signInLink: `${this.frontendUrl}/auth/login`,
+      locale,
+    });
+    await this.send(email, subject, html);
+  }
+
+  /** They signed in during the cooling-off and kept the account. */
+  async sendAccountDeletionCancelledEmail(
+    email: string,
+    firstName: string | null,
+    locale: Locale,
+  ): Promise<void> {
+    const subject = translate(
+      locale,
+      'email.account.deletionCancelled.subject',
+    );
+    const html = accountDeletionCancelledTemplate({
+      firstName,
+      changePasswordLink: `${this.frontendUrl}/auth/reset-password`,
+      locale,
+    });
+    await this.send(email, subject, html);
+  }
+
+  /** The erasure ran. `email` is the address the account had before it. */
+  async sendAccountDeletionCompletedEmail(
+    email: string,
+    firstName: string | null,
+    locale: Locale,
+  ): Promise<void> {
+    const subject = translate(
+      locale,
+      'email.account.deletionCompleted.subject',
+    );
+    const html = accountDeletionCompletedTemplate({ firstName, locale });
     await this.send(email, subject, html);
   }
 

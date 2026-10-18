@@ -105,9 +105,45 @@ describe('DisputeService.syncFromWebhook', () => {
   });
 
   it('throws OrphanedWebhookError when the local payment is missing', async () => {
+    disputeModel.findOne.mockResolvedValue(null);
     paymentModel.findOne.mockResolvedValue(null);
     await expect(
       service.syncFromWebhook(stripeDispute(), fakeTx as never, undefined),
     ).rejects.toBeInstanceOf(OrphanedWebhookError);
+  });
+
+  describe('updated / closed events (onlyExisting)', () => {
+    it('refreshes the status of a dispute we track', async () => {
+      const update = jest.fn().mockResolvedValue(undefined);
+      disputeModel.findOne.mockResolvedValue({ id: 'd-row-1', update });
+
+      await service.syncFromWebhook(
+        stripeDispute({ status: 'won' }),
+        fakeTx as never,
+        undefined,
+        { onlyExisting: true },
+      );
+
+      expect(update).toHaveBeenCalledWith(
+        expect.objectContaining({ status: 'won' }),
+        { transaction: fakeTx },
+      );
+    });
+
+    it('never creates one, nor announces it, on a first sighting', async () => {
+      disputeModel.findOne.mockResolvedValue(null);
+      disputeModel.create.mockClear();
+      const outbox = { add: jest.fn() };
+
+      await service.syncFromWebhook(
+        stripeDispute(),
+        fakeTx as never,
+        outbox as never,
+        { onlyExisting: true },
+      );
+
+      expect(disputeModel.create).not.toHaveBeenCalled();
+      expect(outbox.add).not.toHaveBeenCalled();
+    });
   });
 });

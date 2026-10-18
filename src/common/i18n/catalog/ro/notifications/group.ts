@@ -9,6 +9,10 @@ export const group: Catalog['notifications']['group'] = {
     title: 'Nu mai faci parte dintr-un grup',
     body: 'Administratorul te-a scos {group, select, null {dintr-un grup} other {din grupul „{group}”}}.',
   },
+  closed: {
+    title: 'Un grup a fost închis',
+    body: '{group, select, null {Un grup din care făceai parte} other {Grupul „{group}”}} a fost închis, pentru că persoana care îl conducea a părăsit MotionHive.',
+  },
   joinRequestReceived: {
     title: 'Cerere nouă de intrare în grup',
     body: '{name, select, null {Cineva} other {{name}}} vrea să intre în {group, select, null {grupul tău} other {grupul „{group}”}}.',

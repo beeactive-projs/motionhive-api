@@ -39,6 +39,7 @@ import { ProgressModule } from './modules/progress/progress.module';
 import { ReviewModule } from './modules/review/review.module';
 import { MessagingModule } from './modules/messaging/messaging.module';
 import { AdminModule } from './modules/admin/admin.module';
+import { AccountDeletionModule } from './modules/account-deletion/account-deletion.module';
 import { ContentLocaleInterceptor } from './common/interceptors/content-locale.interceptor';
 import { CamelCaseInterceptor } from './common/interceptors/camel-case.interceptor';
 
@@ -122,6 +123,7 @@ import { CamelCaseInterceptor } from './common/interceptors/camel-case.intercept
     ReviewModule,
     MessagingModule,
     AdminModule,
+    AccountDeletionModule, // In-app account deletion: request, wind-down, 30-day erasure
   ],
 
   controllers: [],

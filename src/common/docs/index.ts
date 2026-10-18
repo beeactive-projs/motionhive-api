@@ -23,6 +23,7 @@ export * from './group.docs';
 export * from './session.docs';
 export * from './invitation.docs';
 export * from './user.docs';
+export * from './account-deletion.docs';
 export * from './payment.docs';
 export * from './notification.docs';
 export * from './exercise.docs';

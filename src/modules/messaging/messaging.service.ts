@@ -9,7 +9,7 @@ import {
 import { InjectModel } from '@nestjs/sequelize';
 import { WINSTON_MODULE_NEST_PROVIDER } from 'nest-winston';
 import { randomUUID } from 'crypto';
-import { col, fn, Op, UniqueConstraintError } from 'sequelize';
+import { col, fn, Op, Transaction, UniqueConstraintError } from 'sequelize';
 import { Sequelize } from 'sequelize-typescript';
 import {
   buildPaginatedResponse,
@@ -868,6 +868,9 @@ export class MessagingService {
       deletedById: userId,
       body: this.setMessageBody(DELETED_BODY_TOMBSTONE),
     });
+    // The inbox row quoted this message if it was the latest one; without
+    // this it kept showing the deleted words.
+    await this.refreshPreview(message.conversationId);
 
     // Tell the other participants the message was removed so the FE
     // can replace it with the "[deleted]" tombstone in place.
@@ -877,6 +880,63 @@ export class MessagingService {
     });
 
     return this.toMessageView(message);
+  }
+
+  /**
+   * Account erasure: every message this person ever sent becomes the same
+   * tombstone a single delete leaves (with any metadata cleared too), and
+   * each of their conversations gets its inbox preview rebuilt from what is
+   * left, so their words survive nowhere. No live events: the account is
+   * gone, and the other side sees the tombstones on its next load.
+   *
+   * Safe to run twice. Returns how many messages it touched.
+   */
+  async eraseMessagesFrom(userId: string): Promise<number> {
+    const now = new Date();
+    return this.sequelize.transaction(async (tx) => {
+      const conversations = await this.participantModel.findAll({
+        where: { userId },
+        attributes: ['conversationId'],
+        transaction: tx,
+      });
+
+      const [count] = await this.messageModel.update(
+        {
+          deletedAt: fn('COALESCE', col('deleted_at'), now),
+          deletedById: userId,
+          body: this.setMessageBody(DELETED_BODY_TOMBSTONE),
+          metadata: null,
+        },
+        { where: { senderId: userId }, transaction: tx },
+      );
+
+      for (const { conversationId } of conversations) {
+        await this.refreshPreview(conversationId, tx);
+      }
+      return count;
+    });
+  }
+
+  /**
+   * Rebuild a conversation's inbox preview from its latest message that is
+   * still there, the way a send writes it (first 200 characters); null when
+   * none is left.
+   */
+  private async refreshPreview(
+    conversationId: string,
+    transaction?: Transaction,
+  ): Promise<void> {
+    const latest = await this.messageModel.findOne({
+      where: { conversationId, deletedAt: null },
+      order: [['createdAt', 'DESC']],
+      attributes: ['body'],
+      transaction,
+    });
+    const text = latest ? this.getMessageBody(latest.body) : null;
+    await this.conversationModel.update(
+      { lastMessagePreview: text ? text.slice(0, 200) : null },
+      { where: { id: conversationId }, transaction },
+    );
   }
 
   // =========================================================================
