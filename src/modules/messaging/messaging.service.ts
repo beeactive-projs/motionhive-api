@@ -50,6 +50,11 @@ export interface ConversationListItem {
   unreadCount: number;
   muted: boolean;
   /**
+   * The caller marked the thread unread ("come back to this"). Independent
+   * of `unreadCount`, which only counts real unread messages.
+   */
+  markedUnread: boolean;
+  /**
    * For DIRECT conversations only: the *other* participant. null for groups.
    */
   otherUser: ParticipantSnapshot | null;
@@ -495,6 +500,7 @@ export class MessagingService {
           plaintext.length > 200 ? plaintext.slice(0, 200) : plaintext,
         unreadCount: 0,
         muted: false,
+        markedUnread: false,
         otherUser: {
           id: recipient.id,
           firstName: recipient.firstName,
@@ -635,7 +641,7 @@ export class MessagingService {
   async getUnreadCount(userId: string): Promise<{ count: number }> {
     const participants = await this.participantModel.findAll({
       where: { userId, leftAt: null },
-      attributes: ['conversationId', 'lastReadAt'],
+      attributes: ['conversationId', 'lastReadAt', 'markedUnread'],
     });
 
     if (participants.length === 0) {
@@ -654,6 +660,13 @@ export class MessagingService {
     let total = 0;
     for (const count of byConversation.values()) {
       total += count;
+    }
+    // A thread marked unread with nothing actually unread still asks to be
+    // come back to, so it counts as one.
+    for (const p of participants) {
+      if (p.markedUnread && !byConversation.get(p.conversationId)) {
+        total += 1;
+      }
     }
 
     return { count: total };
@@ -686,6 +699,10 @@ export class MessagingService {
     // between assertParticipant and here) we still emit — the event
     // is idempotent and the FE side-effect (clear local unread) is
     // safe to repeat.
+    // Reading also answers a "mark as unread". Only rows that carry the
+    // flag are touched, so the affected count says whether the reader's
+    // other sessions need telling.
+    let clearedMark = false;
     await this.sequelize.transaction(async (tx) => {
       await this.participantModel.update(
         { lastReadAt: upTo },
@@ -694,7 +711,23 @@ export class MessagingService {
           transaction: tx,
         },
       );
+      const [cleared] = await this.participantModel.update(
+        { markedUnread: false },
+        {
+          where: { conversationId, userId, leftAt: null, markedUnread: true },
+          transaction: tx,
+        },
+      );
+      clearedMark = cleared > 0;
     });
+
+    if (clearedMark) {
+      this.emitter.emitConversationUnread([userId], {
+        conversationId,
+        userId,
+        markedUnread: false,
+      });
+    }
 
     // Tell the *other* participants the conversation was read (powers
     // future read-receipt indicators on the FE — v1 just relies on it
@@ -710,6 +743,33 @@ export class MessagingService {
     });
 
     return { lastReadAt: upTo };
+  }
+
+  /**
+   * "Mark as unread": a flag on the caller's participant row, cleared by
+   * the next mark-read. It deliberately leaves `lastReadAt` alone — moving
+   * that back would do nothing when the caller sent the last message, and
+   * would take back the read receipt the other participant already saw.
+   */
+  async markUnread(
+    userId: string,
+    conversationId: string,
+  ): Promise<{ markedUnread: true }> {
+    await this.assertParticipant(userId, conversationId);
+
+    await this.participantModel.update(
+      { markedUnread: true },
+      { where: { conversationId, userId, leftAt: null } },
+    );
+
+    // Same fan-out as mute: the actor's other sessions/tabs only.
+    this.emitter.emitConversationUnread([userId], {
+      conversationId,
+      userId,
+      markedUnread: true,
+    });
+
+    return { markedUnread: true };
   }
 
   async muteConversation(
@@ -1089,6 +1149,7 @@ export class MessagingService {
       lastMessagePreview: conversation.lastMessagePreview,
       unreadCount,
       muted,
+      markedUnread: !!participant.markedUnread,
       otherUser,
       lastReadByOther,
     };

@@ -16,6 +16,7 @@ export type MessagingStreamEvent =
   | { type: 'message.deleted'; payload: MessageDeletedPayload }
   | { type: 'conversation.read'; payload: ConversationReadPayload }
   | { type: 'conversation.muted'; payload: ConversationMutedPayload }
+  | { type: 'conversation.unread'; payload: ConversationUnreadPayload }
   | { type: 'heartbeat'; payload: { ts: number } };
 
 export interface MessageCreatedPayload {
@@ -44,6 +45,13 @@ export interface ConversationMutedPayload {
   conversationId: string;
   userId: string;
   mutedUntil: string | null;
+}
+
+/** The reader's own "mark as unread" flag, set or cleared. Sent to the reader only. */
+export interface ConversationUnreadPayload {
+  conversationId: string;
+  userId: string;
+  markedUnread: boolean;
 }
 
 /**
@@ -156,6 +164,13 @@ export class MessagingEventsService implements OnModuleDestroy {
     payload: ConversationMutedPayload,
   ): void {
     this.publish(recipientIds, { type: 'conversation.muted', payload });
+  }
+
+  emitConversationUnread(
+    recipientIds: string[],
+    payload: ConversationUnreadPayload,
+  ): void {
+    this.publish(recipientIds, { type: 'conversation.unread', payload });
   }
 
   // =========================================================================

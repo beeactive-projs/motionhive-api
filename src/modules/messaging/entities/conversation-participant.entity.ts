@@ -65,6 +65,17 @@ export class ConversationParticipant extends Model {
   })
   declare mutedUntil: Date | null;
 
+  /**
+   * The reader asked to come back to this thread ("Mark as unread").
+   * Independent of `lastReadAt`; mark-read clears it.
+   */
+  @Column({
+    type: DataType.BOOLEAN,
+    allowNull: false,
+    defaultValue: false,
+  })
+  declare markedUnread: boolean;
+
   @Column({
     type: DataType.DATE,
     defaultValue: DataType.NOW,

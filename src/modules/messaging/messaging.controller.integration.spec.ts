@@ -90,6 +90,7 @@ describe('Messaging HTTP integration', () => {
       listMessages: jest.fn(),
       getMessage: jest.fn(),
       markRead: jest.fn(),
+      markUnread: jest.fn(),
       muteConversation: jest.fn(),
       leave: jest.fn(),
       deleteOwnMessage: jest.fn(),
@@ -309,6 +310,25 @@ describe('Messaging HTTP integration', () => {
         .patch(`/messaging/conversations/${TEST_CONVERSATION_ID}/read`)
         .send({ upToIso: 'not-a-date' })
         .expect(400);
+    });
+
+    it('PATCH /messaging/conversations/:id/unread — 200', async () => {
+      messagingService.markUnread.mockResolvedValue({ markedUnread: true });
+      const res = await request(app.getHttpServer())
+        .patch(`/messaging/conversations/${TEST_CONVERSATION_ID}/unread`)
+        .expect(200);
+      expect(res.body).toEqual({ markedUnread: true });
+      expect(messagingService.markUnread).toHaveBeenCalledWith(
+        TEST_USER_ID,
+        TEST_CONVERSATION_ID,
+      );
+    });
+
+    it('PATCH /messaging/conversations/:id/unread — non-UUID id → 400', async () => {
+      await request(app.getHttpServer())
+        .patch('/messaging/conversations/not-a-uuid/unread')
+        .expect(400);
+      expect(messagingService.markUnread).not.toHaveBeenCalled();
     });
 
     it('PATCH /messaging/conversations/:id/mute — 200', async () => {

@@ -113,6 +113,18 @@ export const MessagingDocs = {
     ],
   } as ApiEndpointOptions,
 
+  markUnread: {
+    summary: 'Mark a conversation unread',
+    description:
+      "Sets the caller's `marked_unread` flag: a reminder to come back to the thread, independent of `last_read_at`, so the other participant's read receipt is untouched. Mark-read clears it. The list returns it as `markedUnread`, and the unread badge counts a marked conversation as at least 1. Emits a `conversation.unread` SSE event to the caller's other sessions.",
+    auth: true,
+    responses: [
+      ApiStandardResponses.OK,
+      ApiStandardResponses.Unauthorized,
+      ApiStandardResponses.NotFound,
+    ],
+  } as ApiEndpointOptions,
+
   muteConversation: {
     summary: 'Mute or unmute a conversation',
     description:
