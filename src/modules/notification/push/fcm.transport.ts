@@ -32,7 +32,26 @@ const PERMANENT_CODES = new Set([
   'messaging/invalid-payload',
   'messaging/authentication-error',
   'messaging/mismatched-credential',
+  // Google refused our service account: a malformed or revoked key, or a
+  // key and client email from different downloads. Fixed in config, never
+  // by retrying.
+  'app/invalid-credential',
 ]);
+
+/**
+ * The service-account private key as Firebase needs it: real line breaks,
+ * no wrapping quotes, no stray whitespace.
+ *
+ * Railway and .env files hold it on one line, with `\n` escapes. Pasting
+ * the value straight out of the downloaded JSON also brings the quotes
+ * along, and a PEM with a leading `"` fails as `app/invalid-credential`
+ * with nothing in the log pointing at the quotes.
+ */
+export function normalizePrivateKey(raw: string | undefined): string | null {
+  if (!raw) return null;
+  const key = raw.trim().replace(/^"|"$/g, '').replace(/\\n/g, '\n').trim();
+  return key ? `${key}\n` : null;
+}
 
 /**
  * Delivers a `PushMessage` to an Android phone over Firebase Cloud
@@ -73,9 +92,9 @@ export class FcmTransport implements PushTransport {
     const clientEmail = this.config.get<string>('FIREBASE_CLIENT_EMAIL');
     // Service-account key contents, not a path — same reasoning as the
     // APNs key: Railway has no filesystem to keep a credential file on.
-    const privateKey = this.config
-      .get<string>('FIREBASE_PRIVATE_KEY')
-      ?.replace(/\\n/g, '\n');
+    const privateKey = normalizePrivateKey(
+      this.config.get<string>('FIREBASE_PRIVATE_KEY'),
+    );
 
     if (!projectId || !clientEmail || !privateKey) {
       this.credentials = null;
@@ -145,12 +164,15 @@ export class FcmTransport implements PushTransport {
         typeof err === 'object' && err !== null && 'code' in err
           ? String((err as { code: unknown }).code)
           : 'unknown';
+      // The code alone hides the cause: `app/invalid-credential` covers a
+      // malformed key, a revoked one and a key/email mismatch, and only
+      // Google's message says which. It never contains the key itself.
       const reason =
         err instanceof Error ? `${code}: ${err.message}` : String(err);
 
       return {
         ok: false,
-        reason: code === 'unknown' ? reason : code,
+        reason,
         retryable: !DEAD_TOKEN_CODES.has(code) && !PERMANENT_CODES.has(code),
         tokenDead: DEAD_TOKEN_CODES.has(code),
       };

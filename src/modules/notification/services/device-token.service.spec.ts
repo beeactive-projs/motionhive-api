@@ -1,6 +1,7 @@
 import { Test } from '@nestjs/testing';
 import { NotFoundException } from '@nestjs/common';
 import { getModelToken } from '@nestjs/sequelize';
+import { Op } from 'sequelize';
 
 import { DeviceTokenService } from './device-token.service';
 import { DevicePlatform, DeviceToken } from '../entities/device-token.entity';
@@ -52,6 +53,29 @@ describe('DeviceTokenService', () => {
   });
 
   describe('register', () => {
+    it('takes the device away from whoever was signed in on it before', async () => {
+      model.findOne.mockResolvedValue(null);
+      model.create.mockResolvedValue({ id: 'd-new' });
+
+      await service.register({
+        userId: 'user-2',
+        platform: DevicePlatform.ANDROID,
+        token: 'fcm-shared-phone',
+      });
+
+      // Every other account's active row for this phone, not this one's.
+      expect(model.update).toHaveBeenCalledWith(
+        { revokedAt: expect.any(Date) },
+        {
+          where: {
+            endpointHash: expect.any(String),
+            userId: { [Op.ne]: 'user-2' },
+            revokedAt: { [Op.is]: null },
+          },
+        },
+      );
+    });
+
     it('creates a new row when no matching endpoint exists', async () => {
       model.findOne.mockResolvedValue(null);
       model.create.mockResolvedValue({ id: 'd-new' });

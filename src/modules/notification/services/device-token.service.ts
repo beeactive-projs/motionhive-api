@@ -57,6 +57,21 @@ export class DeviceTokenService {
       params.token,
     );
 
+    // A device belongs to whoever is signed in on it now. The app's own
+    // revoke on sign-out cannot be relied on (it runs after the session is
+    // gone, so it fails with a 401), and without this the previous
+    // account's alerts would keep reaching the next person's phone.
+    await this.deviceModel.update(
+      { revokedAt: new Date() },
+      {
+        where: {
+          endpointHash,
+          userId: { [Op.ne]: params.userId },
+          revokedAt: { [Op.is]: null },
+        },
+      },
+    );
+
     const existing = await this.deviceModel.findOne({
       where: { userId: params.userId, endpointHash },
     });
