@@ -231,6 +231,43 @@ describe('NotificationService', () => {
       expect(result.delivered.push).toBe('queued');
     });
 
+    it('collapses pushes on the caller key, falling back to the fingerprint', async () => {
+      notificationModel.findOne.mockResolvedValue(null);
+      notificationModel.create.mockResolvedValue(
+        makeNotificationRow({
+          type: NotificationType.SESSION_REMINDER_1H,
+          fingerprint: 'fp-1',
+        }),
+      );
+      preferenceModel.findAll.mockResolvedValue([]);
+      userModel.findAll.mockResolvedValue([
+        { id: 'user-1', email: 'u1@test.io', firstName: 'U' },
+      ]);
+      receiptModel.findOrCreate.mockResolvedValue([makeReceiptRow(), true]);
+
+      await service.notify({
+        userId: 'user-1',
+        type: NotificationType.SESSION_REMINDER_1H,
+        title: 't',
+        body: 'b',
+        collapseKey: 'conversation.c-1',
+      });
+      await service.notify({
+        userId: 'user-1',
+        type: NotificationType.SESSION_REMINDER_1H,
+        title: 't',
+        body: 'b',
+      });
+
+      const pushes = (
+        jobsService.enqueue.mock.calls as [string, { collapseKey?: string }][]
+      ).filter(([name]) => name === 'notifications.push_send');
+      expect(pushes.map(([, payload]) => payload.collapseKey)).toEqual([
+        'conversation.c-1',
+        'fp-1',
+      ]);
+    });
+
     it('reports push as unqueued rather than sent when there is no Redis', async () => {
       notificationModel.findOne.mockResolvedValue(null);
       notificationModel.create.mockResolvedValue(

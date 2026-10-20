@@ -58,6 +58,13 @@ interface NotifyOptions {
    *  exists, the call is a no-op (returns the existing notification). */
   fingerprint?: string;
   /**
+   * Groups pushes on the device: a later push with the same key replaces
+   * the earlier one in the notification shade. Unlike `fingerprint` it
+   * dedups nothing, so every call still delivers. Defaults to the
+   * fingerprint. Messaging sets it per conversation.
+   */
+  collapseKey?: string;
+  /**
    * Email button label for `title` + `body` producers. A `message`
    * defines its own in the catalog (`cta`).
    */
@@ -235,6 +242,7 @@ export class NotificationService {
         locale: toLocale(user?.language),
         channels,
         ctaLabel: params.ctaLabel,
+        collapseKey: params.collapseKey,
       });
 
       results.push({
@@ -265,6 +273,7 @@ export class NotificationService {
     locale: Locale;
     channels: Required<ChannelPreferences>;
     ctaLabel?: string;
+    collapseKey?: string;
   }): Promise<{ receipt: NotificationReceipt; delivered: DeliveredChannels }> {
     const { notification, userId, userEmail, channels } = input;
 
@@ -352,7 +361,8 @@ export class NotificationService {
           title: text.title,
           body: text.body,
           data: toPushData(notification.data),
-          collapseKey: notification.fingerprint ?? undefined,
+          collapseKey:
+            input.collapseKey ?? notification.fingerprint ?? undefined,
         },
         { jobId: `push_send.${receipt.id}` },
       );

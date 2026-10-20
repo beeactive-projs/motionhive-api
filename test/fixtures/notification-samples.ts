@@ -55,6 +55,7 @@ const MSG = {
   preview: 'Ne vedem la 18:00?',
   suppressEmail: false,
   hidePreviewInEmail: false,
+  muted: false,
 };
 
 export const NOTIFICATION_SAMPLES: NotificationSample[] = [

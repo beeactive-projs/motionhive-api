@@ -401,12 +401,16 @@ export class MessagingService {
     const senderName =
       [sender?.firstName, sender?.lastName].filter(Boolean).join(' ').trim() ||
       null;
+    const recipientMuted = !!(
+      other?.mutedUntil && other.mutedUntil.getTime() > now.getTime()
+    );
     void this.dispatchMessageReceivedNotification(
       recipientId,
       conversation.id,
       senderName,
       trimmed,
       previousMessageAt,
+      recipientMuted,
     );
 
     return {
@@ -431,6 +435,7 @@ export class MessagingService {
     senderName: string | null,
     plaintext: string,
     previousMessageAt: Date | null,
+    muted: boolean,
   ): Promise<void> {
     try {
       const suppressEmail =
@@ -447,6 +452,7 @@ export class MessagingService {
           // haven't surfaced yet. Default to false (include preview)
           // matching the recommendation in the security discussion.
           hidePreviewInEmail: false,
+          muted,
         }),
       );
     } catch (err) {

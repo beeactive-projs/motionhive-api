@@ -85,10 +85,14 @@ export const NOTIFICATION_DEFAULTS: Record<
   // domain email, so nobody loses an email by this. If you ever fire one
   // of these types from a path with no domain email, give it its own
   // preset rather than flipping these back.
-  [NotificationType.CLIENT_REQUEST_RECEIVED]: IN_APP_ONLY,
-  [NotificationType.CLIENT_REQUEST_ACCEPTED]: IN_APP_ONLY,
+  //
+  // Push is a separate question from the email: a request or invitation
+  // waits on the reader, and an accepted request starts the coaching, so
+  // those three push. A decline or an ending asks nothing of anyone.
+  [NotificationType.CLIENT_REQUEST_RECEIVED]: IN_APP_AND_PUSH,
+  [NotificationType.CLIENT_REQUEST_ACCEPTED]: IN_APP_AND_PUSH,
   [NotificationType.CLIENT_REQUEST_DECLINED]: IN_APP_ONLY,
-  [NotificationType.CLIENT_INVITATION_RECEIVED]: IN_APP_ONLY,
+  [NotificationType.CLIENT_INVITATION_RECEIVED]: IN_APP_AND_PUSH,
   [NotificationType.CLIENT_RELATIONSHIP_ENDED]: IN_APP_ONLY,
   // Losing your coach changes your week; worth an email, unlike a request.
   [NotificationType.COACH_LEFT]: IN_APP_AND_EMAIL,
@@ -153,9 +157,11 @@ export const NOTIFICATION_DEFAULTS: Record<
   [NotificationType.POST_REJECTED]: IN_APP_AND_EMAIL,
 
   // ── Messaging ────────────────────────────────────────────
-  // In-app on every message; email is throttled at the call site
-  // (one per recipient/conversation/hour). Push reserved for v2.
-  [NotificationType.MESSAGE_RECEIVED]: IN_APP_AND_EMAIL,
+  // Push on every message, grouped per conversation on the phone. The
+  // call site turns in-app off (the Messages badge is that signal),
+  // throttles email to the first message after a quiet period, and
+  // drops push for a muted conversation.
+  [NotificationType.MESSAGE_RECEIVED]: ON_EVERYTHING_BUT_SMS,
 
   // ── Workouts ─────────────────────────────────────────────
   // Fork notifications are high-volume on popular public exercises;

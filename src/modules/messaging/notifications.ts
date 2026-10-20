@@ -53,6 +53,11 @@ export interface MessageReceivedArgs {
    * setting lands in the FE preferences screen in a later sprint.
    */
   hidePreviewInEmail: boolean;
+  /**
+   * The recipient has muted this conversation. The phone stays quiet;
+   * the unread count still moves.
+   */
+  muted: boolean;
 }
 
 export function messageReceived(args: MessageReceivedArgs): NotifyParams {
@@ -65,7 +70,10 @@ export function messageReceived(args: MessageReceivedArgs): NotifyParams {
   //   - email:   on for the first message in a (recipient, conversation)
   //              hour-window, off afterwards. Caller supplies the
   //              suppress flag from the rate-limit service.
-  //   - push:    reserved for v2 (no push worker yet).
+  //   - push:    on for every message (the user's preference decides),
+  //              off when the recipient muted the conversation. One
+  //              collapse key per conversation, so the shade shows the
+  //              latest message from a thread rather than a stack.
   //
   // We still call `notify()` so the receipt row gets written (we
   // need that for the email-send worker's dedup), but the in_app
@@ -73,6 +81,7 @@ export function messageReceived(args: MessageReceivedArgs): NotifyParams {
   const channelOverride: Partial<ChannelPreferences> = {
     in_app: false,
     email: !args.suppressEmail,
+    ...(args.muted ? { push: false } : {}),
   };
 
   const params: NotifyParams = {
@@ -91,6 +100,7 @@ export function messageReceived(args: MessageReceivedArgs): NotifyParams {
       screen: 'messages',
       queryParams: { conversationId: args.conversationId },
     },
+    collapseKey: `conversation.${args.conversationId}`,
     channelOverride,
   };
 

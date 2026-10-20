@@ -1051,7 +1051,10 @@ describe('MessagingService — Stage 2 core', () => {
     const sender = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
     const recipient = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
 
-    function setupHappyPath(convId: string) {
+    function setupHappyPath(
+      convId: string,
+      recipientMutedUntil: Date | null = null,
+    ) {
       userFindByPkSpy.mockResolvedValue({
         id: recipient,
         firstName: 'Bob',
@@ -1088,6 +1091,7 @@ describe('MessagingService — Stage 2 core', () => {
           conversationId: convId,
           userId: recipient,
           lastReadAt: null,
+          mutedUntil: recipientMutedUntil,
           leftAt: null,
           user: {
             id: recipient,
@@ -1144,6 +1148,31 @@ describe('MessagingService — Stage 2 core', () => {
         channelOverride?: { in_app?: boolean; email?: boolean };
       };
       expect(params.channelOverride).toEqual({ in_app: false, email: false });
+    });
+
+    it('keeps the phone quiet when the recipient muted the conversation', async () => {
+      setupHappyPath('conv-1', new Date(Date.now() + 60 * 60 * 1000));
+      rateLimit.shouldSuppressMessageEmail.mockReturnValue(false);
+
+      await service.sendMessage(sender, recipient, 'hi');
+      await new Promise((r) => setImmediate(r));
+
+      const params = notifications.notify.mock.calls[0][0] as {
+        channelOverride?: { push?: boolean };
+      };
+      expect(params.channelOverride?.push).toBe(false);
+    });
+
+    it('pushes again once a mute has run out', async () => {
+      setupHappyPath('conv-1', new Date(Date.now() - 60 * 1000));
+
+      await service.sendMessage(sender, recipient, 'hi');
+      await new Promise((r) => setImmediate(r));
+
+      const params = notifications.notify.mock.calls[0][0] as {
+        channelOverride?: { push?: boolean };
+      };
+      expect(params.channelOverride).not.toHaveProperty('push');
     });
 
     it('quiet-period gate is called with the previous-message timestamp from the conversation row', async () => {

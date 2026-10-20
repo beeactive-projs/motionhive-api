@@ -127,10 +127,14 @@ export class FcmTransport implements PushTransport {
           // about the same thing rather than stacking.
           collapseKey: message.collapseKey,
           notification: {
-            // Matches the launcher icon; without this Android renders a
-            // grey square on some versions.
-            icon: 'ic_stat_icon_config_sample',
+            // No `icon` or `color`: the app's manifest sets both
+            // (default_notification_icon / _color), so the drawable name
+            // lives with the drawable rather than in the server.
             sound: 'default',
+            // collapseKey only decides which pending message survives
+            // while the phone is offline. The tag is what replaces a
+            // shown notification, as APNs' collapseId does on iOS.
+            tag: message.collapseKey,
           },
         },
       });
