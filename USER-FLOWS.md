@@ -108,7 +108,7 @@ POST /auth/google [Public, Rate: 10/15min]
 Return { accessToken, refreshToken, user } (same shape as login/register)
 ```
 
-**Requirements:** `GOOGLE_CLIENT_ID` in env. Frontend must use the same Client ID and run on an authorized JavaScript origin.
+**Requirements:** `GOOGLE_CLIENT_ID` in env. Frontend must use the same Client ID and run on an authorized JavaScript origin. The mobile app signs in natively: Android requests tokens for the web client ID, iOS gets tokens for its own client, accepted when `GOOGLE_IOS_CLIENT_ID` is set.
 
 **Frontend (e.g. Angular) after receiving the Google ID token:**
 

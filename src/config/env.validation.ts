@@ -120,6 +120,8 @@ export const envValidationSchema = Joi.object({
 
   // OAuth (optional – required only when using social login)
   GOOGLE_CLIENT_ID: Joi.string().optional(),
+  // The mobile app's iOS OAuth client, whose ID tokens are accepted too.
+  GOOGLE_IOS_CLIENT_ID: Joi.string().optional(),
   GOOGLE_CLIENT_SECRET: Joi.string().optional(),
   FACEBOOK_APP_ID: Joi.string().optional(),
   FACEBOOK_APP_SECRET: Joi.string().optional(),
