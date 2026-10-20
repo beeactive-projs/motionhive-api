@@ -202,6 +202,7 @@ A comprehensive REST API for managing fitness training sessions, trainers, and c
       'https://www.motionhive.fit',
       'https://app.motionhive.fit',
       'https://dev.motionhive.fit',
+      'https://dev.app.motionhive.fit',
       'https://app-dev.motionhive.fit',
       'https://admin.motionhive.fit',
       'https://admin-dev.motionhive.fit',

@@ -6,7 +6,7 @@
  *     header with the MotionHive hex-icon + Poppins wordmark, a
  *     white content area, an optional honeycomb hero band for
  *     attention-grabbing emails, and a dark footer carrying the
- *     trader identity + policy links (see `COMPANY` / `LEGAL_URLS`).
+ *     trader identity + policy links (see `COMPANY` / `legalUrls`).
  *   - The helpers (`heading`, `paragraph`, `primaryButton`,
  *     `calloutBox`, `dataRow`, `personCard`,
  *     `eyebrow`, `chip`, …) keep individual templates declarative.
@@ -46,8 +46,17 @@ export const LOGO_URL =
 // LEGAL IDENTITY
 // ─────────────────────────────────────────────────────────────────────
 
-/** Marketing site root. Legal pages and the footer brand link hang off it. */
-export const WEBSITE_URL = 'https://motionhive.fit';
+/**
+ * Marketing site root, per environment: `PUBLIC_SITE_URL` (the dev API sets
+ * the dev site). Legal pages and the footer brand link hang off it. Read on
+ * every render, not at import, so it sees the env however it was loaded.
+ */
+export function websiteUrl(): string {
+  return (process.env.PUBLIC_SITE_URL || 'https://www.motionhive.fit').replace(
+    /\/+$/,
+    '',
+  );
+}
 
 /**
  * Trader identity printed in every email footer.
@@ -67,26 +76,22 @@ export const COMPANY = {
   contactEmail: 'contact@motionhive.fit',
 };
 
-/** Canonical legal-document URLs, linked from the footer of every email. */
-export const LEGAL_URLS = {
-  terms: `${WEBSITE_URL}/legal/terms-of-service`,
-  privacy: `${WEBSITE_URL}/legal/privacy-policy`,
-  cookies: `${WEBSITE_URL}/legal/cookie-policy`,
-};
-
 /**
- * The same documents in the reader's language. The marketing site serves
- * English at the root and every other language under `/<locale>` on the
- * same path.
+ * The legal documents linked from the footer of every email, in the
+ * reader's language. The marketing site serves English at the root and
+ * every other language under `/<locale>` on the same path.
  */
-function legalUrls(locale: Locale): typeof LEGAL_URLS {
-  if (locale === DEFAULT_LOCALE) return LEGAL_URLS;
-  const localized = (url: string) =>
-    url.replace(WEBSITE_URL, `${WEBSITE_URL}/${locale}`);
+function legalUrls(locale: Locale): {
+  terms: string;
+  privacy: string;
+  cookies: string;
+} {
+  const base =
+    locale === DEFAULT_LOCALE ? websiteUrl() : `${websiteUrl()}/${locale}`;
   return {
-    terms: localized(LEGAL_URLS.terms),
-    privacy: localized(LEGAL_URLS.privacy),
-    cookies: localized(LEGAL_URLS.cookies),
+    terms: `${base}/legal/terms-of-service`,
+    privacy: `${base}/legal/privacy-policy`,
+    cookies: `${base}/legal/cookie-policy`,
   };
 }
 
@@ -475,7 +480,7 @@ export function baseLayout(
               <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%">
                 <tr>
                   <td style="font-family:${FONT_DISPLAY};font-size:13px;line-height:1.5;color:${COLORS.white};font-weight:600;letter-spacing:-0.01em;">
-                    <a href="${WEBSITE_URL}" style="color:${COLORS.honey};text-decoration:none;">motionhive.fit</a>
+                    <a href="${websiteUrl()}" style="color:${COLORS.honey};text-decoration:none;">motionhive.fit</a>
                   </td>
                 </tr>
                 <tr>
