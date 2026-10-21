@@ -64,7 +64,8 @@ export const envValidationSchema = Joi.object({
   APNS_PRIVATE_KEY: Joi.string().optional(),
   // Sandbox by default. A token minted by a development build is
   // rejected outright by the production host, so this must match the
-  // build that registered the device.
+  // build that registered the device: 'true' wherever TestFlight or
+  // App Store builds connect (the dev API serves TestFlight).
   APNS_PRODUCTION: Joi.string().valid('true', 'false').default('false'),
 
   // Firebase Cloud Messaging, for Android. Optional on the same terms

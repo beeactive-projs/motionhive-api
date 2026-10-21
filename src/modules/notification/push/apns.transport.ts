@@ -91,8 +91,9 @@ export class ApnsTransport implements PushTransport, OnModuleDestroy {
       topic,
       // Sandbox and production are different APNs hosts AND different
       // token namespaces: a token minted by a development build is
-      // rejected by the production host. Default to sandbox so a
-      // TestFlight or Xcode build works without extra configuration.
+      // rejected by the production host. Sandbox is only for builds run
+      // from Xcode; TestFlight and App Store builds register with
+      // production, so any API they talk to needs APNS_PRODUCTION=true.
       production: this.config.get<string>('APNS_PRODUCTION') === 'true',
     };
   }
