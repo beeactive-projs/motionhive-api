@@ -19,6 +19,7 @@ import { CreateInstructorProfileDto } from './dto/create-instructor-profile.dto'
 import { UpdateInstructorProfileDto } from './dto/update-instructor-profile.dto';
 import { UpdateFullProfileDto } from './dto/update-full-profile.dto';
 import { DiscoverInstructorsDto } from './dto/discover-instructors.dto';
+import { SuggestedInstructorsDto } from './dto/suggested-instructors.dto';
 import { UpdatePrivacySettingsDto } from './dto/update-privacy-settings.dto';
 import { UpdateHandleDto } from './dto/update-handle.dto';
 import { ApiEndpoint } from '../../common/decorators/api-response.decorator';
@@ -33,6 +34,7 @@ import { ProfileDocs } from '../../common/docs/profile.docs';
  * - GET    /profile/instructors/discover → Browse/search public instructors
  *
  * Authenticated:
+ * - GET    /profile/instructors/suggested → Coaches suggested to the caller
  * - GET    /profile/me              → Full profile overview (roles + instructor profile)
  * - PATCH  /profile/me              → Unified profile update (account + instructor)
  * - POST   /profile/instructor      → Activate instructor profile ("I want to instruct")
@@ -52,6 +54,17 @@ export class ProfileController {
   @ApiEndpoint(ProfileDocs.discoverTrainers)
   async discoverInstructors(@Query() dto: DiscoverInstructorsDto) {
     return this.profileService.discoverInstructors(dto);
+  }
+
+  /** Before `instructors/:id`, or its UUID pipe would reject "suggested". */
+  @Get('instructors/suggested')
+  @UseGuards(AuthGuard('jwt'))
+  @ApiEndpoint(ProfileDocs.suggestInstructors)
+  async suggestInstructors(
+    @Request() req: AuthenticatedRequest,
+    @Query() dto: SuggestedInstructorsDto,
+  ) {
+    return this.profileService.suggestInstructors(req.user.id, dto);
   }
 
   @Get('instructors/by-handle/:handle')

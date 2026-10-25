@@ -45,6 +45,41 @@ export const ProfileDocs = {
     ],
   } as ApiEndpointOptions,
 
+  suggestInstructors: {
+    summary: 'Suggested coaches',
+    description:
+      'Coaches suggested to the caller, for the "Suggested coaches" strips (new message, Home, Discover). ' +
+      'Only users who hold the INSTRUCTOR role. Leaves out the caller, coaches they already have or have a pending request with, coaches not ' +
+      'accepting clients, and anyone on either side of a block. Ranked same country first, then coaches ' +
+      'with a photo, then by years of experience. Each row carries a `reason` (only SUGGESTED today; ' +
+      'SPONSORED is planned). Clients must ignore a reason they do not know. ' +
+      'Query params: limit (1 to 20, default 10).',
+    auth: true,
+    responses: [
+      {
+        status: 200,
+        description: 'Suggested coaches (plain array, at most `limit`)',
+        example: [
+          {
+            id: 'profile-uuid',
+            userId: 'user-uuid',
+            handle: 'coach-john',
+            firstName: 'John',
+            lastName: 'Doe',
+            avatarUrl: 'https://res.cloudinary.com/.../avatar.jpg',
+            displayName: 'Coach John',
+            specializations: ['hiit', 'strength'],
+            yearsOfExperience: 8,
+            city: 'Bucharest',
+            countryCode: 'RO',
+            reason: 'SUGGESTED',
+          },
+        ],
+      },
+      ApiStandardResponses.Unauthorized,
+    ],
+  } as ApiEndpointOptions,
+
   getInstructorPublicProfile: {
     summary: 'Get public instructor profile',
     description:

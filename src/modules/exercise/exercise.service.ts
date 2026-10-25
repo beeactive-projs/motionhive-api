@@ -149,15 +149,32 @@ export class ExerciseService {
     const page = filter.page ?? 1;
     const limit = filter.limit ?? 20;
 
-    const { rows, count } = await this.exerciseModel.findAndCountAll({
+    // Page the exercises alone, then load the includes for that page. The
+    // includes are to-many (primary muscles, equipment): paged in one join,
+    // LIMIT counted joined rows, so an exercise with two pieces of
+    // equipment took two slots and the page came back short. Sequelize's
+    // subquery mode would fix that but repeats the ORDER BY outside the
+    // subquery, where `search_name` (not a model attribute) is gone. The
+    // filters and sorts read "Exercise" columns only (muscle and equipment
+    // go through EXISTS), so the id query needs no joins.
+    const { rows: pageRows, count } = await this.exerciseModel.findAndCountAll({
       where,
-      include: this.buildListIncludes(),
+      attributes: ['id'],
       order,
       offset: getOffset(page, limit),
       limit,
-      distinct: true,
-      subQuery: false,
     });
+    const ids = pageRows.map((row) => row.id);
+    const loaded = ids.length
+      ? await this.exerciseModel.findAll({
+          where: { id: { [Op.in]: ids } },
+          include: this.buildListIncludes(),
+        })
+      : [];
+    const byId = new Map(loaded.map((row) => [row.id, row]));
+    const rows = ids
+      .map((id) => byId.get(id))
+      .filter((row): row is Exercise => row !== undefined);
 
     const meta: ListResultMeta = {};
     if (filter.withFacets) {

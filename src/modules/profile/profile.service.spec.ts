@@ -2,6 +2,7 @@ import { ConflictException, NotFoundException } from '@nestjs/common';
 import { getModelToken } from '@nestjs/sequelize';
 import { Test } from '@nestjs/testing';
 import { Sequelize } from 'sequelize-typescript';
+import { Op } from 'sequelize';
 import { WINSTON_MODULE_NEST_PROVIDER } from 'nest-winston';
 
 import { InstructorProfile } from './entities/instructor-profile.entity';
@@ -408,6 +409,75 @@ describe('ProfileService (smoke — not exhaustive)', () => {
 
       const out = await service.discoverInstructors({});
       expect(out[0].socialLinks).toBeNull();
+    });
+  });
+
+  describe('suggestInstructors', () => {
+    const row = {
+      id: 'ip-c',
+      userId: 'u-c',
+      displayName: 'Coach C',
+      specializations: ['yoga'],
+      yearsOfExperience: 3,
+      user: {
+        handle: 'coach-c',
+        firstName: 'C',
+        lastName: 'Last',
+        avatarUrl: 'https://img/c.jpg',
+        city: 'Iasi',
+        countryCode: 'RO',
+      },
+    };
+
+    it('returns each coach with the user id and a SUGGESTED reason', async () => {
+      instructorProfileModel.findAll.mockResolvedValueOnce([row]);
+
+      const out = await service.suggestInstructors(me, { limit: 10 });
+
+      expect(out).toEqual([
+        {
+          id: 'ip-c',
+          userId: 'u-c',
+          handle: 'coach-c',
+          firstName: 'C',
+          lastName: 'Last',
+          avatarUrl: 'https://img/c.jpg',
+          displayName: 'Coach C',
+          specializations: ['yoga'],
+          yearsOfExperience: 3,
+          city: 'Iasi',
+          countryCode: 'RO',
+          reason: 'SUGGESTED',
+        },
+      ]);
+    });
+
+    it('takes only users with the coach role who accept clients, minus the caller, their coaches and blocks', async () => {
+      instructorProfileModel.findAll.mockResolvedValueOnce([]);
+
+      await service.suggestInstructors(me, { limit: 5 });
+
+      const [[query]] = instructorProfileModel.findAll.mock.calls as [
+        [
+          {
+            limit: number;
+            where: {
+              isAcceptingClients: boolean;
+              userId: Record<symbol, string>;
+              [Op.and]: unknown[];
+            };
+          },
+        ],
+      ];
+      expect(query.limit).toBe(5);
+      expect(query.where.isAcceptingClients).toBe(true);
+      expect(query.where.userId[Op.ne]).toBe(me);
+
+      const filters = JSON.stringify(query.where[Op.and]);
+      expect(filters).toContain("r.name = 'INSTRUCTOR'");
+      expect(filters).toContain('instructor_client');
+      expect(filters).toContain('user_block');
+      expect(filters).toContain(`'${me}'`);
     });
   });
 

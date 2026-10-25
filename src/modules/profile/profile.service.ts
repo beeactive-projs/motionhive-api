@@ -14,6 +14,8 @@ import { CreateInstructorProfileDto } from './dto/create-instructor-profile.dto'
 import { UpdateInstructorProfileDto } from './dto/update-instructor-profile.dto';
 import { UpdateFullProfileDto } from './dto/update-full-profile.dto';
 import { DiscoverInstructorsDto } from './dto/discover-instructors.dto';
+import { SuggestedInstructorsDto } from './dto/suggested-instructors.dto';
+import { CoachSuggestionReason } from './entities/coach-suggestion.enums';
 import { UpdatePrivacySettingsDto } from './dto/update-privacy-settings.dto';
 import { UpdateHandleDto } from './dto/update-handle.dto';
 import {
@@ -371,6 +373,94 @@ export class ProfileService {
       city: profile.user?.city ?? null,
       countryCode: profile.user?.countryCode ?? null,
       socialLinks: profile.showSocialLinks ? profile.socialLinks : null,
+    }));
+  }
+
+  /**
+   * Coaches worth suggesting to one person: the "Suggested coaches" strips
+   * in the apps (a new message, Home, Discover).
+   *
+   * Only users who hold the INSTRUCTOR role. Leaves out the viewer, coaches
+   * they already have or have a pending request with, coaches not taking
+   * clients, and anyone on either side of a block. Ranked same country first, then those with a photo, then by
+   * experience. Each row carries a `reason`; sponsored placements will join
+   * this list under their own reason (see `CoachSuggestionReason`).
+   */
+  async suggestInstructors(viewerId: string, dto: SuggestedInstructorsDto) {
+    const viewer = this.sequelize.escape(viewerId);
+
+    const profiles = await this.instructorProfileModel.findAll({
+      where: {
+        isAcceptingClients: true,
+        userId: { [Op.ne]: viewerId },
+        [Op.and]: [
+          // Coaches only: an admin can revoke the role and leave the profile behind.
+          literal(`EXISTS (
+            SELECT 1 FROM user_role ur
+            JOIN role r ON r.id = ur.role_id
+            WHERE ur.user_id = "InstructorProfile"."user_id"
+              AND r.name = 'INSTRUCTOR'
+          )`),
+          literal(`NOT EXISTS (
+            SELECT 1 FROM instructor_client ic
+            WHERE ic.client_id = ${viewer}
+              AND ic.instructor_id = "InstructorProfile"."user_id"
+              AND ic.status IN ('${InstructorClientStatus.ACTIVE}', '${InstructorClientStatus.PENDING}')
+          )`),
+          literal(`NOT EXISTS (
+            SELECT 1 FROM user_block ub
+            WHERE (ub.blocker_id = ${viewer} AND ub.blocked_id = "InstructorProfile"."user_id")
+               OR (ub.blocker_id = "InstructorProfile"."user_id" AND ub.blocked_id = ${viewer})
+          )`),
+        ],
+      },
+      include: [
+        {
+          model: User,
+          attributes: USER_SAFE_ATTRIBUTES,
+          // A coach whose account is closing (or switched off) is not suggested.
+          where: { isActive: true },
+          required: true,
+        },
+      ],
+      subQuery: false,
+      attributes: [
+        'id',
+        'userId',
+        'displayName',
+        'specializations',
+        'yearsOfExperience',
+      ],
+      order: [
+        [
+          literal(
+            `CASE WHEN "user"."country_code" = (SELECT country_code FROM "user" WHERE id = ${viewer}) THEN 0 ELSE 1 END`,
+          ),
+          'ASC',
+        ],
+        [
+          literal(`CASE WHEN "user"."avatar_id" IS NULL THEN 1 ELSE 0 END`),
+          'ASC',
+        ],
+        ['yearsOfExperience', 'DESC NULLS LAST'],
+        ['createdAt', 'ASC'],
+      ],
+      limit: dto.limit ?? 10,
+    });
+
+    return profiles.map((profile) => ({
+      id: profile.id,
+      userId: profile.userId,
+      handle: profile.user?.handle ?? null,
+      firstName: profile.user?.firstName,
+      lastName: profile.user?.lastName,
+      avatarUrl: profile.user?.avatarUrl ?? null,
+      displayName: profile.displayName,
+      specializations: profile.specializations,
+      yearsOfExperience: profile.yearsOfExperience,
+      city: profile.user?.city ?? null,
+      countryCode: profile.user?.countryCode ?? null,
+      reason: CoachSuggestionReason.SUGGESTED,
     }));
   }
 
