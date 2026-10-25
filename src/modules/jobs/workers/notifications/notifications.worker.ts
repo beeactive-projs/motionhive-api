@@ -5,6 +5,7 @@ import { WINSTON_MODULE_NEST_PROVIDER } from 'nest-winston';
 
 import { toLocale } from '../../../../common/i18n';
 import { EmailService } from '../../../../common/services/email.service';
+import { MessagingService } from '../../../messaging/messaging.service';
 import { PushDeliveryService } from '../../../notification/push/push-delivery.service';
 import { NotificationReceiptService } from '../../../notification/services/notification-receipt.service';
 import { JobHandler, MultiJobWorker } from '../../common/multi-job.worker';
@@ -36,6 +37,7 @@ export class NotificationsWorker extends MultiJobWorker {
     private readonly emailService: EmailService,
     private readonly pushDelivery: PushDeliveryService,
     private readonly receiptService: NotificationReceiptService,
+    private readonly messagingService: MessagingService,
   ) {
     super(logger);
   }
@@ -110,6 +112,7 @@ export class NotificationsWorker extends MultiJobWorker {
       body: payload.body,
       data: payload.data,
       collapseKey: payload.collapseKey,
+      badge: await this.badgeCount(payload.userId, ctx),
     });
 
     await this.pushDelivery.recordOutcome(payload.receiptId, outcome);
@@ -134,5 +137,32 @@ export class NotificationsWorker extends MultiJobWorker {
     ctx.log.log(
       `push not delivered user=${payload.userId} reason=${outcome.reason ?? 'unknown'} (not retrying)`,
     );
+  }
+
+  /**
+   * The app icon number: unread messages plus unread bell notifications,
+   * the same two counts the app shows. Read at send time, not enqueue
+   * time, so a retried job carries the current number. A message never
+   * counts twice: its receipt has in-app off, which the bell count skips.
+   *
+   * A failed count sends the push without a number (iOS keeps the last
+   * one) rather than holding the alert back.
+   */
+  private async badgeCount(
+    userId: string,
+    ctx: JobContext,
+  ): Promise<number | undefined> {
+    try {
+      const [messages, notifications] = await Promise.all([
+        this.messagingService.getUnreadCount(userId),
+        this.receiptService.unreadCount(userId),
+      ]);
+      return messages.count + notifications;
+    } catch (err) {
+      ctx.log.warn(
+        `badge count failed user=${userId}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return undefined;
+    }
   }
 }

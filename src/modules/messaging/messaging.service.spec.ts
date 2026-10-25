@@ -6,6 +6,7 @@ import {
 import { getModelToken } from '@nestjs/sequelize';
 import { Test } from '@nestjs/testing';
 import { WINSTON_MODULE_NEST_PROVIDER } from 'nest-winston';
+import { Op } from 'sequelize';
 
 import { MessagingService } from './messaging.service';
 import { MessagingSafetyService } from './messaging-safety.service';
@@ -72,6 +73,7 @@ describe('MessagingService — Stage 2 core', () => {
     emitConversationRead: jest.Mock;
     emitConversationMuted: jest.Mock;
     emitConversationUnread: jest.Mock;
+    emitConversationCleared: jest.Mock;
     subscribeForUser: jest.Mock;
   };
   let userFindByPkSpy: jest.SpyInstance;
@@ -165,6 +167,7 @@ describe('MessagingService — Stage 2 core', () => {
       emitConversationRead: jest.fn(),
       emitConversationMuted: jest.fn(),
       emitConversationUnread: jest.fn(),
+      emitConversationCleared: jest.fn(),
       subscribeForUser: jest.fn(),
     };
 
@@ -657,6 +660,53 @@ describe('MessagingService — Stage 2 core', () => {
     });
   });
 
+  // ─────────────────────────── clearConversation ───────────────────────────
+
+  describe('clearConversation', () => {
+    it("moves the caller's floor and drops a pending mark, deleting nothing", async () => {
+      part.findOne.mockResolvedValue({ id: 'p-1' });
+      const before = Date.now();
+
+      const { clearedAt } = await service.clearConversation('user-1', 'conv-1');
+
+      expect(clearedAt.getTime()).toBeGreaterThanOrEqual(before);
+      expect(part.update).toHaveBeenCalledTimes(1);
+      const [values, options] = part.update.mock.calls[0];
+      expect(values).toEqual({ clearedAt, markedUnread: false });
+      expect(options.where).toEqual({
+        conversationId: 'conv-1',
+        userId: 'user-1',
+        leftAt: null,
+      });
+      // The other side and moderation keep every message.
+      expect(msg.create).not.toHaveBeenCalled();
+      expect(conv.update).not.toHaveBeenCalled();
+    });
+
+    it('emits a conversation.cleared SSE event to the actor only', async () => {
+      part.findOne.mockResolvedValue({ id: 'p-1' });
+
+      const { clearedAt } = await service.clearConversation('user-1', 'conv-1');
+
+      expect(emitter.emitConversationCleared).toHaveBeenCalledWith(['user-1'], {
+        conversationId: 'conv-1',
+        userId: 'user-1',
+        clearedAt: clearedAt.toISOString(),
+      });
+    });
+
+    it('404s for a non-participant', async () => {
+      safety.assertParticipant.mockRejectedValueOnce(
+        new NotFoundException('Conversation not found.'),
+      );
+      await expect(
+        service.clearConversation('user-x', 'conv-1'),
+      ).rejects.toBeInstanceOf(NotFoundException);
+      expect(part.update).not.toHaveBeenCalled();
+      expect(emitter.emitConversationCleared).not.toHaveBeenCalled();
+    });
+  });
+
   // ─────────────────────────── deleteOwnMessage ───────────────────────────
 
   describe('deleteOwnMessage', () => {
@@ -873,6 +923,62 @@ describe('MessagingService — Stage 2 core', () => {
 
       expect(result.items).toHaveLength(1);
       expect(result.nextBefore).toBeNull();
+    });
+
+    it('leaves out what came before the reader deleted the chat', async () => {
+      const clearedAt = new Date('2026-10-01T00:00:00Z');
+      part.findOne.mockResolvedValue({ id: 'p-1', clearedAt });
+      msg.findAll.mockResolvedValue([]);
+
+      await service.listMessages('u', 'c', { limit: 50 });
+
+      expect(msg.findAll.mock.calls[0][0].where.createdAt).toEqual({
+        [Op.gt]: clearedAt,
+      });
+    });
+
+    it('keeps the delete floor under an older-page cursor', async () => {
+      const clearedAt = new Date('2026-10-01T00:00:00Z');
+      const cursorAt = new Date('2026-10-05T00:00:00Z');
+      part.findOne.mockResolvedValue({ id: 'p-1', clearedAt });
+      msg.findOne.mockResolvedValue({ id: 'm-x', createdAt: cursorAt });
+      msg.findAll.mockResolvedValue([]);
+
+      await service.listMessages('u', 'c', { before: 'm-x', limit: 50 });
+
+      expect(msg.findAll.mock.calls[0][0].where.createdAt).toEqual({
+        [Op.gt]: clearedAt,
+        [Op.lt]: cursorAt,
+      });
+    });
+  });
+
+  describe('getMessage after "Delete chat"', () => {
+    const clearedAt = new Date('2026-10-01T00:00:00Z');
+    const row = (createdAt: Date) => ({
+      id: 'm-1',
+      conversationId: 'c',
+      senderId: 'other',
+      kind: MessageKind.TEXT,
+      body: 'hi',
+      deletedAt: null,
+      createdAt,
+    });
+
+    it('404s for a message the reader deleted with the chat', async () => {
+      msg.findByPk.mockResolvedValue(row(new Date('2026-09-30T00:00:00Z')));
+      part.findOne.mockResolvedValue({ id: 'p-1', clearedAt });
+
+      await expect(service.getMessage('u', 'm-1')).rejects.toBeInstanceOf(
+        NotFoundException,
+      );
+    });
+
+    it('returns a message sent after the delete', async () => {
+      msg.findByPk.mockResolvedValue(row(new Date('2026-10-02T00:00:00Z')));
+      part.findOne.mockResolvedValue({ id: 'p-1', clearedAt });
+
+      expect((await service.getMessage('u', 'm-1')).id).toBe('m-1');
     });
   });
 
@@ -1521,6 +1627,41 @@ describe('MessagingService — Stage 2 core', () => {
       msg.findAll.mockResolvedValue([{ conversationId: 'c1', count: 3 }]);
 
       expect(await service.getUnreadCount(me)).toEqual({ count: 4 });
+    });
+
+    it('getUnreadCount counts from a "Delete chat" when it is later than the last read', async () => {
+      const lastReadAt = new Date('2026-09-01T00:00:00Z');
+      const clearedAt = new Date('2026-10-01T00:00:00Z');
+      part.findAll.mockResolvedValue([
+        { conversationId: 'c1', lastReadAt, clearedAt },
+        { conversationId: 'c2', lastReadAt: clearedAt, clearedAt: lastReadAt },
+        { conversationId: 'c3', lastReadAt: null, clearedAt },
+      ]);
+      msg.findAll.mockResolvedValue([]);
+
+      await service.getUnreadCount(me);
+
+      const floors = msg.findAll.mock.calls[0][0].where[Op.or].map(
+        (w: { createdAt: Record<symbol, Date> }) => w.createdAt[Op.gt],
+      );
+      expect(floors).toEqual([clearedAt, clearedAt, clearedAt]);
+    });
+
+    it('listConversations hides deleted chats with nothing newer, and quotes nothing pre-delete', async () => {
+      const row = directRow('c1');
+      const clearedAt = new Date('2026-05-12T00:00:00Z'); // after lastMessageAt
+      part.findAndCountAll.mockResolvedValue({
+        rows: [{ ...row, clearedAt }],
+        count: 1,
+      });
+      msg.findAll.mockResolvedValue([]);
+
+      const page = await service.listConversations(me, 1, 50);
+
+      const where = part.findAndCountAll.mock.calls[0][0].where;
+      expect(where[Op.or][0]).toEqual({ clearedAt: null });
+      expect(page.items[0].lastMessagePreview).toBeNull();
+      expect(page.items[0].lastMessageAt).toBeNull();
     });
 
     it('getUnreadCount asks nothing further when the user has no threads', async () => {

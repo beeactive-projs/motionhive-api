@@ -76,6 +76,17 @@ export class ConversationParticipant extends Model {
   })
   declare markedUnread: boolean;
 
+  /**
+   * The participant deleted the chat for themselves ("Delete chat").
+   * Messages at or before it are hidden from them and never unread; the
+   * other participant is unaffected.
+   */
+  @Column({
+    type: DataType.DATE,
+    allowNull: true,
+  })
+  declare clearedAt: Date | null;
+
   @Column({
     type: DataType.DATE,
     defaultValue: DataType.NOW,

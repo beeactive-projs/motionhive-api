@@ -108,6 +108,19 @@ export interface SendMessageResult {
 // Tombstone moved to ./constants — single source of truth.
 const DELETED_BODY_TOMBSTONE = DELETED_MESSAGE_BODY;
 
+/**
+ * Where a participant's unread messages start: the later of how far they
+ * have read and when they deleted the chat. Nothing before a delete is
+ * ever unread, even if they never opened the thread.
+ */
+function readFloor(
+  participant: Pick<ConversationParticipant, 'lastReadAt' | 'clearedAt'>,
+): Date | null {
+  const { lastReadAt, clearedAt } = participant;
+  if (!lastReadAt || !clearedAt) return lastReadAt ?? clearedAt ?? null;
+  return lastReadAt > clearedAt ? lastReadAt : clearedAt;
+}
+
 /** The conversation fields an inbox row is built from. */
 type ConversationSummary = Pick<
   Conversation,
@@ -355,7 +368,7 @@ export class MessagingService {
     const unread = await this.countUnreadFor(
       senderId,
       conversation.id,
-      self.lastReadAt,
+      readFloor(self),
     );
     const listItem = this.toListItem(
       self,
@@ -533,7 +546,20 @@ export class MessagingService {
     const offset = (page - 1) * limit;
 
     const { rows, count } = await this.participantModel.findAndCountAll({
-      where: { userId, leftAt: null },
+      where: {
+        userId,
+        leftAt: null,
+        // A chat the user deleted stays out of the inbox until something
+        // newer than the delete arrives.
+        [Op.or]: [
+          { clearedAt: null },
+          Sequelize.where(
+            col('conversation.last_message_at'),
+            Op.gt,
+            col('ConversationParticipant.cleared_at'),
+          ),
+        ],
+      },
       include: [
         {
           model: Conversation,
@@ -578,13 +604,16 @@ export class MessagingService {
     cursor: { before?: string; limit: number },
   ): Promise<{ items: MessageView[]; nextBefore: string | null }> {
     await this.assertParticipant(userId, conversationId);
+    const clearedAt = await this.clearedAtFor(userId, conversationId);
 
     const limit = Math.min(Math.max(cursor.limit, 1), 100);
 
     const where: {
       conversationId: string;
-      createdAt?: { [Op.lt]: Date };
+      createdAt?: { [Op.lt]?: Date; [Op.gt]?: Date };
     } = { conversationId };
+    // Whatever came before a "Delete chat" is gone for this reader.
+    if (clearedAt) where.createdAt = { [Op.gt]: clearedAt };
 
     if (cursor.before) {
       const beforeMessage = await this.messageModel.findOne({
@@ -596,7 +625,10 @@ export class MessagingService {
           apiError('messaging.cannotLoadOlderMessages'),
         );
       }
-      where.createdAt = { [Op.lt]: beforeMessage.createdAt };
+      where.createdAt = {
+        ...where.createdAt,
+        [Op.lt]: beforeMessage.createdAt,
+      };
     }
 
     const rows = await this.messageModel.findAll({
@@ -637,6 +669,12 @@ export class MessagingService {
     // assertParticipant 404s if the user isn't in the conversation —
     // same shape as the message-not-found path. No leak.
     await this.assertParticipant(userId, message.conversationId);
+    // A message the reader deleted along with the chat is as gone as one
+    // they could never see.
+    const clearedAt = await this.clearedAtFor(userId, message.conversationId);
+    if (clearedAt && message.createdAt <= clearedAt) {
+      throw new NotFoundException(apiError('messaging.messageNotFound'));
+    }
     return this.toMessageView(message);
   }
 
@@ -647,7 +685,7 @@ export class MessagingService {
   async getUnreadCount(userId: string): Promise<{ count: number }> {
     const participants = await this.participantModel.findAll({
       where: { userId, leftAt: null },
-      attributes: ['conversationId', 'lastReadAt', 'markedUnread'],
+      attributes: ['conversationId', 'lastReadAt', 'markedUnread', 'clearedAt'],
     });
 
     if (participants.length === 0) {
@@ -834,6 +872,37 @@ export class MessagingService {
       { leftAt: new Date() },
       { where: { conversationId, userId, leftAt: null } },
     );
+  }
+
+  /**
+   * "Delete chat", for the caller only. Sets the participant's `clearedAt`:
+   * everything up to now disappears from their view and their inbox, and
+   * the other side keeps the whole thread. Nothing is removed, so reports
+   * and moderation still see every message.
+   *
+   * A pending "mark as unread" goes with the chat. A later message brings
+   * the thread back, holding only what came after the delete.
+   */
+  async clearConversation(
+    userId: string,
+    conversationId: string,
+  ): Promise<{ clearedAt: Date }> {
+    await this.assertParticipant(userId, conversationId);
+
+    const clearedAt = new Date();
+    await this.participantModel.update(
+      { clearedAt, markedUnread: false },
+      { where: { conversationId, userId, leftAt: null } },
+    );
+
+    // Same fan-out as mute: the actor's other sessions/tabs only.
+    this.emitter.emitConversationCleared([userId], {
+      conversationId,
+      userId,
+      clearedAt: clearedAt.toISOString(),
+    });
+
+    return { clearedAt };
   }
 
   /**
@@ -1036,6 +1105,18 @@ export class MessagingService {
     }
   }
 
+  /** When the user deleted this chat for themselves, if they have. */
+  private async clearedAtFor(
+    userId: string,
+    conversationId: string,
+  ): Promise<Date | null> {
+    const row = await this.participantModel.findOne({
+      where: { conversationId, userId, leftAt: null },
+      attributes: ['clearedAt'],
+    });
+    return row?.clearedAt ?? null;
+  }
+
   /**
    * Active participants of a conversation, minus the actor. Used by
    * the realtime emit calls to figure out who needs the live event.
@@ -1117,8 +1198,8 @@ export class MessagingService {
   /**
    * Unread messages per conversation for one user, in a single grouped
    * query. "Unread" = sent by someone else, not deleted, and newer than
-   * the user's `lastReadAt` for that conversation (everything when they
-   * have never read it).
+   * the user's read floor for that conversation (`lastReadAt`, or a later
+   * "Delete chat"; everything when there is neither).
    */
   private async countUnreadByConversation(
     userId: string,
@@ -1129,10 +1210,13 @@ export class MessagingService {
       where: {
         senderId: { [Op.ne]: userId },
         deletedAt: null,
-        [Op.or]: participants.map((p) => ({
-          conversationId: p.conversationId,
-          ...(p.lastReadAt ? { createdAt: { [Op.gt]: p.lastReadAt } } : {}),
-        })),
+        [Op.or]: participants.map((p) => {
+          const floor = readFloor(p);
+          return {
+            conversationId: p.conversationId,
+            ...(floor ? { createdAt: { [Op.gt]: floor } } : {}),
+          };
+        }),
       },
       group: ['Message.conversation_id'],
       raw: true,
@@ -1168,14 +1252,14 @@ export class MessagingService {
   private countUnreadFor(
     userId: string,
     conversationId: string,
-    lastReadAt: Date | null,
+    floor: Date | null,
   ): Promise<number> {
     return this.messageModel.count({
       where: {
         conversationId,
         senderId: { [Op.ne]: userId },
         deletedAt: null,
-        ...(lastReadAt ? { createdAt: { [Op.gt]: lastReadAt } } : {}),
+        ...(floor ? { createdAt: { [Op.gt]: floor } } : {}),
       },
     });
   }
@@ -1206,13 +1290,23 @@ export class MessagingService {
     const mutedUntil = participant.mutedUntil;
     const muted = !!(mutedUntil && mutedUntil.getTime() > Date.now());
 
+    // Opened again after "Delete chat" with nothing new: the last message
+    // is one the reader deleted, so the row quotes nothing.
+    const clearedAt = participant.clearedAt;
+    const lastIsCleared = !!(
+      clearedAt &&
+      (!conversation.lastMessageAt || conversation.lastMessageAt <= clearedAt)
+    );
+
     return {
       id: conversation.id,
       type: conversation.type,
       name: conversation.name,
       avatarUrl: conversation.avatarUrl,
-      lastMessageAt: conversation.lastMessageAt,
-      lastMessagePreview: conversation.lastMessagePreview,
+      lastMessageAt: lastIsCleared ? null : conversation.lastMessageAt,
+      lastMessagePreview: lastIsCleared
+        ? null
+        : conversation.lastMessagePreview,
       unreadCount,
       muted,
       markedUnread: !!participant.markedUnread,

@@ -151,6 +151,18 @@ export const MessagingDocs = {
     ],
   } as ApiEndpointOptions,
 
+  clearConversation: {
+    summary: 'Delete a conversation for me',
+    description:
+      "Sets `cleared_at` on the caller's participant row. Messages up to that moment are hidden from the caller (list, single lookup) and never count as unread; the conversation leaves the caller's inbox until a newer message arrives. The other participant keeps the full history, and nothing is removed, so reports and moderation still see every message. Emits a `conversation.cleared` SSE event to the caller's other sessions.",
+    auth: true,
+    responses: [
+      ApiStandardResponses.OK,
+      ApiStandardResponses.Unauthorized,
+      ApiStandardResponses.NotFound,
+    ],
+  } as ApiEndpointOptions,
+
   deleteOwnMessage: {
     summary: 'Soft-delete one of my messages',
     description:
