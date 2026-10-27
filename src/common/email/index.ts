@@ -102,6 +102,10 @@ export {
   clientInvitationExistingUserTemplateText,
 } from './client/invitation-existing-user.template';
 export {
+  clientInvitationImportedTemplate,
+  clientInvitationImportedTemplateText,
+} from './client/invitation-imported.template';
+export {
   clientRequestToInstructorTemplate,
   clientRequestToInstructorTemplateText,
 } from './client/request-to-instructor.template';

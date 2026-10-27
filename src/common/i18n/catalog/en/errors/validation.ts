@@ -19,6 +19,8 @@ export const validation = {
   invalidPostalCode:
     'Enter a valid postal code (2 to 20 letters, digits, spaces or hyphens).',
   coachNameTooShort: 'Coach name must be at least 2 characters.',
+  /** `ImportClientsDto.rows`; the number is `CLIENT_IMPORT_MAX_ROWS`. */
+  importTooManyRows: 'You can import up to 200 people at a time.',
   noteTooLong: 'Note must be 500 characters or fewer.',
   personalMessageTooLong: 'Personal message must be 500 characters or fewer.',
 };

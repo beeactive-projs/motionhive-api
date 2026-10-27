@@ -10,6 +10,7 @@ import { getModelToken } from '@nestjs/sequelize';
 import { Sequelize } from 'sequelize-typescript';
 import { WINSTON_MODULE_NEST_PROVIDER } from 'nest-winston';
 
+import { ClientImportService } from './client-import.service';
 import { ClientService } from './client.service';
 import { ClientDirection } from './dto/list-clients.dto';
 import {
@@ -54,8 +55,10 @@ describe('ClientService', () => {
     sendClientRequestAcceptedEmail: jest.Mock;
     sendClientRequestDeclinedEmail: jest.Mock;
     sendClientCollaborationEndedEmail: jest.Mock;
+    sendClientInvitationEmail: jest.Mock;
   };
   let notificationService: { notify: jest.Mock };
+  let clientImportService: { requeueInviteEmail: jest.Mock };
 
   const sequelizeMock = {
     transaction: jest.fn((cb: (tx: unknown) => unknown) =>
@@ -77,8 +80,12 @@ describe('ClientService', () => {
       sendClientRequestAcceptedEmail: jest.fn().mockResolvedValue(undefined),
       sendClientRequestDeclinedEmail: jest.fn().mockResolvedValue(undefined),
       sendClientCollaborationEndedEmail: jest.fn().mockResolvedValue(undefined),
+      sendClientInvitationEmail: jest.fn().mockResolvedValue(undefined),
     };
     notificationService = { notify: jest.fn().mockResolvedValue(undefined) };
+    clientImportService = {
+      requeueInviteEmail: jest.fn().mockResolvedValue(undefined),
+    };
 
     // Default: User.findByPk returns a generic profile so the email +
     // notification side-effects can run without crashing.
@@ -108,6 +115,7 @@ describe('ClientService', () => {
         { provide: RoleService, useValue: roleService },
         { provide: EmailService, useValue: emailService },
         { provide: NotificationService, useValue: notificationService },
+        { provide: ClientImportService, useValue: clientImportService },
         { provide: WINSTON_MODULE_NEST_PROVIDER, useValue: makeSilentLogger() },
       ],
     }).compile();
@@ -314,6 +322,51 @@ describe('ClientService', () => {
       ).rejects.toBeInstanceOf(BadRequestException);
     });
 
+    it("carries an imported invite's coach note into the new relationship", async () => {
+      clientRequestModel.findByPk.mockResolvedValue(
+        pendingRequest({
+          fromUserId: 'coach-1',
+          type: ClientRequestType.INSTRUCTOR_TO_CLIENT,
+          coachNote: 'Knee injury in 2025',
+        }),
+      );
+      instructorClientModel.findOne.mockResolvedValue(null);
+      instructorClientModel.create.mockResolvedValue(undefined);
+
+      await service.acceptRequest('r-1', 'recipient-1');
+
+      expect(instructorClientModel.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          instructorId: 'coach-1',
+          clientId: 'recipient-1',
+          notes: 'Knee injury in 2025',
+        }),
+        expect.any(Object),
+      );
+    });
+
+    it("never overwrites a returning client's notes with the imported one", async () => {
+      clientRequestModel.findByPk.mockResolvedValue(
+        pendingRequest({
+          fromUserId: 'coach-1',
+          type: ClientRequestType.INSTRUCTOR_TO_CLIENT,
+          coachNote: 'From the sheet',
+        }),
+      );
+      const existing = {
+        notes: 'Written in the app',
+        update: jest.fn().mockResolvedValue(undefined),
+      };
+      instructorClientModel.findOne.mockResolvedValue(existing);
+
+      await service.acceptRequest('r-1', 'recipient-1');
+
+      expect(existing.update).toHaveBeenCalledWith(
+        expect.not.objectContaining({ notes: expect.anything() }),
+        expect.any(Object),
+      );
+    });
+
     it('flips the request and creates an ACTIVE relationship', async () => {
       const request = pendingRequest();
       clientRequestModel.findByPk.mockResolvedValue(request);
@@ -377,6 +430,46 @@ describe('ClientService', () => {
   // =====================================================================
   // declineRequest
   // =====================================================================
+  describe('resendInvitation', () => {
+    function sentInvite(overrides: Record<string, unknown> = {}) {
+      return {
+        id: 'r-1',
+        fromUserId: 'coach-1',
+        toUserId: null,
+        invitedEmail: 'ana@x.com',
+        type: ClientRequestType.INSTRUCTOR_TO_CLIENT,
+        status: ClientRequestStatus.PENDING,
+        token: 'old',
+        message: null,
+        emailStatus: null,
+        update: jest.fn().mockResolvedValue(undefined),
+        ...overrides,
+      };
+    }
+
+    it('sends a hand-typed invite straight away, as before', async () => {
+      clientRequestModel.findOne.mockResolvedValue(sentInvite());
+
+      await service.resendInvitation('coach-1', 'r-1');
+
+      expect(emailService.sendClientInvitationEmail).toHaveBeenCalled();
+      expect(clientImportService.requeueInviteEmail).not.toHaveBeenCalled();
+    });
+
+    it('puts an imported invite back on the queue so its status tracks the resend', async () => {
+      const request = sentInvite({ emailStatus: 'FAILED' });
+      clientRequestModel.findOne.mockResolvedValue(request);
+
+      await service.resendInvitation('coach-1', 'r-1');
+
+      expect(clientImportService.requeueInviteEmail).toHaveBeenCalledWith(
+        request,
+        expect.any(String),
+      );
+      expect(emailService.sendClientInvitationEmail).not.toHaveBeenCalled();
+    });
+  });
+
   describe('declineRequest', () => {
     it('only the recipient can decline (403 otherwise)', async () => {
       clientRequestModel.findByPk.mockResolvedValue({

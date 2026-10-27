@@ -297,6 +297,130 @@ export const ClientDocs = {
     ],
   } as ApiEndpointOptions,
 
+  previewImport: {
+    summary: 'Preview a client import',
+    description:
+      'Dry run of POST /clients/import with the same body: what each row would do, nothing saved or sent. ' +
+      "Statuses only describe the coach's own data (INVITE, ALREADY_INVITED, ALREADY_CLIENT, ARCHIVED_CLIENT, " +
+      'REQUESTED_YOU, DUPLICATE, INVALID_EMAIL, SELF); whether an address has a MotionHive account is never revealed. ' +
+      'Up to 200 rows. 60 per hour.',
+    auth: true,
+    responses: [
+      {
+        status: 200,
+        description: 'What the import would do',
+        example: {
+          dryRun: true,
+          rows: [
+            {
+              index: 0,
+              email: 'ana.pop@example.com',
+              firstName: 'Ana',
+              lastName: 'Pop',
+              status: 'INVITE',
+              invitedAt: null,
+            },
+            {
+              index: 1,
+              email: 'dan@example.com',
+              firstName: 'Dan',
+              lastName: null,
+              status: 'ALREADY_INVITED',
+              invitedAt: '2026-10-12T09:00:00.000Z',
+            },
+          ],
+          counts: {
+            INVITE: 1,
+            ALREADY_INVITED: 1,
+            ALREADY_CLIENT: 0,
+            ARCHIVED_CLIENT: 0,
+            REQUESTED_YOU: 0,
+            DUPLICATE: 0,
+            INVALID_EMAIL: 0,
+            SELF: 0,
+          },
+          toSend: 1,
+          dailyRemaining: 500,
+        },
+      },
+      {
+        status: 400,
+        description: 'More than 200 rows, or a field over its length',
+      },
+      ApiStandardResponses.Unauthorized,
+      ApiStandardResponses.Forbidden,
+    ],
+  } as ApiEndpointOptions,
+
+  previewImportEmail: {
+    summary: 'Preview the client import invite email',
+    description:
+      "Renders the invite email a client import sends, with the coach's name, photo and the message and language " +
+      'given. Always the version for someone without an account. Nothing is saved or sent. 60 per hour.',
+    auth: true,
+    responses: [
+      {
+        status: 200,
+        description: 'Subject and HTML of the email',
+        example: {
+          subject: 'Dan Ionescu added you as a client on MotionHive',
+          html: '<!DOCTYPE html><html lang="en">…</html>',
+        },
+      },
+      ApiStandardResponses.Unauthorized,
+      ApiStandardResponses.Forbidden,
+    ],
+  } as ApiEndpointOptions,
+
+  importClients: {
+    summary: 'Import a client list',
+    description:
+      'Turns each INVITE row into a pending INSTRUCTOR_TO_CLIENT invitation in one transaction, and with ' +
+      'resendPending=true sends ALREADY_INVITED rows again (30 more days). Someone with no account gets a ' +
+      'signup link that connects them on signup; someone with an account gets an in-app request. Invite emails ' +
+      "go out through the job queue; each row's emailStatus moves QUEUED → SENT or FAILED. Other statuses are " +
+      'skipped. Capped at 500 invite emails per coach per 24 hours. 10 per hour.',
+    auth: true,
+    responses: [
+      {
+        status: 201,
+        description: 'Invitations created and emails queued',
+        example: {
+          dryRun: false,
+          rows: [
+            {
+              index: 0,
+              email: 'ana.pop@example.com',
+              firstName: 'Ana',
+              lastName: 'Pop',
+              status: 'INVITE',
+              invitedAt: null,
+            },
+          ],
+          counts: {
+            INVITE: 1,
+            ALREADY_INVITED: 0,
+            ALREADY_CLIENT: 0,
+            ARCHIVED_CLIENT: 0,
+            REQUESTED_YOU: 0,
+            DUPLICATE: 0,
+            INVALID_EMAIL: 0,
+            SELF: 0,
+          },
+          toSend: 1,
+          dailyRemaining: 500,
+        },
+      },
+      {
+        status: 400,
+        description:
+          'Daily sending cap reached, more than 200 rows, or invalid input',
+      },
+      ApiStandardResponses.Unauthorized,
+      ApiStandardResponses.Forbidden,
+    ],
+  } as ApiEndpointOptions,
+
   requestToBeClient: {
     summary: 'Request to become a client',
     description:

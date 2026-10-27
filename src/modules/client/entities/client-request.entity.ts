@@ -37,6 +37,20 @@ export enum ClientRequestStatus {
 }
 
 /**
+ * Delivery of the invite email, tracked only for invites an import sent
+ * (keep in sync with migration 071). NULL on every other row.
+ *
+ * - QUEUED: handed to the job queue, not sent yet
+ * - SENT: Resend accepted it
+ * - FAILED: the last retry failed; the coach can send it again
+ */
+export enum ClientInviteEmailStatus {
+  QUEUED = 'QUEUED',
+  SENT = 'SENT',
+  FAILED = 'FAILED',
+}
+
+/**
  * Client Request Entity
  *
  * Tracks the request/invitation flow for establishing an instructor-client
@@ -115,6 +129,39 @@ export class ClientRequest extends Model {
     allowNull: true,
   })
   declare respondedAt: Date | null;
+
+  /** Name the coach typed for someone with no account yet (migration 071). */
+  @Column({
+    type: DataType.STRING(100),
+    allowNull: true,
+  })
+  declare invitedFirstName: string | null;
+
+  @Column({
+    type: DataType.STRING(100),
+    allowNull: true,
+  })
+  declare invitedLastName: string | null;
+
+  /** The coach's private note; copied into instructor_client.notes on accept. */
+  @Column({
+    type: DataType.TEXT,
+    allowNull: true,
+  })
+  declare coachNote: string | null;
+
+  @Column({
+    type: DataType.ENUM(...Object.values(ClientInviteEmailStatus)),
+    allowNull: true,
+  })
+  declare emailStatus: ClientInviteEmailStatus | null;
+
+  /** Set when an import created this invite or sent it again. */
+  @Column({
+    type: DataType.DATE,
+    allowNull: true,
+  })
+  declare importedAt: Date | null;
 
   @CreatedAt
   @Column({

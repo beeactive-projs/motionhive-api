@@ -3,6 +3,7 @@ import {
   Controller,
   Delete,
   Get,
+  HttpCode,
   Param,
   ParseUUIDPipe,
   Patch,
@@ -21,9 +22,14 @@ import { ClientDocs } from '../../common/docs/client.docs';
 import { FilterSettingsDto } from '../../common/dto/filter-settings.dto';
 import { RolesGuard } from '../../common/guards/roles.guard';
 import type { AuthenticatedRequest } from '../../common/types/authenticated-request';
+import { ClientImportService } from './client-import.service';
 import { ClientService } from './client.service';
 import { AcceptByTokenDto } from './dto/accept-by-token.dto';
 import { CreateClientRequestDto } from './dto/create-client-request.dto';
+import {
+  ImportClientsDto,
+  PreviewImportEmailDto,
+} from './dto/import-clients.dto';
 import { ListClientsDto } from './dto/list-clients.dto';
 import { RequestClientDto } from './dto/request-client.dto';
 import { UpdateClientDto } from './dto/update-client.dto';
@@ -40,6 +46,9 @@ import { InstructorClientStatus } from './entities/instructor-client.entity';
  * - GET    /clients/invites                          → List pending email-only invitations (INSTRUCTOR)
  * - GET    /clients/invite/:token                    → Get invite details by token (PUBLIC)
  * - POST   /clients/invite                           → Send client invitation (INSTRUCTOR)
+ * - POST   /clients/import/preview                   → What an import would do, nothing saved (INSTRUCTOR)
+ * - POST   /clients/import                           → Import a client list as invitations (INSTRUCTOR)
+ * - POST   /clients/import/email-preview             → The import's invite email, rendered (INSTRUCTOR)
  * - POST   /clients/request/:instructorId            → Request to become a client
  * - POST   /clients/requests/:requestId/accept       → Accept a request
  * - POST   /clients/requests/:requestId/decline      → Decline a request
@@ -51,7 +60,10 @@ import { InstructorClientStatus } from './entities/instructor-client.entity';
 @ApiTags('Clients')
 @Controller('clients')
 export class ClientController {
-  constructor(private readonly clientService: ClientService) {}
+  constructor(
+    private readonly clientService: ClientService,
+    private readonly clientImportService: ClientImportService,
+  ) {}
 
   /**
    * POST /clients/filter
@@ -224,6 +236,64 @@ export class ClientController {
     @Body() dto: CreateClientRequestDto,
   ) {
     return this.clientService.sendInvitationFromDto(req.user.id, dto);
+  }
+
+  /**
+   * POST /clients/import/preview
+   * Dry run of an import: what each row would do, nothing saved or sent.
+   * Its own, looser bucket than the import itself: the review screen
+   * asks again after every fix the coach makes.
+   */
+  @Post('import/preview')
+  @HttpCode(200)
+  @Throttle({ default: { limit: 60, ttl: 3600000 } })
+  @UseGuards(AuthGuard('jwt'), RolesGuard)
+  @Roles('INSTRUCTOR', 'ADMIN', 'SUPER_ADMIN')
+  @ApiEndpoint({ ...ClientDocs.previewImport, body: ImportClientsDto })
+  async previewImport(
+    @Request() req: AuthenticatedRequest,
+    @Body() dto: ImportClientsDto,
+  ) {
+    return this.clientImportService.importClients(req.user.id, dto, true);
+  }
+
+  /**
+   * POST /clients/import/email-preview
+   * The invite email the import will send, rendered with the coach's own
+   * name and message. Nothing is saved or sent.
+   */
+  @Post('import/email-preview')
+  @HttpCode(200)
+  @Throttle({ default: { limit: 60, ttl: 3600000 } })
+  @UseGuards(AuthGuard('jwt'), RolesGuard)
+  @Roles('INSTRUCTOR', 'ADMIN', 'SUPER_ADMIN')
+  @ApiEndpoint({
+    ...ClientDocs.previewImportEmail,
+    body: PreviewImportEmailDto,
+  })
+  async previewImportEmail(
+    @Request() req: AuthenticatedRequest,
+    @Body() dto: PreviewImportEmailDto,
+  ) {
+    return this.clientImportService.previewInviteEmail(req.user.id, dto);
+  }
+
+  /**
+   * POST /clients/import
+   * Import a client list: one invitation per new person, emails queued.
+   * One request for the whole list, because `POST /clients/invite` is
+   * 10 an hour and a loop of it would not be atomic either.
+   */
+  @Post('import')
+  @Throttle({ default: { limit: 10, ttl: 3600000 } })
+  @UseGuards(AuthGuard('jwt'), RolesGuard)
+  @Roles('INSTRUCTOR', 'ADMIN', 'SUPER_ADMIN')
+  @ApiEndpoint({ ...ClientDocs.importClients, body: ImportClientsDto })
+  async importClients(
+    @Request() req: AuthenticatedRequest,
+    @Body() dto: ImportClientsDto,
+  ) {
+    return this.clientImportService.importClients(req.user.id, dto, false);
   }
 
   /**

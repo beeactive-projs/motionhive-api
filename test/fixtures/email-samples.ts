@@ -724,6 +724,39 @@ function clientInvitationExistingUser(
   });
 }
 
+function clientInvitationImported(
+  name: string,
+  variant: string,
+  opts: {
+    hasAccount: boolean;
+    recipientFirstName: string | null;
+    message: string | undefined;
+  },
+): EmailSample {
+  return sample('clientInvitationImportedTemplate', {
+    name,
+    audience: opts.hasAccount ? 'client' : 'new user',
+    variant,
+    subject: (locale) =>
+      translate(locale, 'email.client.invitationImported.subject', {
+        name: DAN.full,
+      }),
+    args: (locale) => [
+      {
+        recipientFirstName: opts.recipientFirstName,
+        instructorName: DAN.full,
+        instructorAvatarUrl: null,
+        link: opts.hasAccount
+          ? `${APP}/profile?tab=coaches&requestId=${REQUEST_ID}`
+          : `${APP}/auth/signup?token=sample-client-invite-token`,
+        hasAccount: opts.hasAccount,
+        message: opts.message,
+        locale,
+      },
+    ],
+  });
+}
+
 function clientRequestToInstructor(
   name: string,
   variant: string,
@@ -864,6 +897,22 @@ const client: EmailSample[] = [
     'no name',
     null,
     MESSAGE,
+  ),
+
+  clientInvitationImported(
+    'client/invitation-imported',
+    'no account, typical, with message',
+    { hasAccount: false, recipientFirstName: ANA.first, message: MESSAGE },
+  ),
+  clientInvitationImported(
+    'client/invitation-imported:no-name',
+    'no account, no name, no message',
+    { hasAccount: false, recipientFirstName: null, message: undefined },
+  ),
+  clientInvitationImported(
+    'client/invitation-imported:has-account',
+    'has an account',
+    { hasAccount: true, recipientFirstName: ANA.first, message: MESSAGE },
   ),
 
   clientRequestToInstructor(

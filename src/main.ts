@@ -40,6 +40,25 @@ async function bootstrap() {
     express.raw({ type: 'application/json', limit: '1mb' }),
   );
 
+  // A client import posts up to 200 rows with a note each, which can pass
+  // the default 100kb JSON limit. Parsed here first, so the default parser
+  // sees a body already read and leaves it alone. Covers /preview too.
+  //
+  // Wrapped, not passed straight in: Nest skips its own global JSON parser
+  // when it finds a middleware named `jsonParser` (what express.json()
+  // returns), and every other route would then get no body at all.
+  const clientImportJson = express.json({ limit: '1mb' });
+  app.use(
+    '/clients/import',
+    function clientImportBodyParser(
+      req: express.Request,
+      res: express.Response,
+      next: express.NextFunction,
+    ) {
+      clientImportJson(req, res, next);
+    },
+  );
+
   app.use(
     helmet({
       // CSP off in dev so Swagger UI works.

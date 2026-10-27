@@ -35,6 +35,7 @@ import {
   clientRelationshipEndedForInstructor,
 } from './notifications';
 import {
+  ClientInviteEmailStatus,
   ClientRequest,
   ClientRequestStatus,
   ClientRequestType,
@@ -45,6 +46,7 @@ import {
   InstructorClientStatus,
 } from './entities/instructor-client.entity';
 import { apiError, toLocale } from '../../common/i18n';
+import { ClientImportService } from './client-import.service';
 
 /**
  * The two instructor_client statuses that describe a real relationship.
@@ -86,6 +88,8 @@ function matchClientRows(rows: ClientRow[], tokens: string[]): ClientRow[] {
       [row.client?.firstName, row.client?.lastName].filter(Boolean).join(' '),
       row.client?.email,
       row.invitedEmail,
+      row.invitedFirstName,
+      row.invitedLastName,
     ]
       .filter(Boolean)
       .join(' ')
@@ -98,6 +102,20 @@ function matchClientRows(rows: ClientRow[], tokens: string[]): ClientRow[] {
 const SETTLED_CLIENT_STATUSES = {
   [Op.in]: [InstructorClientStatus.ACTIVE, InstructorClientStatus.ARCHIVED],
 };
+
+/**
+ * The note an imported invite brings into the relationship it becomes.
+ * Only into an empty one: a returning client's notes are the coach's
+ * newer word, and the sheet must not overwrite them.
+ */
+function carriedNote(
+  relationship: InstructorClient,
+  request: ClientRequest,
+): { notes?: string } {
+  return request.coachNote && !relationship.notes
+    ? { notes: request.coachNote }
+    : {};
+}
 
 // ---------------------------------------------------------------------------
 // Local shape types for getMyClients / enrichWithGroupMemberships
@@ -145,6 +163,11 @@ export interface ClientRow {
   createdAt: Date;
   updatedAt: Date;
   invitedEmail?: string | null;
+  /** The name the coach gave someone with no account yet (client import). */
+  invitedFirstName?: string | null;
+  invitedLastName?: string | null;
+  /** Delivery of an imported invite's email; null for any other invite. */
+  emailStatus?: ClientInviteEmailStatus | null;
   requestType?: ClientRequestType;
   expiresAt?: Date;
   client: ClientUserSnapshot | null;
@@ -173,6 +196,7 @@ export class ClientService {
     private readonly roleService: RoleService,
     private readonly emailService: EmailService,
     private readonly notificationService: NotificationService,
+    private readonly clientImportService: ClientImportService,
     @Inject(WINSTON_MODULE_NEST_PROVIDER)
     private readonly logger: LoggerService,
   ) {}
@@ -518,11 +542,16 @@ export class ClientService {
       initiatedBy: isInstructorInvite
         ? InitiatedBy.INSTRUCTOR
         : InitiatedBy.CLIENT,
-      notes: row.message,
+      // An imported invite carries the coach's own note; otherwise the
+      // message they sent is the closest thing to one.
+      notes: row.coachNote ?? row.message,
       startedAt: null,
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
       invitedEmail: row.invitedEmail,
+      invitedFirstName: row.invitedFirstName,
+      invitedLastName: row.invitedLastName,
+      emailStatus: row.emailStatus,
       requestType: row.type,
       expiresAt: row.expiresAt,
       client: clientUser
@@ -1217,6 +1246,7 @@ export class ClientService {
           {
             status: InstructorClientStatus.ACTIVE,
             startedAt: new Date(),
+            ...carriedNote(existingRelationship, request),
           },
           { transaction },
         );
@@ -1231,6 +1261,7 @@ export class ClientService {
                 ? InitiatedBy.INSTRUCTOR
                 : InitiatedBy.CLIENT,
             startedAt: new Date(),
+            notes: request.coachNote,
           },
           { transaction },
         );
@@ -1529,7 +1560,14 @@ export class ClientService {
 
     const recipientEmail = request.invitedEmail ?? request.toUser?.email;
 
-    if (recipientEmail) {
+    if (request.emailStatus) {
+      // An imported invite: the same email through the same queue, so its
+      // status tracks this send instead of staying FAILED behind it.
+      await this.clientImportService.requeueInviteEmail(
+        request,
+        toLocale(instructor?.language),
+      );
+    } else if (recipientEmail) {
       const sendPromise = request.toUserId
         ? this.emailService.sendExistingUserClientInvitationEmail(
             recipientEmail,
@@ -1884,6 +1922,9 @@ export class ClientService {
       attributes: [
         'id',
         'invitedEmail',
+        'invitedFirstName',
+        'invitedLastName',
+        'emailStatus',
         'message',
         'status',
         'token',
@@ -1906,6 +1947,9 @@ export class ClientService {
   async getInviteByToken(token: string): Promise<{
     token: string;
     invitedEmail: string;
+    /** The coach's spelling, for the signup form to start from (client import). */
+    invitedFirstName: string | null;
+    invitedLastName: string | null;
     instructor: { firstName: string; lastName: string };
     expiresAt: Date;
   }> {
@@ -1937,6 +1981,8 @@ export class ClientService {
     return {
       token: request.token as string,
       invitedEmail: request.invitedEmail as string,
+      invitedFirstName: request.invitedFirstName,
+      invitedLastName: request.invitedLastName,
       instructor: {
         firstName: instructor.firstName,
         lastName: instructor.lastName,
@@ -2004,6 +2050,7 @@ export class ClientService {
           {
             status: InstructorClientStatus.ACTIVE,
             startedAt: new Date(),
+            ...carriedNote(existingRelationship, request),
           },
           { transaction },
         );
@@ -2015,6 +2062,7 @@ export class ClientService {
             status: InstructorClientStatus.ACTIVE,
             initiatedBy: InitiatedBy.INSTRUCTOR,
             startedAt: new Date(),
+            notes: request.coachNote,
           },
           { transaction },
         );

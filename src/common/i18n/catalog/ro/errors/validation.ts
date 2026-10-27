@@ -16,6 +16,7 @@ export const validation: Catalog['errors']['validation'] = {
     'Introdu un cod poștal valid (între 2 și 20 de litere, cifre, spații sau cratime).',
   coachNameTooShort:
     'Numele antrenorului trebuie să aibă cel puțin 2 caractere.',
+  importTooManyRows: 'Poți importa cel mult 200 de persoane odată.',
   noteTooLong: 'Mesajul poate avea cel mult 500 de caractere.',
   personalMessageTooLong:
     'Mesajul personal poate avea cel mult 500 de caractere.',

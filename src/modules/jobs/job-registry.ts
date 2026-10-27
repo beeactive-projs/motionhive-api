@@ -101,6 +101,21 @@ export interface JobPayloads {
     collapseKey?: string;
   };
 
+  /**
+   * One invite email from a client import (`ClientImportService`).
+   *
+   * Carries only the request id: the worker reads the row at send time,
+   * so an invite cancelled or accepted in the meantime is skipped, and
+   * the row's `email_status` (QUEUED → SENT) is the post-failure retry
+   * guard, the job of the receipt check on `email_send`.
+   */
+  'notifications.client_invite_send': {
+    /** client_request id. The jobId adds the expiry, so a resend is a new job. */
+    requestId: string;
+    /** Language for someone with no account; one with an account reads theirs. */
+    locale?: Locale;
+  };
+
   // ── Sessions ────────────────────────────────────────────────────────
   // System-wide sweeps. No per-call payload — the worker queries the DB
   // for what's due at run time (resilient: a run catches up everything
@@ -191,6 +206,7 @@ export type JobPayload<K extends keyof JobPayloads> = JobPayloads[K];
 export const ALL_JOB_NAMES: ReadonlyArray<keyof JobPayloads> = [
   'notifications.email_send',
   'notifications.push_send',
+  'notifications.client_invite_send',
   'sessions.reminder_dispatch',
   'sessions.status_transition',
   'sessions.generate_recurring',
@@ -219,13 +235,16 @@ export const ALL_JOB_NAMES: ReadonlyArray<keyof JobPayloads> = [
  * Jobs an operator may trigger on demand from the admin console. These
  * are the idempotent system sweeps — every one takes a `{ runKey? }`
  * payload and is safe to fire manually (a manual run just catches up
- * whatever is outstanding). The two payload-carrying jobs
- * (`notifications.email_send`, `payments.process_webhook`) are
- * deliberately excluded — they need real per-event data, not a sweep.
+ * whatever is outstanding). The payload-carrying jobs
+ * (`notifications.email_send`, `notifications.client_invite_send`,
+ * `payments.process_webhook`) are deliberately excluded — they need
+ * real per-event data, not a sweep.
  */
 export type TriggerableJobName = Exclude<
   keyof JobPayloads,
-  'notifications.email_send' | 'payments.process_webhook'
+  | 'notifications.email_send'
+  | 'notifications.client_invite_send'
+  | 'payments.process_webhook'
 >;
 
 /**

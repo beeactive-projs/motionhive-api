@@ -2,6 +2,7 @@ import { DynamicModule, Global, Module, Provider } from '@nestjs/common';
 import { BullModule } from '@nestjs/bullmq';
 import { NotificationModule } from '../notification/notification.module';
 import { MessagingModule } from '../messaging/messaging.module';
+import { ClientModule } from '../client/client.module';
 import { SessionModule } from '../session/session.module';
 import { WorkoutModule } from '../workout/workout.module';
 import { PaymentModule } from '../payment/payment.module';
@@ -125,6 +126,8 @@ export class JobsModule {
         NotificationModule,
         // MessagingService for the unread count on the app icon badge.
         MessagingModule,
+        // ClientImportService for the invite emails a client import queues.
+        ClientModule,
         SessionModule,
         WorkoutModule,
         PaymentModule,
