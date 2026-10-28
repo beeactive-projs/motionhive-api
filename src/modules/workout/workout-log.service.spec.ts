@@ -50,6 +50,7 @@ describe('WorkoutLogService (smoke — not exhaustive)', () => {
     findOne: jest.fn(),
     findAndCountAll: jest.fn(),
     create: jest.fn(),
+    count: jest.fn(),
   };
   const loggedExerciseModel = {
     create: jest.fn(),
@@ -75,6 +76,7 @@ describe('WorkoutLogService (smoke — not exhaustive)', () => {
   const assignedSetModel = {};
   const oneRepMaxModel = {
     findAll: jest.fn(),
+    findOne: jest.fn(),
     findAndCountAll: jest.fn(),
     create: jest.fn(),
   };
@@ -706,6 +708,62 @@ describe('WorkoutLogService (smoke — not exhaustive)', () => {
       });
     });
 
+    it.each([WorkoutLogStatus.Skipped, WorkoutLogStatus.Abandoned])(
+      'refuses to complete a %s log',
+      async (status) => {
+        const update = jest.fn();
+        logModel.findByPk.mockResolvedValueOnce({
+          id: 'wl-1',
+          userId: 'me',
+          status,
+          startedAt: new Date(Date.now() - 65_000),
+          update,
+        });
+
+        await expect(
+          service.complete('wl-1', { feelingRating: 4 }, 'me'),
+        ).rejects.toMatchObject({
+          response: { messageKey: 'workout.cannotCompleteNotInProgress' },
+        });
+        expect(update).not.toHaveBeenCalled();
+      },
+    );
+
+    // The message goes on a card other people see: one plain line.
+    it('keeps the share message as one line of plain text', async () => {
+      const update = jest.fn().mockResolvedValue(undefined);
+      logModel.findByPk.mockResolvedValueOnce({
+        id: 'wl-1',
+        userId: 'me',
+        status: WorkoutLogStatus.Completed,
+        update,
+      });
+
+      await service.complete(
+        'wl-1',
+        { shareCaption: '  First <b>100</b>!\n The knee held.  ' },
+        'me',
+      );
+
+      expect(update).toHaveBeenCalledWith({
+        shareCaption: 'First 100! The knee held.',
+      });
+    });
+
+    it('clears the share message when it is sent empty', async () => {
+      const update = jest.fn().mockResolvedValue(undefined);
+      logModel.findByPk.mockResolvedValueOnce({
+        id: 'wl-1',
+        userId: 'me',
+        status: WorkoutLogStatus.Completed,
+        update,
+      });
+
+      await service.complete('wl-1', { shareCaption: '   ' }, 'me');
+
+      expect(update).toHaveBeenCalledWith({ shareCaption: null });
+    });
+
     it('computes durationSeconds from startedAt → now', async () => {
       const startedAt = new Date(Date.now() - 65_000); // 65s ago
       const update = jest.fn().mockResolvedValue(undefined);
@@ -838,6 +896,171 @@ describe('WorkoutLogService (smoke — not exhaustive)', () => {
       await expect(service.findById('wl-1', 'me')).rejects.toThrow(
         NotFoundException,
       );
+    });
+
+    describe('records and the summary', () => {
+      const startedAt = new Date('2026-10-22T17:00:00Z');
+      const completedAt = new Date('2026-10-22T17:52:00Z');
+
+      function finishedLog(fields: Record<string, unknown> = {}) {
+        const plain = { id: 'wl-1', userId: 'me' };
+        return {
+          id: 'wl-1',
+          userId: 'me',
+          status: WorkoutLogStatus.Completed,
+          startedAt,
+          completedAt,
+          sourceProgramId: null,
+          sourceProgram: null,
+          exercises: [
+            {
+              exerciseId: 'squat',
+              sets: [
+                { isCompleted: true, weightKg: '90.00', reps: 8 },
+                { isCompleted: true, weightKg: '100.00', reps: 5 },
+                { isCompleted: false, weightKg: '110.00', reps: 5 },
+              ],
+            },
+          ],
+          get: () => plain,
+          ...fields,
+        };
+      }
+
+      const pr = (exerciseId: string) => ({
+        id: `orm-${exerciseId}`,
+        exerciseId,
+        weightKg: 116.67,
+        recordedAt: completedAt,
+        exercise: { id: exerciseId, name: exerciseId, translations: null },
+      });
+
+      it('names the set behind a record and skips a first time', async () => {
+        logModel.findByPk.mockResolvedValueOnce(finishedLog());
+        oneRepMaxModel.findAll.mockResolvedValueOnce([
+          pr('squat'),
+          pr('deadlift'),
+        ]);
+        // Squat beat an earlier 105; deadlift had never been done.
+        oneRepMaxModel.findOne
+          .mockResolvedValueOnce({ weightKg: 105 })
+          .mockResolvedValueOnce(null);
+
+        const out = (await service.findById('wl-1', 'me')) as unknown as {
+          personalRecords?: Record<string, unknown>[];
+        };
+
+        expect(out.personalRecords).toEqual([
+          expect.objectContaining({
+            exerciseId: 'squat',
+            deltaKg: 11.67,
+            // 100 × 5 (Epley 116.7) beats 90 × 8 (114); unticked sets
+            // never count.
+            setWeightKg: 100,
+            setReps: 5,
+          }),
+        ]);
+      });
+
+      it('leaves out the summary unless the owner route asks for it', async () => {
+        logModel.findByPk.mockResolvedValueOnce(finishedLog());
+        oneRepMaxModel.findAll.mockResolvedValueOnce([]);
+
+        const out = (await service.findById('wl-1', 'me')) as unknown as {
+          summary?: unknown;
+        };
+
+        expect(out.summary).toBeUndefined();
+        expect(logModel.count).not.toHaveBeenCalled();
+        expect(sequelize.query).not.toHaveBeenCalled();
+      });
+
+      it('counts the workout, the streak and last time for a routine', async () => {
+        logModel.findByPk.mockResolvedValueOnce(
+          finishedLog({
+            sourceProgramId: 'routine-1',
+            sourceProgram: { id: 'routine-1', isSingleWorkout: true },
+          }),
+        );
+        oneRepMaxModel.findAll.mockResolvedValueOnce([]);
+        logModel.count.mockResolvedValueOnce(12);
+        const monday = (weeksBack: number) => {
+          const now = new Date();
+          const t = Date.UTC(
+            now.getUTCFullYear(),
+            now.getUTCMonth(),
+            now.getUTCDate() - ((now.getUTCDay() + 6) % 7) - weeksBack * 7,
+          );
+          return new Date(t).toISOString().slice(0, 10);
+        };
+        sequelize.query
+          .mockResolvedValueOnce([
+            { weekStart: monday(0) },
+            { weekStart: monday(1) },
+            { weekStart: monday(2) },
+          ])
+          .mockResolvedValueOnce([{ volume: '5780.40' }]);
+
+        const out = (await service.findById('wl-1', 'me', undefined, {
+          summary: true,
+        })) as unknown as { summary?: unknown };
+
+        expect(out.summary).toEqual({
+          workoutNumber: 12,
+          streakWeeks: 3,
+          previousVolumeKg: 5780,
+          coachName: null,
+        });
+      });
+
+      it.each([
+        [
+          'names the coach behind a plan workout',
+          'COACH',
+          'coach-1',
+          'Bogdan Daniel',
+        ],
+        ['never names you as your own coach', 'SELF', 'me', null],
+      ])('%s', async (_title, assignmentKind, instructorId, expected) => {
+        logModel.findByPk.mockResolvedValueOnce(
+          finishedLog({ programAssignmentId: 'asg-1' }),
+        );
+        oneRepMaxModel.findAll.mockResolvedValueOnce([]);
+        logModel.count.mockResolvedValueOnce(4);
+        sequelize.query.mockResolvedValueOnce([]);
+        assignmentModel.findByPk.mockResolvedValueOnce({
+          id: 'asg-1',
+          assignmentKind,
+          instructorId,
+          instructor: { firstName: 'Bogdan', lastName: 'Daniel' },
+        });
+
+        const out = (await service.findById('wl-1', 'me', undefined, {
+          summary: true,
+        })) as unknown as { summary?: { coachName: unknown } };
+
+        expect(out.summary?.coachName).toBe(expected);
+      });
+
+      it('compares no volume for a plan workout or freestyle', async () => {
+        logModel.findByPk.mockResolvedValueOnce(
+          finishedLog({
+            sourceProgramId: 'plan-1',
+            sourceProgram: { id: 'plan-1', isSingleWorkout: false },
+          }),
+        );
+        oneRepMaxModel.findAll.mockResolvedValueOnce([]);
+        logModel.count.mockResolvedValueOnce(3);
+        sequelize.query.mockResolvedValueOnce([]);
+
+        const out = (await service.findById('wl-1', 'me', undefined, {
+          summary: true,
+        })) as unknown as { summary?: { previousVolumeKg: unknown } };
+
+        expect(out.summary?.previousVolumeKg).toBeNull();
+        // Only the weeks query ran.
+        expect(sequelize.query).toHaveBeenCalledTimes(1);
+      });
     });
   });
 

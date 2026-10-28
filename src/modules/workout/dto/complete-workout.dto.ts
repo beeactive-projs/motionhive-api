@@ -22,4 +22,11 @@ export class CompleteWorkoutDto {
   @IsString()
   @MaxLength(4000)
   notes?: string;
+
+  /** The line on the shared card. Empty clears it. */
+  @ApiPropertyOptional({ maxLength: 80, example: 'First 100! The knee held.' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(80)
+  shareCaption?: string;
 }

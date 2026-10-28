@@ -254,7 +254,12 @@ export class WorkoutLogController {
     @Request() req: AuthenticatedRequest,
     @Param('id', ParseUUIDPipe) id: string,
   ) {
-    return this.workoutLogService.findById(id, req.user.id, requestLocale(req));
+    return this.workoutLogService.findById(
+      id,
+      req.user.id,
+      requestLocale(req),
+      { summary: true },
+    );
   }
 
   // ── 1RM ──────────────────────────────────────────────────────────

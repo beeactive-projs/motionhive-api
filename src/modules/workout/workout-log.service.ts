@@ -8,7 +8,7 @@ import {
 import type { LoggerService } from '@nestjs/common';
 import { InjectModel } from '@nestjs/sequelize';
 import { WINSTON_MODULE_NEST_PROVIDER } from 'nest-winston';
-import { Op, Transaction } from 'sequelize';
+import { Op, QueryTypes, Transaction } from 'sequelize';
 import { Sequelize } from 'sequelize-typescript';
 
 import {
@@ -24,6 +24,7 @@ import {
   type Locale,
 } from '../../common/i18n';
 import { escapeLikeWildcards } from '../../common/utils/search.utils';
+import { stripHtml } from '../../common/utils/text.utils';
 import { ListWorkoutLogsQueryDto } from './dto/list-workout-logs.query.dto';
 import { Exercise } from '../exercise/entities/exercise.entity';
 import { ExerciseVisibility } from '../exercise/entities/exercise.enums';
@@ -42,6 +43,7 @@ import { WorkoutLog } from './entities/workout-log.entity';
 import {
   ExerciseSetType,
   OneRepMaxSource,
+  ProgramAssignmentKind,
   ProgramSource,
   ProgramStatus,
   WorkoutLogStatus,
@@ -58,6 +60,33 @@ import { NotificationService } from '../notification/notification.service';
 import { User } from '../user/entities/user.entity';
 import { clientCompletedWorkoutForInstructor } from './notifications';
 import { CoachAccessService } from './coach-access.service';
+import { streakFromWeeks } from './training-streak';
+
+/** A record set in a session, as `GET /workout-logs/:id` returns it. */
+export interface SessionRecord {
+  id: string;
+  exerciseId: string;
+  exerciseName: string;
+  /** New estimated 1RM, kg. */
+  weightKg: number;
+  /** Over the previous best; always positive, a first time is no record. */
+  deltaKg: number;
+  /** The set behind it, "100 × 5". Null when the set can't be found. */
+  setWeightKg: number | null;
+  setReps: number | null;
+}
+
+/** The owner-only extras on a finished workout; see `_ownerSummary`. */
+export interface WorkoutSummary {
+  /** 12 for "your 12th workout": completed workouts up to this one. */
+  workoutNumber: number;
+  /** Consecutive weeks with a workout, counting this week or last. */
+  streakWeeks: number;
+  /** Routines only: the volume last time, for "+8% vs last time". */
+  previousVolumeKg: number | null;
+  /** The coach behind a plan workout, for the shared card. */
+  coachName: string | null;
+}
 import { estimateOneRepMaxEpley } from './one-rep-max.estimate';
 
 /**
@@ -974,18 +1003,21 @@ export class WorkoutLogService {
     userId: string,
   ): Promise<WorkoutLog> {
     const log = await this._loadOwnedLog(workoutLogId, userId);
+    const feedback = this._feedbackFields(dto);
     if (log.status === WorkoutLogStatus.Completed) {
       // Idempotent for the status change, but not a no-op: the feedback
-      // screen runs after the workout is already complete, so its rating
-      // and note arrive on this second call.
-      const feedback = {
-        ...(dto.feelingRating !== undefined && {
-          feelingRating: dto.feelingRating,
-        }),
-        ...(dto.notes !== undefined && { notes: dto.notes?.trim() || null }),
-      };
+      // screen runs after the workout is already complete, so its rating,
+      // note and share message arrive on this second call.
       if (Object.keys(feedback).length > 0) await log.update(feedback);
       return log;
+    }
+    // Only a running workout becomes a finished one. Anything else would
+    // turn a skipped or abandoned record into training that happened,
+    // with a duration measured from whenever it was opened.
+    if (log.status !== WorkoutLogStatus.InProgress) {
+      throw new BadRequestException(
+        apiError('workout.cannotCompleteNotInProgress'),
+      );
     }
 
     const completedAt = new Date();
@@ -1005,12 +1037,7 @@ export class WorkoutLogService {
           durationSeconds,
           pausedAt: null,
           pausedSeconds,
-          ...(dto.feelingRating !== undefined && {
-            feelingRating: dto.feelingRating,
-          }),
-          ...(dto.notes !== undefined && {
-            notes: dto.notes?.trim() || null,
-          }),
+          ...feedback,
         },
         { transaction: tx },
       );
@@ -1040,6 +1067,26 @@ export class WorkoutLogService {
     await this._notifyInstructorOfCompletion(log, userId);
 
     return log;
+  }
+
+  /**
+   * What the person said about the session, only the fields they sent. An
+   * empty note or message clears it. The message goes on a card others
+   * will see, so it is stripped to plain text on one line.
+   */
+  private _feedbackFields(
+    dto: CompleteWorkoutDto,
+  ): Partial<Pick<WorkoutLog, 'feelingRating' | 'notes' | 'shareCaption'>> {
+    return {
+      ...(dto.feelingRating !== undefined && {
+        feelingRating: dto.feelingRating,
+      }),
+      ...(dto.notes !== undefined && { notes: dto.notes?.trim() || null }),
+      ...(dto.shareCaption !== undefined && {
+        shareCaption:
+          stripHtml(dto.shareCaption.replace(/\s+/g, ' '), 80) || null,
+      }),
+    };
   }
 
   /**
@@ -1172,18 +1219,17 @@ export class WorkoutLogService {
    * can render them on the workout-complete screen. Returns an empty
    * array when the log isn't completed yet or hit no PRs.
    */
+  /**
+   * Records this session set, beating an earlier best. A first time on an
+   * exercise also writes a one_rep_max row (it is the baseline every
+   * later record is measured against), but it beat nothing, so it is not
+   * a record here. Each carries the set that earned it: "100 × 5" means
+   * something to a person; an estimated one-rep max does not.
+   */
   private async _findSessionPrs(
     log: WorkoutLog,
     locale: Locale,
-  ): Promise<
-    {
-      id: string;
-      exerciseId: string;
-      exerciseName: string;
-      weightKg: number;
-      deltaKg: number;
-    }[]
-  > {
+  ): Promise<SessionRecord[]> {
     if (log.status !== WorkoutLogStatus.Completed || !log.completedAt) {
       return [];
     }
@@ -1207,8 +1253,8 @@ export class WorkoutLogService {
 
     // For the delta, fetch each exercise's previous best (before this
     // PR was set). Cheap query — most workouts hit ≤3 PRs.
-    return Promise.all(
-      rows.map(async (pr) => {
+    const records = await Promise.all(
+      rows.map(async (pr): Promise<SessionRecord | null> => {
         const prior = await this.oneRepMaxModel.findOne({
           where: {
             userId: log.userId,
@@ -1218,22 +1264,50 @@ export class WorkoutLogService {
           order: [['weightKg', 'DESC']],
           attributes: ['weightKg'],
         });
-        const deltaKg = prior
-          ? Math.round((pr.weightKg - prior.weightKg) * 100) / 100
-          : pr.weightKg;
+        if (!prior) return null;
         const exerciseName = this._exerciseName(
           (pr as unknown as { exercise?: Exercise | null }).exercise,
           locale,
         );
+        const set = this._recordSet(log, pr.exerciseId);
         return {
           id: pr.id,
           exerciseId: pr.exerciseId,
           exerciseName,
           weightKg: pr.weightKg,
-          deltaKg,
+          deltaKg: Math.round((pr.weightKg - prior.weightKg) * 100) / 100,
+          setWeightKg: set?.weightKg ?? null,
+          setReps: set?.reps ?? null,
         };
       }),
     );
+    return records.filter((r): r is SessionRecord => r !== null);
+  }
+
+  /** The completed set with the best estimated 1RM for this exercise. */
+  private _recordSet(
+    log: WorkoutLog,
+    exerciseId: string,
+  ): { weightKg: number; reps: number } | null {
+    let best: { weightKg: number; reps: number; estimate: number } | null =
+      null;
+    for (const exercise of log.exercises ?? []) {
+      if (exercise.exerciseId !== exerciseId) continue;
+      for (const set of exercise.sets ?? []) {
+        if (!set.isCompleted || set.weightKg == null || set.reps == null) {
+          continue;
+        }
+        const estimate = this.estimateOneRepMaxEpley(set.reps, set.weightKg);
+        if (estimate != null && (!best || estimate > best.estimate)) {
+          best = {
+            weightKg: Number(set.weightKg),
+            reps: set.reps,
+            estimate,
+          };
+        }
+      }
+    }
+    return best && { weightKg: best.weightKg, reps: best.reps };
   }
 
   // ────────────────────────────────────────────────────────────────────
@@ -1427,12 +1501,42 @@ export class WorkoutLogService {
           ),
         },
       },
-      attributes: ['recordedAt'],
+      attributes: ['exerciseId', 'recordedAt'],
     });
+    if (candidateRows.length === 0) return map;
+
+    // A first time on an exercise beat nothing, so it is no record: only
+    // rows after the exercise's earliest one count (as `_findSessionPrs`).
+    const firsts = (await this.oneRepMaxModel.findAll({
+      where: {
+        userId,
+        exerciseId: {
+          [Op.in]: [...new Set(candidateRows.map((r) => r.exerciseId))],
+        },
+      },
+      attributes: [
+        'exerciseId',
+        [
+          this.sequelize.fn('MIN', this.sequelize.col('recorded_at')),
+          'firstAt',
+        ],
+      ],
+      group: ['exerciseId'],
+      raw: true,
+    })) as unknown as { exerciseId: string; firstAt: Date | string }[];
+    const firstAt = new Map(
+      firsts.map((f) => [f.exerciseId, new Date(f.firstAt).getTime()]),
+    );
+    const records = candidateRows.filter(
+      (r) =>
+        r.recordedAt.getTime() >
+        (firstAt.get(r.exerciseId) ?? Number.NEGATIVE_INFINITY),
+    );
+
     for (const log of completedLogs) {
       const start = log.startedAt.getTime();
       const end = log.completedAt!.getTime();
-      const n = candidateRows.filter((r) => {
+      const n = records.filter((r) => {
         const t = r.recordedAt.getTime();
         return t >= start && t <= end;
       }).length;
@@ -1446,6 +1550,12 @@ export class WorkoutLogService {
     userId: string,
     /** The reader's language, for the names of records set in the session. */
     locale: Locale = DEFAULT_LOCALE,
+    /**
+     * `summary`: add what the finish screen celebrates (see
+     * `_ownerSummary`). Owner reads only: it counts every workout the
+     * person did, which a coach may not be allowed to know about.
+     */
+    options: { summary?: boolean } = {},
   ): Promise<WorkoutLog> {
     const log = await this.logModel.findByPk(id, {
       include: [
@@ -1523,9 +1633,140 @@ export class WorkoutLogService {
     const prs = await this._findSessionPrs(log, locale);
     const plain = log.get({ plain: true }) as WorkoutLog & {
       personalRecords?: typeof prs;
+      summary?: WorkoutSummary;
     };
     if (prs.length > 0) plain.personalRecords = prs;
+    if (options.summary) {
+      const summary = await this._ownerSummary(log);
+      if (summary) plain.summary = summary;
+    }
     return plain;
+  }
+
+  /**
+   * What a finished workout's summary celebrates, each only when true:
+   * which workout this was for the person, their current weekly streak,
+   * and, for a routine, the volume the last time they did it. Owner
+   * only, since all three count workouts a coach may not see.
+   */
+  private async _ownerSummary(log: WorkoutLog): Promise<WorkoutSummary | null> {
+    if (log.status !== WorkoutLogStatus.Completed || !log.completedAt) {
+      return null;
+    }
+    const [workoutNumber, weeks, previousVolumeKg, coachName] =
+      await Promise.all([
+        this.logModel.count({
+          where: {
+            userId: log.userId,
+            status: WorkoutLogStatus.Completed,
+            completedAt: { [Op.lte]: log.completedAt },
+          },
+        }),
+        this._activeWeeks(log.userId),
+        this._previousRoutineVolume(log),
+        this._coachName(log),
+      ]);
+    return {
+      workoutNumber,
+      streakWeeks: streakFromWeeks(weeks).currentWeeks,
+      previousVolumeKg,
+      coachName,
+    };
+  }
+
+  /**
+   * The coach whose plan this workout came from, for "Program by …" on a
+   * shared card. Null for freestyle, a routine, or a plan the person set
+   * themselves: nobody is their own coach.
+   */
+  private async _coachName(log: WorkoutLog): Promise<string | null> {
+    if (!log.programAssignmentId) return null;
+    const assignment = await this.assignmentModel.findByPk(
+      log.programAssignmentId,
+      {
+        attributes: ['id', 'instructorId', 'assignmentKind'],
+        include: [
+          {
+            model: User,
+            as: 'instructor',
+            attributes: ['id', 'firstName', 'lastName'],
+            required: false,
+          },
+        ],
+      },
+    );
+    if (
+      !assignment ||
+      assignment.assignmentKind !== ProgramAssignmentKind.Coach ||
+      assignment.instructorId === log.userId
+    ) {
+      return null;
+    }
+    const coach = assignment.instructor;
+    const name = [coach?.firstName, coach?.lastName]
+      .filter(Boolean)
+      .join(' ')
+      .trim();
+    return name || null;
+  }
+
+  /** Monday-based weeks with a completed workout, newest first. */
+  private async _activeWeeks(userId: string): Promise<string[]> {
+    const rows = await this.sequelize.query<{ weekStart: string }>(
+      `
+      SELECT DISTINCT
+        TO_CHAR(DATE_TRUNC('week', COALESCE(completed_at, started_at)), 'YYYY-MM-DD') AS "weekStart"
+      FROM workout_log
+      WHERE user_id = :userId AND status = 'COMPLETED'
+      ORDER BY 1 DESC
+      `,
+      { replacements: { userId }, type: QueryTypes.SELECT },
+    );
+    return rows.map((r) => r.weekStart);
+  }
+
+  /**
+   * Volume (kg × reps over completed sets) the previous time this
+   * routine was done, or null. Routines only: a plan's sessions differ
+   * day to day, so "last time" would compare different workouts.
+   */
+  private async _previousRoutineVolume(
+    log: WorkoutLog,
+  ): Promise<number | null> {
+    const source = (log as WorkoutLog & { sourceProgram?: Program | null })
+      .sourceProgram;
+    if (!log.sourceProgramId || !source?.isSingleWorkout) return null;
+
+    const rows = await this.sequelize.query<{ volume: string | null }>(
+      `
+      SELECT SUM(ls.weight_kg * ls.reps) AS volume
+      FROM workout_log wl
+      JOIN logged_exercise le ON le.workout_log_id = wl.id
+      JOIN logged_set ls ON ls.logged_exercise_id = le.id
+      WHERE wl.id = (
+        SELECT id FROM workout_log
+        WHERE user_id = :userId
+          AND status = 'COMPLETED'
+          AND source_program_id = :programId
+          AND completed_at < :completedAt
+        ORDER BY completed_at DESC
+        LIMIT 1
+      )
+        AND ls.is_completed
+        AND ls.weight_kg IS NOT NULL
+        AND ls.reps IS NOT NULL
+      `,
+      {
+        replacements: {
+          userId: log.userId,
+          programId: log.sourceProgramId,
+          completedAt: log.completedAt,
+        },
+        type: QueryTypes.SELECT,
+      },
+    );
+    const volume = Number(rows[0]?.volume ?? 0);
+    return volume > 0 ? Math.round(volume) : null;
   }
 
   // ────────────────────────────────────────────────────────────────────

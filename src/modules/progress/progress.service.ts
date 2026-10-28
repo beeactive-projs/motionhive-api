@@ -10,6 +10,7 @@ import { Exercise } from '../exercise/entities/exercise.entity';
 import { CoachAccessService } from '../workout/coach-access.service';
 import { OneRepMaxSource } from '../workout/entities/workout.enums';
 import { estimateOneRepMaxEpley } from '../workout/one-rep-max.estimate';
+import { streakFromWeeks } from '../workout/training-streak';
 import { ProgressRange } from './dto/progress-range.enum';
 import { RosterWindow } from './dto/roster.query.dto';
 
@@ -260,7 +261,7 @@ export class ProgressService {
       range,
       totals,
       previous: { workouts: previous.workouts, volumeKg: previous.volumeKg },
-      streak: this._streakFromWeeks(weeks),
+      streak: streakFromWeeks(weeks),
       weeklyVolume: weekly,
       dailyActivity: daily,
       records,
@@ -742,55 +743,6 @@ export class ProgressService {
       },
     );
     return rows.map((r) => this._isoDate(r.weekStart));
-  }
-
-  /**
-   * Current streak counts back from this week or last week. Allowing
-   * last week means someone who trains Mon-Fri does not watch their
-   * streak die every Sunday before they have had a chance to train.
-   */
-  private _streakFromWeeks(weeks: string[]): {
-    currentWeeks: number;
-    bestWeeks: number;
-  } {
-    if (!weeks.length) return { currentWeeks: 0, bestWeeks: 0 };
-
-    const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
-    const asTime = (d: string) => new Date(`${d}T00:00:00Z`).getTime();
-    const times = weeks.map(asTime);
-
-    // Longest run of consecutive weeks anywhere in the history.
-    let best = 1;
-    let run = 1;
-    for (let i = 1; i < times.length; i++) {
-      if (times[i - 1] - times[i] === WEEK_MS) {
-        run += 1;
-        best = Math.max(best, run);
-      } else {
-        run = 1;
-      }
-    }
-
-    const now = new Date();
-    const day = now.getUTCDay();
-    // Postgres DATE_TRUNC('week') is Monday-based; match it.
-    const daysSinceMonday = (day + 6) % 7;
-    const thisWeek = Date.UTC(
-      now.getUTCFullYear(),
-      now.getUTCMonth(),
-      now.getUTCDate() - daysSinceMonday,
-    );
-
-    let current = 0;
-    if (times[0] === thisWeek || times[0] === thisWeek - WEEK_MS) {
-      current = 1;
-      for (let i = 1; i < times.length; i++) {
-        if (times[i - 1] - times[i] === WEEK_MS) current += 1;
-        else break;
-      }
-    }
-
-    return { currentWeeks: current, bestWeeks: best };
   }
 
   private async _lifetimeWorkouts(scope: LogScope): Promise<number> {

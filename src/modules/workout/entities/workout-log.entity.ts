@@ -79,6 +79,13 @@ export class WorkoutLog extends Model {
   @Column({ type: DataType.INTEGER, allowNull: true })
   declare durationSeconds: number | null;
 
+  /**
+   * The line on the shared story card (migration 072). Not the private
+   * note: that one is never put on a card unless the person copies it.
+   */
+  @Column({ type: DataType.STRING(80), allowNull: true })
+  declare shareCaption: string | null;
+
   /** When the current pause began; null while the clock is running. */
   @Column({ type: DataType.DATE, allowNull: true })
   declare pausedAt: Date | null;

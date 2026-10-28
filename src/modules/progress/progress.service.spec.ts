@@ -5,6 +5,7 @@ import { WINSTON_MODULE_NEST_PROVIDER } from 'nest-winston';
 
 import { Exercise } from '../exercise/entities/exercise.entity';
 import { CoachAccessService } from '../workout/coach-access.service';
+import { streakFromWeeks } from '../workout/training-streak';
 import { ProgressService } from './progress.service';
 import { makeSilentLogger } from '../../../test/helpers/sequelize-mocks';
 
@@ -18,18 +19,10 @@ import { makeSilentLogger } from '../../../test/helpers/sequelize-mocks';
  */
 describe('ProgressService — streaks', () => {
   let service: ProgressService;
-  // Reaching into the private helper on purpose: it is the unit under
-  // test, and going through `overview()` would mean mocking six queries
-  // to assert on arithmetic.
-  const streak = (weeks: string[]) =>
-    (
-      service as unknown as {
-        _streakFromWeeks(w: string[]): {
-          currentWeeks: number;
-          bestWeeks: number;
-        };
-      }
-    )._streakFromWeeks(weeks);
+  // The pure helper the overview (and the workout summary) call; going
+  // through `overview()` would mean mocking six queries to assert on
+  // arithmetic.
+  const streak = (weeks: string[]) => streakFromWeeks(weeks);
 
   /** Monday of the current week, then N weeks back, as ISO dates. */
   const mondayOffsetWeeks = (n: number): string => {
