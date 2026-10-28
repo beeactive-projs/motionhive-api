@@ -67,4 +67,10 @@ export class UpdatePrivacySettingsDto implements Partial<
   @IsOptional()
   @IsIn(PRIVACY_LEVELS)
   timezone?: ProfilePrivacyLevel;
+
+  /** The level new workouts start at; each workout can still be changed. */
+  @ApiPropertyOptional({ enum: PRIVACY_LEVELS, example: 'ONLY_ME' })
+  @IsOptional()
+  @IsIn(PRIVACY_LEVELS)
+  workouts?: ProfilePrivacyLevel;
 }

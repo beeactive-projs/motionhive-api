@@ -20,16 +20,17 @@ import { makeSilentLogger } from '../../../test/helpers/sequelize-mocks';
  *
  * The rule under test is CoachAccessService's, used for real here with
  * its two models faked: 404 unless the coach link is ACTIVE, and only
- * logs of the coach's own assignments count unless the client shares
- * off-plan work.
+ * logs of the coach's own assignments count, plus any the client set to
+ * COACHES_ONLY or PUBLIC.
  *
  * `sequelize.query` is a small in-memory stand-in for Postgres. It knows
  * each progress query by a marker in its SQL and answers it from the
  * fixture logs, applying the scope exactly as SQL would: rows pass
  * `program_assignment_id IN (:assignmentIds)` only when their assignment
- * is in the bound list, and `AND FALSE` passes nothing. So a query that
- * forgot the scope would count every log, and the numbers below would
- * catch it.
+ * is in the bound list, and `visibility IN ('COACHES_ONLY', 'PUBLIC')` when the client
+ * shared them. So a query that forgot the scope would count every log,
+ * and one that forgot the visibility half would miss a shared one; the
+ * numbers below would catch either.
  */
 
 const DAY_MS = 86_400_000;
@@ -50,6 +51,8 @@ interface FakeLog {
   durationSeconds: number;
   name: string;
   sets: Array<{ exerciseId: string; reps: number; weightKg: number }>;
+  /** Absent means ONLY_ME, the column default. */
+  visibility?: 'ONLY_ME' | 'COACHES_ONLY' | 'PUBLIC';
 }
 
 interface FakeOneRepMax {
@@ -179,11 +182,13 @@ function fakeQuery(logs: FakeLog[], oneRepMaxes: FakeOneRepMax[]) {
     const visible = logs.filter((l) => {
       if (l.userId !== r.userId) return false;
       if (/\bAND FALSE\b/.test(sql)) return false;
-      if (/program_assignment_id IN \(:assignmentIds\)/.test(sql)) {
-        return (r.assignmentIds as string[]).includes(
-          l.programAssignmentId ?? '',
-        );
+      const own =
+        /program_assignment_id IN \(:assignmentIds\)/.test(sql) &&
+        (r.assignmentIds as string[]).includes(l.programAssignmentId ?? '');
+      if (/visibility IN \('COACHES_ONLY', 'PUBLIC'\)/.test(sql)) {
+        return own || (l.visibility ?? 'ONLY_ME') !== 'ONLY_ME';
       }
+      if (/program_assignment_id IN \(:assignmentIds\)/.test(sql)) return own;
       return true;
     });
     const since = (days: unknown) =>
@@ -373,10 +378,14 @@ describe('ProgressService — a coach reading a client', () => {
   };
 
   const allLogs = [logPlanOld, logPlan, logFree, logOther];
+  /** Fresh copies per test, so one can share a workout without leaking. */
+  let logs: FakeLog[];
+  const logById = (id: string) => logs.find((l) => l.id === id)!;
 
   beforeEach(async () => {
     jest.clearAllMocks();
-    query = fakeQuery(allLogs, storedOneRepMaxes);
+    logs = allLogs.map((l) => ({ ...l }));
+    query = fakeQuery(logs, storedOneRepMaxes);
     links = [
       {
         instructorId: 'coach-1',
@@ -591,10 +600,16 @@ describe('ProgressService — a coach reading a client', () => {
       expect(out.lifetimeWorkouts).toBe(0);
       expect(out.records).toEqual([]);
       expect(out.streak).toEqual({ currentWeeks: 0, bestWeeks: 0 });
-      // `IN ()` is not valid SQL; the empty list must become AND FALSE.
+      // `IN ()` is not valid SQL; with no plans of their own, the coach
+      // is down to what the client shared, which here is nothing.
       expect(sqlOf().some((s) => s.includes('IN (:assignmentIds)'))).toBe(
         false,
       );
+      expect(
+        sqlOf().every((s) =>
+          s.includes("visibility IN ('COACHES_ONLY', 'PUBLIC')"),
+        ),
+      ).toBe(true);
     });
 
     it('shows the other coach only their own plan', async () => {
@@ -608,38 +623,55 @@ describe('ProgressService — a coach reading a client', () => {
     });
   });
 
-  // ─── a client who shares off-plan work ────────────────────────────
+  // ─── a client who shares a workout ────────────────────────────────
 
-  describe('when the client shares off-plan training', () => {
+  describe('when the client shares a workout', () => {
     beforeEach(() => {
-      assignments[0].shareOffPlan = true;
+      logById('log-free').visibility = 'COACHES_ONLY';
     });
 
-    it("gives the coach exactly the trainee's own overview", async () => {
-      const coach = await service.overviewForCoach(
+    it('counts it for each of their coaches, and nothing they kept private', async () => {
+      const one = await service.overviewForCoach(
         'coach-1',
         'client-1',
         ProgressRange.TwelveWeeks,
         'en',
       );
-      const own = await service.overview(
+      const two = await service.overviewForCoach(
+        'coach-2',
         'client-1',
         ProgressRange.TwelveWeeks,
         'en',
       );
-
-      expect(coach).toEqual(own);
-      expect(coach.lifetimeWorkouts).toBe(4);
+      // coach-1: their two plan workouts and the shared freestyle one;
+      // coach-2's plan stays out. coach-2: their own plan and the shared one.
+      expect(one.lifetimeWorkouts).toBe(3);
+      expect(two.lifetimeWorkouts).toBe(2);
     });
 
-    it("gives the coach exactly the trainee's own exercise history", async () => {
-      const coach = await service.exerciseHistoryForCoach(
+    it('puts the shared session in the exercise history too', async () => {
+      const history = await service.exerciseHistoryForCoach(
         'coach-1',
         'client-1',
         BENCH,
       );
-      const own = await service.exerciseHistory('client-1', BENCH);
-      expect(coach).toEqual(own);
+      expect(history.sessions.map((x) => x.workoutLogId)).toContain('log-free');
+      expect(history.sessions.map((x) => x.workoutLogId)).not.toContain(
+        'log-other',
+      );
+    });
+
+    it('no longer reads the old share_off_plan flag', async () => {
+      logById('log-free').visibility = 'ONLY_ME';
+      assignments[0].shareOffPlan = true;
+
+      const one = await service.overviewForCoach(
+        'coach-1',
+        'client-1',
+        ProgressRange.TwelveWeeks,
+        'en',
+      );
+      expect(one.lifetimeWorkouts).toBe(2);
     });
   });
 

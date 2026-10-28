@@ -78,15 +78,14 @@ export interface ExerciseHistory {
  * Whose logs a progress read covers, and which of them.
  *
  *   assignmentIds === null → every completed log of `userId`: the
- *     trainee reading their own progress, or a coach the client shares
- *     off-plan training with.
- *   assignmentIds = [...]  → only logs started from one of these
- *     assignments: a coach whose client has not shared off-plan work.
- *     Freestyle sessions, self-scheduled plans and other coaches' plans
- *     all fall outside it. Empty means nothing is visible.
+ *     trainee reading their own progress.
+ *   assignmentIds = [...]  → a coach: logs started from one of these
+ *     assignments (their own plans), plus any the client set to
+ *     COACHES_ONLY or PUBLIC. Everything else (private freestyle,
+ *     self-scheduled plans, other coaches' plans) stays out.
  *
- * The allow-list comes from CoachAccessService, the same rule the
- * coach's log history uses, so the numbers and the logs behind them
+ * The rule is CoachAccessService's (`isReadableByCoach`), the same one
+ * the coach's log history uses, so the numbers and the logs behind them
  * cannot disagree.
  */
 interface LogScope {
@@ -599,11 +598,15 @@ export class ProgressService {
     column: string,
   ): { sql: string; params: { assignmentIds?: string[] } } {
     if (scope.assignmentIds === null) return { sql: '', params: {} };
+    // The visibility column sits on the same table as the assignment one.
+    // Named levels, as in `isReadableByCoach`: private unless shared.
+    const visibility = column.replace(/program_assignment_id$/, 'visibility');
+    const shared = `${visibility} IN ('COACHES_ONLY', 'PUBLIC')`;
     if (scope.assignmentIds.length === 0) {
-      return { sql: 'AND FALSE', params: {} };
+      return { sql: `AND ${shared}`, params: {} };
     }
     return {
-      sql: `AND ${column} IN (:assignmentIds)`,
+      sql: `AND (${column} IN (:assignmentIds) OR ${shared})`,
       params: { assignmentIds: scope.assignmentIds },
     };
   }

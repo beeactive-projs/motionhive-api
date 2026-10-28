@@ -25,6 +25,8 @@ const PRIVACY_DEFAULTS: Record<PrivacyControlledField, ProfilePrivacyLevel> = {
   city: 'PUBLIC',
   language: 'COACHES_ONLY',
   timezone: 'COACHES_ONLY',
+  // Training is private until the person says otherwise.
+  workouts: 'ONLY_ME',
 };
 
 /**

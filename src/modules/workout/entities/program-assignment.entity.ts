@@ -82,6 +82,11 @@ export class ProgramAssignment extends Model {
    * Client-owned visibility toggle: may the coach see training logged
    * outside this plan. Schema is live; the consent UI ships later.
    */
+  /**
+   * @deprecated No longer read: superseded by `WorkoutLog.visibility`
+   * (migration 073), which carried its few `true` values over. Drop the
+   * column after one release.
+   */
   @Column({
     type: DataType.BOOLEAN,
     allowNull: false,

@@ -35,7 +35,9 @@ export type PrivacyControlledField =
   | 'phone'
   | 'city'
   | 'language'
-  | 'timezone';
+  | 'timezone'
+  /** Not a profile field: the level new workouts start at (migration 073). */
+  | 'workouts';
 
 export type UserPrivacySettings = Partial<
   Record<PrivacyControlledField, ProfilePrivacyLevel>

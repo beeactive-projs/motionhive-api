@@ -68,6 +68,20 @@ export const WorkoutLogStatus = {
 export type WorkoutLogStatus =
   (typeof WorkoutLogStatus)[keyof typeof WorkoutLogStatus];
 
+/**
+ * Who besides the owner sees a workout (migration 073). The same three
+ * levels as the profile privacy settings (`ProfilePrivacyLevel`), so the
+ * app says them the same way everywhere. The coach whose plan a workout
+ * came from sees it whatever the level.
+ */
+export const WorkoutVisibility = {
+  OnlyMe: 'ONLY_ME',
+  CoachesOnly: 'COACHES_ONLY',
+  Public: 'PUBLIC',
+} as const;
+export type WorkoutVisibility =
+  (typeof WorkoutVisibility)[keyof typeof WorkoutVisibility];
+
 export const ExerciseBlockKind = {
   None: 'NONE',
   Superset: 'SUPERSET',

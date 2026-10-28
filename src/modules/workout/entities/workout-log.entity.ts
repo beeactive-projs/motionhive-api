@@ -14,7 +14,7 @@ import { AssignedWorkout } from './assigned-workout.entity';
 import { Program } from './program.entity';
 import { LoggedExercise } from './logged-exercise.entity';
 import { ProgramAssignment } from './program-assignment.entity';
-import { WorkoutLogStatus } from './workout.enums';
+import { WorkoutLogStatus, WorkoutVisibility } from './workout.enums';
 
 /**
  * One workout the client actually performed. Linked optionally to an
@@ -85,6 +85,14 @@ export class WorkoutLog extends Model {
    */
   @Column({ type: DataType.STRING(80), allowNull: true })
   declare shareCaption: string | null;
+
+  /** Who besides the owner sees it (migration 073); see `WorkoutVisibility`. */
+  @Column({
+    type: DataType.ENUM(...Object.values(WorkoutVisibility)),
+    allowNull: false,
+    defaultValue: WorkoutVisibility.OnlyMe,
+  })
+  declare visibility: WorkoutVisibility;
 
   /** When the current pause began; null while the clock is running. */
   @Column({ type: DataType.DATE, allowNull: true })

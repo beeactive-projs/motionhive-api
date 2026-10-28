@@ -27,6 +27,7 @@ import { AddLogSetDto } from './dto/add-log-set.dto';
 import { CompleteWorkoutDto } from './dto/complete-workout.dto';
 import { LogSetDto } from './dto/log-set.dto';
 import { RecordOneRepMaxDto } from './dto/record-one-rep-max.dto';
+import { SetWorkoutVisibilityDto } from './dto/set-workout-visibility.dto';
 import { SkipLogExerciseDto } from './dto/skip-log-exercise.dto';
 import { SaveLogAsRoutineDto } from './dto/save-log-as-routine.dto';
 import { StartWorkoutDto } from './dto/start-workout.dto';
@@ -214,6 +215,23 @@ export class WorkoutLogController {
     @Param('id', ParseUUIDPipe) id: string,
   ) {
     return this.workoutLogService.resume(id, req.user.id);
+  }
+
+  /**
+   * Who besides the owner sees this workout. Owner only; the coach whose
+   * plan it came from sees it whatever the level.
+   */
+  @Patch('workout-logs/:id/visibility')
+  async setVisibility(
+    @Request() req: AuthenticatedRequest,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: SetWorkoutVisibilityDto,
+  ) {
+    return this.workoutLogService.setVisibility(
+      id,
+      req.user.id,
+      dto.visibility,
+    );
   }
 
   @Post('workout-logs/:id/complete')

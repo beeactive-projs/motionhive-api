@@ -25,6 +25,7 @@ import {
 } from '../../common/i18n';
 import { escapeLikeWildcards } from '../../common/utils/search.utils';
 import { stripHtml } from '../../common/utils/text.utils';
+import { resolveLevel } from '../profile/profile-privacy';
 import { ListWorkoutLogsQueryDto } from './dto/list-workout-logs.query.dto';
 import { Exercise } from '../exercise/entities/exercise.entity';
 import { ExerciseVisibility } from '../exercise/entities/exercise.enums';
@@ -47,6 +48,7 @@ import {
   ProgramSource,
   ProgramStatus,
   WorkoutLogStatus,
+  WorkoutVisibility,
 } from './entities/workout.enums';
 import { CompleteWorkoutDto } from './dto/complete-workout.dto';
 import { LogSetDto } from './dto/log-set.dto';
@@ -59,7 +61,11 @@ import {
 import { NotificationService } from '../notification/notification.service';
 import { User } from '../user/entities/user.entity';
 import { clientCompletedWorkoutForInstructor } from './notifications';
-import { CoachAccessService } from './coach-access.service';
+import {
+  CoachAccessService,
+  isReadableByCoach,
+  readableLogsWhere,
+} from './coach-access.service';
 import { streakFromWeeks } from './training-streak';
 
 /** A record set in a session, as `GET /workout-logs/:id` returns it. */
@@ -177,6 +183,7 @@ export class WorkoutLogService {
         assignedWorkoutId: null,
         name: dto.name!.trim(),
         status: WorkoutLogStatus.InProgress,
+        visibility: await this._defaultVisibility(userId),
       });
     }
 
@@ -224,6 +231,7 @@ export class WorkoutLogService {
       (aw.exercises ?? []).map((e) => e.exerciseId),
     );
 
+    const visibility = await this._defaultVisibility(userId);
     return this.sequelize.transaction(async (tx) => {
       const log = await this.logModel.create(
         {
@@ -232,6 +240,7 @@ export class WorkoutLogService {
           assignedWorkoutId: aw.id,
           name: aw.name,
           status: WorkoutLogStatus.InProgress,
+          visibility,
         },
         { transaction: tx },
       );
@@ -364,10 +373,12 @@ export class WorkoutLogService {
       ],
     });
 
+    const visibility = await this._defaultVisibility(userId);
     const created = await this.sequelize.transaction(async (tx) => {
       const log = await this.logModel.create(
         {
           userId,
+          visibility,
           programAssignmentId: null,
           assignedWorkoutId: null,
           // What makes this a routine session rather than a freestyle
@@ -1375,14 +1386,15 @@ export class WorkoutLogService {
   }
 
   /**
-   * @param onlyAssignmentIds when given, restrict to logs belonging to
-   * these assignments. Used by the coach surface; the client's own
-   * history passes nothing and sees everything.
+   * @param coachAssignmentIds when given, the reader is a coach and this
+   * is their own assignments with the client: only logs from those, or
+   * that the client made visible to coaches (`readableLogsWhere`). The
+   * client's own history passes nothing and sees everything.
    */
   async listForUser(
     userId: string,
     query: ListWorkoutLogsQueryDto,
-    onlyAssignmentIds?: string[],
+    coachAssignmentIds?: string[],
   ) {
     const page = query.page ?? 1;
     const limit = query.limit ?? 20;
@@ -1392,9 +1404,7 @@ export class WorkoutLogService {
       where: {
         userId,
         status: WorkoutLogStatus.Completed,
-        ...(onlyAssignmentIds
-          ? { programAssignmentId: { [Op.in]: onlyAssignmentIds } }
-          : {}),
+        ...(coachAssignmentIds ? readableLogsWhere(coachAssignmentIds) : {}),
         ...(query.dateFrom || query.dateTo
           ? {
               startedAt: {
@@ -1782,13 +1792,13 @@ export class WorkoutLogService {
     clientId: string,
     query: PaginationDto,
   ) {
-    // 404 unless ACTIVE; then the allow-list (see CoachAccessService).
-    const assignmentIds = await this.coachAccess.readableAssignmentIds(
+    // 404 unless ACTIVE; then the coach's own assignments, which
+    // `listForUser` widens by what the client shared (CoachAccessService).
+    const own = await this.coachAccess.readableAssignmentIds(
       instructorId,
       clientId,
     );
-    // `null` = the client shares everything with this coach.
-    return this.listForUser(clientId, query, assignmentIds ?? undefined);
+    return this.listForUser(clientId, query, own);
   }
 
   /**
@@ -1801,22 +1811,19 @@ export class WorkoutLogService {
     locale: Locale = DEFAULT_LOCALE,
   ): Promise<WorkoutLog> {
     const stub = await this.logModel.findByPk(id, {
-      attributes: ['userId', 'programAssignmentId'],
+      attributes: ['userId', 'programAssignmentId', 'visibility'],
     });
     if (!stub) throw new NotFoundException(apiError('workout.logNotFound'));
 
-    // Same gate as the list: an off-plan session is the client's own
-    // business unless they shared it. 404 rather than 403 — consistent
-    // with the rest of the coach surface, and it does not confirm that
-    // a private session exists.
-    const visible = await this.coachAccess.readableAssignmentIds(
+    // Same gate as the list: anything off this coach's plans is the
+    // client's own business unless they shared it. 404 rather than 403,
+    // consistent with the rest of the coach surface: it does not confirm
+    // that a private session exists.
+    const own = await this.coachAccess.readableAssignmentIds(
       instructorId,
       stub.userId,
     );
-    if (
-      visible !== null &&
-      (!stub.programAssignmentId || !visible.includes(stub.programAssignmentId))
-    ) {
+    if (!isReadableByCoach(stub, own)) {
       throw new NotFoundException(apiError('workout.logNotFound'));
     }
     return this.findById(id, stub.userId, locale);
@@ -1891,6 +1898,29 @@ export class WorkoutLogService {
     return exercise
       ? translatedText(exercise, 'name', locale)
       : translate(locale, 'content.unnamedExercise');
+  }
+
+  /**
+   * Who sees a workout besides its owner. The coach whose plan it came
+   * from sees it at any level (`isReadableByCoach`); this decides for
+   * everyone else.
+   */
+  async setVisibility(
+    workoutLogId: string,
+    userId: string,
+    visibility: WorkoutVisibility,
+  ): Promise<{ id: string; visibility: WorkoutVisibility }> {
+    const log = await this._loadOwnedLog(workoutLogId, userId);
+    if (log.visibility !== visibility) await log.update({ visibility });
+    return { id: log.id, visibility };
+  }
+
+  /** The level a new workout starts at: the person's own default, else private. */
+  private async _defaultVisibility(userId: string): Promise<WorkoutVisibility> {
+    const user = await this.userModel.findByPk(userId, {
+      attributes: ['id', 'privacySettings'],
+    });
+    return resolveLevel(user?.privacySettings, 'workouts');
   }
 
   private async _loadOwnedLog(id: string, userId: string): Promise<WorkoutLog> {

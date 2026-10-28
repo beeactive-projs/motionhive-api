@@ -59,7 +59,8 @@ export function programAssignedForClient(input: {
  * list and never got wired.
  *
  * Only fires for assigned work. Freestyle training is the client's own
- * business unless they opt into sharing it (`shareOffPlan`).
+ * business; sharing it (`workout_log.visibility`) lets a coach open it,
+ * not get pinged about it.
  *
  * Click target: `/coaching/clients/:clientId` — that client's profile, which
  * lists their recent workouts and is where the replay opens from.

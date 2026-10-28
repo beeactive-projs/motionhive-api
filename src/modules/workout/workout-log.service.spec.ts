@@ -4,6 +4,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
+import { Op } from 'sequelize';
 import { getModelToken } from '@nestjs/sequelize';
 import { Sequelize } from 'sequelize-typescript';
 import { WINSTON_MODULE_NEST_PROVIDER } from 'nest-winston';
@@ -1427,80 +1428,155 @@ describe('WorkoutLogService (smoke — not exhaustive)', () => {
   });
 
   describe('off-plan privacy', () => {
-    it('restricts the coach to their own assignments by default', async () => {
+    /** The two halves of the coach's `where`: their plans, or shared. */
+    async function coachWhere(assignments: Record<string, unknown>[]) {
       instructorClientModel.findOne.mockResolvedValueOnce({ id: 'link-1' });
-      assignmentModel.findAll.mockResolvedValueOnce([
-        { id: 'asg-1', shareOffPlan: false },
-        { id: 'asg-2', shareOffPlan: false },
-      ]);
+      assignmentModel.findAll.mockResolvedValueOnce(assignments);
       logModel.findAndCountAll.mockResolvedValueOnce({ rows: [], count: 0 });
-
       await service.listForClientByInstructor('coach-1', 'client-1', {
         page: 1,
         limit: 20,
       });
-
-      const args = logModel.findAndCountAll.mock.calls[0][0] as {
-        where: Record<string, unknown>;
+      const { where } = logModel.findAndCountAll.mock.calls[0][0] as {
+        where: Record<string | symbol, unknown>;
       };
-      // Freestyle logs have a null programAssignmentId, so an IN over
-      // the coach's own assignment ids excludes them.
-      const clause = args.where['programAssignmentId'] as Record<
-        symbol,
-        unknown
-      >;
-      expect(clause).toBeDefined();
-      const ids = Object.getOwnPropertySymbols(clause).map((x) => clause[x])[0];
-      expect(ids).toEqual(['asg-1', 'asg-2']);
-    });
+      return where;
+    }
 
-    it('lifts the restriction when the client shared off-plan work', async () => {
-      instructorClientModel.findOne.mockResolvedValueOnce({ id: 'link-1' });
-      assignmentModel.findAll.mockResolvedValueOnce([
-        { id: 'asg-1', shareOffPlan: false },
-        { id: 'asg-2', shareOffPlan: true },
+    it('limits the coach to their own plans and what the client shared', async () => {
+      const where = await coachWhere([{ id: 'asg-1' }, { id: 'asg-2' }]);
+
+      expect(where[Op.or]).toEqual([
+        { programAssignmentId: { [Op.in]: ['asg-1', 'asg-2'] } },
+        { visibility: { [Op.in]: ['COACHES_ONLY', 'PUBLIC'] } },
       ]);
-      logModel.findAndCountAll.mockResolvedValueOnce({ rows: [], count: 0 });
-
-      await service.listForClientByInstructor('coach-1', 'client-1', {
-        page: 1,
-        limit: 20,
-      });
-
-      const args = logModel.findAndCountAll.mock.calls[0][0] as {
-        where: Record<string, unknown>;
-      };
-      expect(args.where['programAssignmentId']).toBeUndefined();
+      expect(where['programAssignmentId']).toBeUndefined();
     });
 
-    it('404s on a freestyle log the coach was not given', async () => {
+    it('leaves a coach with no plans only what was shared', async () => {
+      const where = await coachWhere([]);
+      expect(where[Op.or]).toEqual([
+        { visibility: { [Op.in]: ['COACHES_ONLY', 'PUBLIC'] } },
+      ]);
+    });
+
+    // Nothing could ever set it; migration 073 carried its few values over.
+    it('no longer opens everything for the old share_off_plan flag', async () => {
+      const where = await coachWhere([{ id: 'asg-1', shareOffPlan: true }]);
+      expect(where[Op.or]).toBeDefined();
+    });
+
+    it('404s on a private freestyle log', async () => {
       logModel.findByPk.mockResolvedValueOnce({
         userId: 'client-1',
         programAssignmentId: null,
+        visibility: 'ONLY_ME',
       });
       instructorClientModel.findOne.mockResolvedValueOnce({ id: 'link-1' });
-      assignmentModel.findAll.mockResolvedValueOnce([
-        { id: 'asg-1', shareOffPlan: false },
-      ]);
+      assignmentModel.findAll.mockResolvedValueOnce([{ id: 'asg-1' }]);
 
       await expect(
         service.findByIdForInstructor('log-solo', 'coach-1'),
       ).rejects.toBeInstanceOf(NotFoundException);
     });
 
-    it("404s on a log from another coach's assignment", async () => {
+    it('opens a freestyle log the client shared with coaches', async () => {
+      const plain = { id: 'log-solo', userId: 'client-1' };
+      logModel.findByPk
+        .mockResolvedValueOnce({
+          userId: 'client-1',
+          programAssignmentId: null,
+          visibility: 'COACHES_ONLY',
+        })
+        .mockResolvedValueOnce({
+          ...plain,
+          status: WorkoutLogStatus.Completed,
+          completedAt: null,
+          startedAt: new Date(),
+          get: () => plain,
+        });
+      instructorClientModel.findOne.mockResolvedValueOnce({ id: 'link-1' });
+      assignmentModel.findAll.mockResolvedValueOnce([{ id: 'asg-1' }]);
+
+      await expect(
+        service.findByIdForInstructor('log-solo', 'coach-1'),
+      ).resolves.toBe(plain);
+    });
+
+    it('stays closed when a log arrives without its level', async () => {
+      logModel.findByPk.mockResolvedValueOnce({
+        userId: 'client-1',
+        programAssignmentId: null,
+      });
+      instructorClientModel.findOne.mockResolvedValueOnce({ id: 'link-1' });
+      assignmentModel.findAll.mockResolvedValueOnce([{ id: 'asg-1' }]);
+
+      await expect(
+        service.findByIdForInstructor('log-solo', 'coach-1'),
+      ).rejects.toBeInstanceOf(NotFoundException);
+    });
+
+    it("404s on a private log from another coach's assignment", async () => {
       logModel.findByPk.mockResolvedValueOnce({
         userId: 'client-1',
         programAssignmentId: 'asg-other',
+        visibility: 'ONLY_ME',
       });
       instructorClientModel.findOne.mockResolvedValueOnce({ id: 'link-1' });
-      assignmentModel.findAll.mockResolvedValueOnce([
-        { id: 'asg-1', shareOffPlan: false },
-      ]);
+      assignmentModel.findAll.mockResolvedValueOnce([{ id: 'asg-1' }]);
 
       await expect(
         service.findByIdForInstructor('log-x', 'coach-1'),
       ).rejects.toBeInstanceOf(NotFoundException);
+    });
+  });
+
+  describe('visibility', () => {
+    it("starts a freestyle workout at the person's own default", async () => {
+      userModel.findByPk.mockResolvedValueOnce({
+        id: 'me',
+        privacySettings: { workouts: 'COACHES_ONLY' },
+      });
+      logModel.create.mockResolvedValueOnce({ id: 'wl-new' });
+
+      await service.start('me', { name: 'Solo' });
+
+      expect(logModel.create).toHaveBeenCalledWith(
+        expect.objectContaining({ visibility: 'COACHES_ONLY' }),
+      );
+    });
+
+    it('starts private when the person never chose', async () => {
+      userModel.findByPk.mockResolvedValueOnce({
+        id: 'me',
+        privacySettings: {},
+      });
+      logModel.create.mockResolvedValueOnce({ id: 'wl-new' });
+
+      await service.start('me', { name: 'Solo' });
+
+      expect(logModel.create).toHaveBeenCalledWith(
+        expect.objectContaining({ visibility: 'ONLY_ME' }),
+      );
+    });
+
+    it('lets only the owner change it', async () => {
+      logModel.findByPk.mockResolvedValueOnce({ id: 'wl-1', userId: 'other' });
+      await expect(
+        service.setVisibility('wl-1', 'me', 'PUBLIC'),
+      ).rejects.toBeInstanceOf(NotFoundException);
+
+      const update = jest.fn();
+      logModel.findByPk.mockResolvedValueOnce({
+        id: 'wl-1',
+        userId: 'me',
+        visibility: 'ONLY_ME',
+        update,
+      });
+      await expect(
+        service.setVisibility('wl-1', 'me', 'COACHES_ONLY'),
+      ).resolves.toEqual({ id: 'wl-1', visibility: 'COACHES_ONLY' });
+      expect(update).toHaveBeenCalledWith({ visibility: 'COACHES_ONLY' });
     });
   });
 
