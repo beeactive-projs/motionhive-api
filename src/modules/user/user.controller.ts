@@ -9,7 +9,6 @@ import {
   UseInterceptors,
   UploadedFile,
   Request,
-  BadRequestException,
 } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
 import { ApiTags, ApiConsumes } from '@nestjs/swagger';
@@ -21,7 +20,10 @@ import { UpdateUserDto } from './dto/update-user.dto';
 import { SearchUsersQueryDto } from './dto/search-users.query.dto';
 import { ApiEndpoint } from '../../common/decorators/api-response.decorator';
 import { UserDocs } from '../../common/docs/user.docs';
-import { apiError } from '../../common/i18n';
+import {
+  assertImageFile,
+  IMAGE_UPLOAD_OPTIONS,
+} from '../../common/utils/image.utils';
 
 /**
  * User Controller
@@ -105,7 +107,7 @@ export class UserController {
    * image in place without refetching the whole profile.
    */
   @Post('me/avatar')
-  @UseInterceptors(FileInterceptor('file'))
+  @UseInterceptors(FileInterceptor('file', IMAGE_UPLOAD_OPTIONS))
   @ApiConsumes('multipart/form-data')
   @Throttle({ default: { limit: 20, ttl: 3_600_000 } })
   @ApiEndpoint({
@@ -120,20 +122,9 @@ export class UserController {
   })
   async uploadAvatar(
     @Request() req: AuthenticatedRequest,
-    @UploadedFile() file: Express.Multer.File,
+    @UploadedFile() file: Express.Multer.File | undefined,
   ) {
-    if (!file) {
-      throw new BadRequestException(apiError('common.noFile'));
-    }
-    if (!file.mimetype?.startsWith('image/')) {
-      throw new BadRequestException(apiError('common.imageOnly'));
-    }
-    const MAX_BYTES = 5 * 1024 * 1024;
-    if (file.size > MAX_BYTES) {
-      throw new BadRequestException(
-        apiError('common.fileTooLarge', { maxMb: 5 }),
-      );
-    }
+    assertImageFile(file);
     const user = await this.userService.uploadAvatar(req.user.id, file);
     return {
       avatarUrl: user.avatarUrl,

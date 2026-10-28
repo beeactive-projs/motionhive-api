@@ -26,6 +26,10 @@ import { ApiEndpoint } from '../../common/decorators/api-response.decorator';
 import { BlogDocs } from '../../common/docs/blog.docs';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { RolesGuard } from '../../common/guards/roles.guard';
+import {
+  assertImageFile,
+  IMAGE_UPLOAD_OPTIONS,
+} from '../../common/utils/image.utils';
 
 import type { AuthenticatedRequest } from '../../common/types/authenticated-request';
 
@@ -166,13 +170,14 @@ export class BlogController {
   @Post('upload-image')
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('ADMIN', 'SUPER_ADMIN', 'WRITER')
-  @UseInterceptors(FileInterceptor('file'))
+  @UseInterceptors(FileInterceptor('file', IMAGE_UPLOAD_OPTIONS))
   @ApiConsumes('multipart/form-data')
   @ApiEndpoint(BlogDocs.uploadImage)
   async uploadImage(
     @Request() req: AuthenticatedRequest,
-    @UploadedFile() file: Express.Multer.File,
+    @UploadedFile() file: Express.Multer.File | undefined,
   ) {
+    assertImageFile(file);
     return this.blogService.uploadImage(file, req.user.id);
   }
 }

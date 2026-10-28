@@ -58,6 +58,9 @@ const GENERIC_BY_STATUS_TEXT: Record<string, ErrorKey> = {
   'Not Found': 'common.notFound',
   Conflict: 'common.conflict',
   'Payload Too Large': 'common.tooLarge',
+  // Multer's own sentence when an upload passes `IMAGE_UPLOAD_OPTIONS`'
+  // size limit.
+  'File too large': 'common.tooLarge',
 };
 
 /**

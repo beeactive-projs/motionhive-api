@@ -4,6 +4,7 @@ import {
   ConflictException,
   ForbiddenException,
   NotFoundException,
+  PayloadTooLargeException,
 } from '@nestjs/common';
 import { apiError, validationErrorBody } from '../i18n';
 import { HttpExceptionFilter } from './http-exception.filter';
@@ -65,6 +66,15 @@ describe('HttpExceptionFilter', () => {
       run(new ForbiddenException(), { headers: { 'accept-language': 'ro' } })
         .message,
     ).toBe('Nu ai permisiunea să faci asta.');
+  });
+
+  it("words multer's oversized-upload error in the caller's language", () => {
+    // What @nestjs/platform-express throws when `limits.fileSize` trips.
+    const body = run(new PayloadTooLargeException('File too large'), {
+      headers: { 'accept-language': 'ro' },
+    });
+    expect(body.statusCode).toBe(413);
+    expect(body.message).toBe('Fișierul este prea mare.');
   });
 
   it("answers an unknown route in the reader's language, never with the path", () => {

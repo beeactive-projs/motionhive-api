@@ -1,3 +1,7 @@
+import { BadRequestException } from '@nestjs/common';
+import type { MulterOptions } from '@nestjs/platform-express/multer/interfaces/multer-options.interface';
+import { apiError } from '../i18n';
+
 /**
  * Magic-byte signature check for the image formats Cloudinary accepts
  * for inline rendering on a post. Defense-in-depth against a client that
@@ -49,5 +53,57 @@ export function isSupportedImage(buf: Buffer): boolean {
     return true;
   }
 
+  // HEIC / HEIF / AVIF: an ISO media box, '....ftyp' then the brand. An
+  // iPhone photo on a Mac is usually HEIC, and Cloudinary takes it.
+  if (buf.toString('latin1', 4, 8) === 'ftyp') {
+    return ISO_IMAGE_BRANDS.has(buf.toString('latin1', 8, 12));
+  }
+
   return false;
+}
+
+/** `ftyp` brands of still images: HEIC/HEIF (and their sequences) and AVIF. */
+const ISO_IMAGE_BRANDS = new Set([
+  'heic',
+  'heix',
+  'heim',
+  'heis',
+  'hevc',
+  'hevx',
+  'hevm',
+  'hevs',
+  'mif1',
+  'msf1',
+  'avif',
+  'avis',
+]);
+
+/** The largest image any upload route accepts. The apps check it too. */
+export const MAX_IMAGE_MB = 5;
+
+/**
+ * Multer options for every image upload route. With `fileSize` set,
+ * multer stops reading at the limit, so an oversized upload never sits
+ * whole in memory; checking `file.size` after the fact was too late for
+ * that. Multer then throws "File too large", which the exception filter
+ * words in the caller's language.
+ */
+export const IMAGE_UPLOAD_OPTIONS: MulterOptions = {
+  limits: { fileSize: MAX_IMAGE_MB * 1024 * 1024, files: 1 },
+};
+
+/**
+ * Refuses a missing file, or one whose bytes are not an image. The
+ * multipart `mimetype` is whatever the client wrote, so the magic bytes
+ * decide.
+ */
+export function assertImageFile(
+  file: Express.Multer.File | undefined,
+): asserts file is Express.Multer.File {
+  if (!file) {
+    throw new BadRequestException(apiError('common.noFile'));
+  }
+  if (!file.mimetype?.startsWith('image/') || !isSupportedImage(file.buffer)) {
+    throw new BadRequestException(apiError('common.imageOnly'));
+  }
 }
