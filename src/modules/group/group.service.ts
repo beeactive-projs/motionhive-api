@@ -258,26 +258,39 @@ export class GroupService {
   }
 
   /**
-   * Get all groups the user belongs to (active memberships only)
+   * Get all groups the user belongs to (active memberships only), each with
+   * the user's role in it: whether they may post somewhere depends on it
+   * (staff always may), and the membership rows are loaded here anyway.
    */
-  async getMyGroups(userId: string): Promise<Group[]> {
+  async getMyGroups(
+    userId: string,
+  ): Promise<Array<Group & { myRole: GroupMemberRole }>> {
     const memberships = await this.memberModel.findAll({
       where: { userId, leftAt: null },
-      attributes: ['groupId'],
+      attributes: ['groupId', 'role'],
     });
 
-    const groupIds = memberships.map((m) => m.groupId);
+    const roleByGroup = new Map(memberships.map((m) => [m.groupId, m.role]));
+    const groupIds = [...roleByGroup.keys()];
     if (groupIds.length === 0) return [];
 
     const memberCountLiteral = literal(
       '(SELECT COUNT(*)::int FROM group_member WHERE group_member.group_id = "Group"."id" AND group_member.left_at IS NULL)',
     );
 
-    return this.groupModel.findAll({
+    const groups = await this.groupModel.findAll({
       where: { id: { [Op.in]: groupIds }, isActive: true },
       attributes: {
         include: [[memberCountLiteral, 'memberCount']],
       },
+    });
+    // Plain rows: an instance drops an added property when serialised.
+    return groups.map((group) => {
+      const plain = group.get({ plain: true }) as Group & {
+        myRole: GroupMemberRole;
+      };
+      plain.myRole = roleByGroup.get(group.id) ?? GroupMemberRole.MEMBER;
+      return plain;
     });
   }
   /**

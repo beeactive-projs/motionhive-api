@@ -19,6 +19,7 @@ import {
   MessageReport,
   MessageReportStatus,
 } from '../../messaging/entities/message-report.entity';
+import { WorkoutReport } from '../../workout/entities/workout-report.entity';
 import { Post } from '../../post/entities/post.entity';
 import { Review } from '../../review/entities/review.entity';
 import { Invoice } from '../../payment/entities/invoice.entity';
@@ -52,6 +53,8 @@ export class AdminOverviewService {
     private readonly webhookEventModel: typeof WebhookEvent,
     @InjectModel(MessageReport)
     private readonly messageReportModel: typeof MessageReport,
+    @InjectModel(WorkoutReport)
+    private readonly workoutReportModel: typeof WorkoutReport,
     @InjectModel(Post) private readonly postModel: typeof Post,
     @InjectModel(Review) private readonly reviewModel: typeof Review,
     @InjectModel(Invoice) private readonly invoiceModel: typeof Invoice,
@@ -70,6 +73,7 @@ export class AdminOverviewService {
       openDisputes,
       failedWebhooks,
       openMessageReports,
+      openWorkoutReports,
     ] = await Promise.all([
       this.userModel.count(),
       this.userModel.count({ where: { isActive: true } }),
@@ -103,6 +107,13 @@ export class AdminOverviewService {
           },
         },
       }),
+      this.workoutReportModel.count({
+        where: {
+          status: {
+            [Op.in]: [MessageReportStatus.OPEN, MessageReportStatus.REVIEWING],
+          },
+        },
+      }),
     ]);
 
     return {
@@ -115,7 +126,7 @@ export class AdminOverviewService {
         openDisputes,
         failedWebhooks,
       },
-      moderation: { openMessageReports },
+      moderation: { openMessageReports, openWorkoutReports },
     };
   }
 

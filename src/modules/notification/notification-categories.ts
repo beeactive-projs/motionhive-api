@@ -153,6 +153,7 @@ export const TYPE_TO_CATEGORY: Record<NotificationType, NotificationCategory> =
     [NotificationType.PROGRAM_ASSIGNED]: NotificationCategory.Workouts,
     [NotificationType.CLIENT_COMPLETED_WORKOUT]: NotificationCategory.Workouts,
     [NotificationType.CLIENT_COMPLETED_PLAN]: NotificationCategory.Workouts,
+    [NotificationType.WORKOUT_TAKEN_DOWN]: NotificationCategory.Workouts,
   };
 
 /**

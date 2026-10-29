@@ -10,11 +10,24 @@ import {
   Post,
   Query,
   Request,
+  Res,
+  UploadedFile,
   UseGuards,
+  UseInterceptors,
 } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
-import { ApiTags } from '@nestjs/swagger';
+import { FileInterceptor } from '@nestjs/platform-express';
+import { ApiConsumes, ApiTags } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
+import type { Response } from 'express';
+
+import {
+  assertImageFile,
+  IMAGE_UPLOAD_OPTIONS,
+} from '../../common/utils/image.utils';
+import { WorkoutPhotoService } from './workout-photo.service';
+import { sendPrivateImage } from './workout-photo.http';
+import { WorkoutPhotoQueryDto } from './dto/workout-photo-query.dto';
 
 import { PaginationDto } from '../../common/dto/pagination.dto';
 import { requestLocale } from '../../common/i18n';
@@ -44,7 +57,10 @@ import { WorkoutLogService } from './workout-log.service';
 @UseGuards(AuthGuard('jwt'), RolesGuard)
 @Roles('USER')
 export class WorkoutLogController {
-  constructor(private readonly workoutLogService: WorkoutLogService) {}
+  constructor(
+    private readonly workoutLogService: WorkoutLogService,
+    private readonly workoutPhotoService: WorkoutPhotoService,
+  ) {}
 
   // ── Lifecycle ────────────────────────────────────────────────────
 
@@ -177,6 +193,16 @@ export class WorkoutLogController {
     );
   }
 
+  /**
+   * History's memory card: a workout from a year, six, three or one month
+   * back and how far one of its lifts has come since. 200 with a `null`
+   * body when nothing has improved, the same as in-progress.
+   */
+  @Get('workout-logs/memory')
+  async memory(@Request() req: AuthenticatedRequest) {
+    return this.workoutLogService.memoryFor(req.user.id, requestLocale(req));
+  }
+
   /** Most-recent IN_PROGRESS log for the caller (or null). Powers the
    *  home page resume-tile. Returns 200 with `null` body, not 404. */
   @Get('workout-logs/in-progress')
@@ -218,6 +244,49 @@ export class WorkoutLogController {
   }
 
   /**
+   * The finished workout's one photo, replacing any before it. A JPEG the
+   * app re-encoded; the API strips its metadata again before storing it.
+   */
+  @Post('workout-logs/:id/photo')
+  @UseInterceptors(FileInterceptor('file', IMAGE_UPLOAD_OPTIONS))
+  @ApiConsumes('multipart/form-data')
+  @Throttle({ default: { limit: 30, ttl: 3_600_000 } })
+  async setPhoto(
+    @Request() req: AuthenticatedRequest,
+    @Param('id', ParseUUIDPipe) id: string,
+    @UploadedFile() file: Express.Multer.File | undefined,
+  ) {
+    assertImageFile(file);
+    return this.workoutPhotoService.setPhoto(id, req.user.id, file);
+  }
+
+  /**
+   * The owner's photo, streamed; there is no public link to it.
+   * `?size=thumb` is a small 3:4 crop for History's grid of them.
+   */
+  @Get('workout-logs/:id/photo')
+  async photo(
+    @Request() req: AuthenticatedRequest,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Query() query: WorkoutPhotoQueryDto,
+    @Res() res: Response,
+  ) {
+    sendPrivateImage(
+      res,
+      await this.workoutPhotoService.photoForOwner(id, req.user.id, query.size),
+    );
+  }
+
+  @Delete('workout-logs/:id/photo')
+  @HttpCode(204)
+  async removePhoto(
+    @Request() req: AuthenticatedRequest,
+    @Param('id', ParseUUIDPipe) id: string,
+  ) {
+    await this.workoutPhotoService.removePhoto(id, req.user.id);
+  }
+
+  /**
    * Who besides the owner sees this workout. Owner only; the coach whose
    * plan it came from sees it whatever the level.
    */
@@ -250,7 +319,7 @@ export class WorkoutLogController {
     @Request() req: AuthenticatedRequest,
     @Query() query: ListWorkoutLogsQueryDto,
   ) {
-    return this.workoutLogService.listForUser(req.user.id, query);
+    return this.workoutLogService.listHistory(req.user.id, query);
   }
 
   /**

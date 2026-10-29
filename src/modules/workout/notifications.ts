@@ -132,3 +132,29 @@ export function clientCompletedPlanForInstructor(input: {
     },
   };
 }
+
+/**
+ * Staff took one of your workouts down after a report. Says which one and
+ * why, the way a removal has to be explained to the person it affects.
+ *
+ * Click target: that workout's own page, where it now shows as Only me.
+ */
+export function workoutTakenDownForOwner(input: {
+  ownerId: string;
+  workoutLogId: string;
+  workoutName: string;
+  category: string;
+}): NotifyParams {
+  return {
+    userId: input.ownerId,
+    type: NotificationType.WORKOUT_TAKEN_DOWN,
+    message: {
+      key: 'workout.workoutTakenDown',
+      params: { workout: input.workoutName, reason: input.category },
+    },
+    data: {
+      screen: 'user/workout-log',
+      entityId: input.workoutLogId,
+    },
+  };
+}

@@ -78,6 +78,21 @@ export const workout: Catalog['errors']['workout'] = {
     'Poți anula doar un antrenament în desfășurare. Antrenamentele terminate rămân în istoricul tău.',
   cannotCompleteNotInProgress:
     'Poți termina doar un antrenament în desfășurare.',
+  photoNotFinished: 'Poți adăuga o fotografie după ce termini antrenamentul.',
+  photoJpegOnly: 'Trimite fotografia în format JPEG.',
+  photoNotFound: 'Antrenamentul nu are nicio fotografie.',
+
+  // ─── Reports and takedowns ───────────────────────────────────────
+  takenDownNoShare:
+    'Antrenamentul a fost scos în urma unei raportări, așa că nu poate fi distribuit.',
+  takenDownStaysPrivate:
+    'Antrenamentul a fost scos în urma unei raportări, așa că trebuie să rămână privat.',
+  cannotReportOwn: 'Nu îți poți raporta propriul antrenament.',
+  reportAlreadyOpen: 'Ai raportat deja acest antrenament. Ne uităm la el.',
+  reportNotFound: 'Raportul nu a fost găsit.',
+  reportTransition: 'Raportul nu mai poate trece în această stare.',
+  takeDownNeedsResolve:
+    'Scoaterea unui antrenament rezolvă raportul, așa că alege starea „rezolvat”.',
   alreadyInProgress:
     '{name} este încă în desfășurare. Termină-l sau renunță la el înainte să începi alt antrenament.',
 };

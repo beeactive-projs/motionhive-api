@@ -136,6 +136,8 @@ export interface JobPayloads {
 
   /** Skip never-started assigned workouts whose scheduled date is in the past. */
   'workouts.auto_skip_past_workouts': { runKey?: string };
+  /** Close workouts left open and untouched for a day. */
+  'workouts.close_stale_workouts': { runKey?: string };
   /** Complete assignments whose workouts are all COMPLETED or SKIPPED. */
   'workouts.auto_complete_assignments': { runKey?: string };
 
@@ -212,6 +214,7 @@ export const ALL_JOB_NAMES: ReadonlyArray<keyof JobPayloads> = [
   'sessions.generate_recurring',
   'sessions.cleanup_stale_participants',
   'workouts.auto_skip_past_workouts',
+  'workouts.close_stale_workouts',
   'workouts.auto_complete_assignments',
   'payments.invoice_due_soon',
   'payments.invoice_overdue',
@@ -281,6 +284,11 @@ export const TRIGGERABLE_JOBS: ReadonlyArray<{
     key: 'workouts.auto_skip_past_workouts',
     queue: QueueName.Workouts,
     schedule: 'daily 02:00',
+  },
+  {
+    key: 'workouts.close_stale_workouts',
+    queue: QueueName.Workouts,
+    schedule: 'daily 02:15',
   },
   {
     key: 'workouts.auto_complete_assignments',

@@ -4,6 +4,7 @@ import {
   IMAGE_UPLOAD_OPTIONS,
   isSupportedImage,
   MAX_IMAGE_MB,
+  stripJpegMetadata,
 } from './image.utils';
 
 const JPEG = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0, 0, 0, 0, 0, 0, 0, 0]);
@@ -59,6 +60,60 @@ describe('assertImageFile', () => {
         assertImageFile(upload({ mimetype: 'image/png', buffer: exe })),
       ),
     ).toBe('common.imageOnly');
+  });
+});
+
+describe('stripJpegMetadata', () => {
+  const segment = (marker: number, payload: Buffer) =>
+    Buffer.concat([
+      Buffer.from([
+        0xff,
+        marker,
+        (payload.length + 2) >> 8,
+        (payload.length + 2) & 0xff,
+      ]),
+      payload,
+    ]);
+  const scanData = Buffer.from([0x12, 0x34, 0xff, 0x00, 0x56]);
+  const jpeg = Buffer.concat([
+    Buffer.from([0xff, 0xd8]),
+    segment(0xe0, Buffer.from('JFIF\0\x01\x01', 'latin1')),
+    segment(
+      0xe1,
+      Buffer.from('Exif\0\0GPSLatitude 44.43 GPSLongitude 26.10', 'latin1'),
+    ),
+    segment(
+      0xe1,
+      Buffer.from('http://ns.adobe.com/xap/1.0/\0<x:xmpmeta/>', 'latin1'),
+    ),
+    segment(0xed, Buffer.from('Photoshop 3.0\0IPTC city=Bucharest', 'latin1')),
+    segment(0xfe, Buffer.from('taken at home', 'latin1')),
+    segment(0xe2, Buffer.from('ICC_PROFILE\0', 'latin1')),
+    segment(0xdb, Buffer.alloc(65)),
+    segment(0xda, Buffer.from([0x01, 0x01, 0x00, 0x00, 0x3f, 0x00])),
+    scanData,
+    Buffer.from([0xff, 0xd9]),
+  ]);
+
+  it('drops EXIF, GPS, XMP, IPTC and comments', () => {
+    const text = stripJpegMetadata(jpeg)!.toString('latin1');
+    for (const gone of ['Exif', 'GPS', 'xmpmeta', 'IPTC', 'taken at home']) {
+      expect(text).not.toContain(gone);
+    }
+  });
+
+  it('keeps the colour profile and every byte of the image', () => {
+    const out = stripJpegMetadata(jpeg)!;
+    expect(out.toString('latin1')).toContain('JFIF');
+    expect(out.toString('latin1')).toContain('ICC_PROFILE');
+    expect(out.subarray(0, 2)).toEqual(Buffer.from([0xff, 0xd8]));
+    expect(out.subarray(-2)).toEqual(Buffer.from([0xff, 0xd9]));
+    expect(out.includes(scanData)).toBe(true);
+  });
+
+  it('refuses what is not a well-formed JPEG', () => {
+    expect(stripJpegMetadata(Buffer.from('not a jpeg at all'))).toBeNull();
+    expect(stripJpegMetadata(jpeg.subarray(0, 30))).toBeNull();
   });
 });
 

@@ -18,6 +18,10 @@ import { SuggestedInstructorsDto } from './dto/suggested-instructors.dto';
 import { CoachSuggestionReason } from './entities/coach-suggestion.enums';
 import { UpdatePrivacySettingsDto } from './dto/update-privacy-settings.dto';
 import { UpdateHandleDto } from './dto/update-handle.dto';
+import type {
+  ProfilePreviewAs,
+  ProfileWorkoutsQueryDto,
+} from './dto/profile-view-query.dto';
 import {
   isFieldVisible,
   resolveLevel,
@@ -42,6 +46,11 @@ import { SearchIndexService } from '../search/search-index.service';
 import { ReviewService } from '../review/review.service';
 import { GroupService } from '../group/group.service';
 import { VenueService } from '../venue/venue.service';
+import { WorkoutLogService } from '../workout/workout-log.service';
+import { WorkoutReportService } from '../workout/workout-report.service';
+import { WorkoutPhotoService } from '../workout/workout-photo.service';
+import { ReportWorkoutDto } from '../workout/dto/report-workout.dto';
+import { WorkoutVisibility } from '../workout/entities/workout.enums';
 
 // The privacy rules live in profile-privacy.ts, which group and other
 // modules read without importing this service. Re-exported for the spec.
@@ -75,6 +84,9 @@ export class ProfileService {
     private readonly reviewService: ReviewService,
     private readonly groupService: GroupService,
     private readonly venueService: VenueService,
+    private readonly workoutLogService: WorkoutLogService,
+    private readonly workoutReportService: WorkoutReportService,
+    private readonly workoutPhotoService: WorkoutPhotoService,
   ) {}
 
   // =====================================================
@@ -770,56 +782,45 @@ export class ProfileService {
    * `isInstructor` flag so the UI can decide whether to also fetch
    * the richer instructor public payload (offerings, reviews, …).
    */
-  async getPublicUserProfileByHandle(handle: string, viewerId: string | null) {
-    const normalized = handle.trim().toLowerCase();
-    if (!normalized) {
-      throw new NotFoundException(apiError('profile.notFound'));
-    }
-
-    const user = await User.findOne({
-      where: {
-        [Op.and]: [
-          this.sequelize.where(
-            this.sequelize.fn('LOWER', this.sequelize.col('handle')),
-            normalized,
-          ),
-          // A closing (or switched off) account has no public page.
-          { isActive: true },
-        ],
-      },
-    });
-    if (!user) {
-      throw new NotFoundException(apiError('profile.notFound'));
-    }
-
-    const audience = await this.resolveAudience(viewerId, user.id);
+  async getPublicUserProfileByHandle(
+    handle: string,
+    viewerId: string | null,
+    previewAs?: ProfilePreviewAs,
+  ) {
+    const user = await this._activeUserByHandle(handle);
+    const { audience, yourCoachSince } = await this._relationship(
+      viewerId,
+      user.id,
+    );
+    const seenAs = this._seenAs(audience, previewAs);
 
     // Cheap parallel check — we want both the instructor flag (for the
     // FE branch) and the role list (for the public role badges).
-    const [instructorProfile, roles, sharedGroups] = await Promise.all([
-      this.instructorProfileModel.findOne({
-        where: { userId: user.id },
-        attributes: ['id'],
-      }),
-      this.roleService.getUserRoles(user.id),
-      // Groups in common: only for a signed-in viewer looking at someone
-      // else. A guest has none, and your own profile has nothing "in common".
-      viewerId && audience !== 'OWNER'
-        ? this.groupService.sharedGroups(viewerId, user.id)
-        : Promise.resolve([]),
-    ]);
+    const [instructorProfile, roles, sharedGroups, workoutCount] =
+      await Promise.all([
+        this.instructorProfileModel.findOne({
+          where: { userId: user.id },
+          attributes: ['id'],
+        }),
+        this.roleService.getUserRoles(user.id),
+        // Groups in common: only for a signed-in viewer looking at someone
+        // else. A guest has none, and your own profile has nothing "in common".
+        viewerId && audience !== 'OWNER'
+          ? this.groupService.sharedGroups(viewerId, user.id)
+          : Promise.resolve([]),
+        this.workoutLogService.countForProfile(
+          user.id,
+          this._workoutLevels(seenAs),
+        ),
+      ]);
 
     const settings = user.privacySettings ?? {};
     // This endpoint serves the *public* profile page. Owners viewing their
-    // own profile should see it as the public would — not with all private
-    // fields exposed. The owner identity is preserved in `audience` for the
-    // frontend to show edit affordances; field values always use PUBLIC rules.
-    const maskAudience: PublicProfileAudience =
-      audience === 'OWNER' ? 'PUBLIC' : audience;
+    // own profile see it as the public would (or as their coaches would,
+    // when previewing that), never with every private field exposed. The
+    // owner identity is preserved in `audience` for the edit affordances.
     const mask = <T>(field: PrivacyControlledField, value: T): T | null =>
-      isFieldVisible(resolveLevel(settings, field), maskAudience)
-        ? value
-        : null;
+      isFieldVisible(resolveLevel(settings, field), seenAs) ? value : null;
 
     return {
       userId: user.id,
@@ -840,30 +841,179 @@ export class ProfileService {
       memberSince: user.createdAt,
       isInstructor: !!instructorProfile,
       sharedGroups,
+      /** Workouts this viewer may see; the section is left out at 0. */
+      workoutCount,
+      /** When they became the viewer's coach; null unless they are now. */
+      yourCoachSince,
     };
   }
 
   /**
-   * Owner > coach > public. Done as a single query when a viewer is
-   * present so we don't pay two round-trips on the public-by-default
-   * path.
+   * The workouts a profile shows, newest first, as safe summaries
+   * (`WorkoutLogService.listForProfile`). The same audience rule as the
+   * profile's fields.
    */
-  private async resolveAudience(
+  async getPublicUserWorkouts(
+    handle: string,
+    viewerId: string | null,
+    query: ProfileWorkoutsQueryDto,
+  ) {
+    const user = await this._activeUserByHandle(handle);
+    const { audience } = await this._relationship(viewerId, user.id);
+    const { previewAs, ...page } = query;
+    return this.workoutLogService.listForProfile(
+      user.id,
+      this._workoutLevels(this._seenAs(audience, previewAs)),
+      page,
+    );
+  }
+
+  /**
+   * One workout on a profile, as its card there shows it. A workout the
+   * viewer cannot see on that profile is a 404, the same as one that
+   * does not exist.
+   */
+  async getPublicUserWorkout(
+    handle: string,
+    viewerId: string | null,
+    workoutLogId: string,
+    previewAs?: ProfilePreviewAs,
+  ) {
+    const user = await this._activeUserByHandle(handle);
+    const { audience } = await this._relationship(viewerId, user.id);
+    return this.workoutLogService.findForProfile(
+      user.id,
+      this._workoutLevels(this._seenAs(audience, previewAs)),
+      workoutLogId,
+    );
+  }
+
+  /**
+   * The photo of one workout on a profile, under the same rule as the
+   * workout itself: whoever may see the workout there sees its photo, and
+   * anyone else gets a 404.
+   */
+  async getPublicUserWorkoutPhoto(
+    handle: string,
+    viewerId: string | null,
+    workoutLogId: string,
+    previewAs?: ProfilePreviewAs,
+  ): Promise<Buffer> {
+    const user = await this._activeUserByHandle(handle);
+    const { audience } = await this._relationship(viewerId, user.id);
+    return this.workoutPhotoService.photoForProfile(
+      user.id,
+      this._workoutLevels(this._seenAs(audience, previewAs)),
+      workoutLogId,
+    );
+  }
+
+  /**
+   * Report a workout on this profile. Only one the reporter can see there
+   * (the section's own levels), so a report never confirms that a hidden
+   * workout exists.
+   */
+  async reportUserWorkout(
+    handle: string,
+    reporterId: string,
+    workoutLogId: string,
+    dto: ReportWorkoutDto,
+  ) {
+    const user = await this._activeUserByHandle(handle);
+    const { audience } = await this._relationship(reporterId, user.id);
+    return this.workoutReportService.submit({
+      reporterId,
+      ownerId: user.id,
+      workoutLogId,
+      levels: this._workoutLevels(this._seenAs(audience)),
+      category: dto.category,
+      notes: dto.notes,
+    });
+  }
+
+  /**
+   * Whose eyes a profile is shown through. The owner sees their page as
+   * the public would, so what they see is what others see, or as their
+   * coaches would when previewing that. Nobody else can borrow a view.
+   */
+  private _seenAs(
+    audience: PublicProfileAudience,
+    previewAs?: ProfilePreviewAs,
+  ): ProfilePreviewAs {
+    if (audience !== 'OWNER') return audience;
+    return previewAs === 'COACH' ? 'COACH' : 'PUBLIC';
+  }
+
+  /**
+   * Which workout levels a profile shows: Public ones to everyone, and
+   * Coaches only as well to an active coach.
+   */
+  private _workoutLevels(seenAs: ProfilePreviewAs): WorkoutVisibility[] {
+    return seenAs === 'COACH'
+      ? [WorkoutVisibility.Public, WorkoutVisibility.CoachesOnly]
+      : [WorkoutVisibility.Public];
+  }
+
+  /** The person behind a handle, or 404: a closing account has no page. */
+  private async _activeUserByHandle(handle: string): Promise<User> {
+    const normalized = handle.trim().toLowerCase();
+    if (!normalized) {
+      throw new NotFoundException(apiError('profile.notFound'));
+    }
+    const user = await User.findOne({
+      where: {
+        [Op.and]: [
+          this.sequelize.where(
+            this.sequelize.fn('LOWER', this.sequelize.col('handle')),
+            normalized,
+          ),
+          // A closing (or switched off) account has no public page.
+          { isActive: true },
+        ],
+      },
+    });
+    if (!user) {
+      throw new NotFoundException(apiError('profile.notFound'));
+    }
+    return user;
+  }
+
+  /**
+   * How the viewer stands to the owner, both ways, in one query: owner >
+   * coach > public for what they see, and since when the owner has been
+   * the viewer's coach. No query at all for a guest or the owner.
+   */
+  private async _relationship(
     viewerId: string | null,
     ownerId: string,
-  ): Promise<PublicProfileAudience> {
-    if (!viewerId) return 'PUBLIC';
-    if (viewerId === ownerId) return 'OWNER';
+  ): Promise<{
+    audience: PublicProfileAudience;
+    yourCoachSince: Date | null;
+  }> {
+    if (!viewerId) return { audience: 'PUBLIC', yourCoachSince: null };
+    if (viewerId === ownerId)
+      return { audience: 'OWNER', yourCoachSince: null };
 
-    const coachLink = await InstructorClient.findOne({
+    const links = await InstructorClient.findAll({
       where: {
-        instructorId: viewerId,
-        clientId: ownerId,
         status: InstructorClientStatus.ACTIVE,
+        [Op.or]: [
+          { instructorId: viewerId, clientId: ownerId },
+          { instructorId: ownerId, clientId: viewerId },
+        ],
       },
-      attributes: ['id'],
+      attributes: ['instructorId', 'startedAt', 'createdAt'],
     });
-    return coachLink ? 'COACH' : 'PUBLIC';
+    const coachesOwner = links.some((link) => link.instructorId === viewerId);
+    const coachedByOwner = links.find((link) => link.instructorId === ownerId);
+    return {
+      audience: coachesOwner ? 'COACH' : 'PUBLIC',
+      // An active row from before `started_at` was stamped on accept
+      // still says since when it has stood.
+      yourCoachSince: coachedByOwner
+        ? (coachedByOwner.startedAt ?? coachedByOwner.createdAt)
+        : null,
+    };
   }
 }
 

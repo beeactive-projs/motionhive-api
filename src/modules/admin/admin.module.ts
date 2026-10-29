@@ -4,6 +4,7 @@ import { AuthModule } from '../auth/auth.module';
 import { AccountDeletionModule } from '../account-deletion/account-deletion.module';
 import { RoleModule } from '../role/role.module';
 import { PaymentModule } from '../payment/payment.module';
+import { WorkoutModule } from '../workout/workout.module';
 // NOTE: JobsService is provided by the @Global() JobsModule (registered
 // once in AppModule) — inject it directly; do NOT re-import JobsModule
 // here or its workers would double-register.
@@ -32,6 +33,7 @@ import { Subscription } from '../payment/entities/subscription.entity';
 import { Dispute } from '../payment/entities/dispute.entity';
 import { WebhookEvent } from '../payment/entities/webhook-event.entity';
 import { MessageReport } from '../messaging/entities/message-report.entity';
+import { WorkoutReport } from '../workout/entities/workout-report.entity';
 import { Notification } from '../notification/entities/notification.entity';
 import { Venue } from '../venue/entities/venue.entity';
 import { BlogPost } from '../blog/entities/blog-post.entity';
@@ -85,6 +87,7 @@ import { AdminAuditService } from './services/admin-audit.service';
       Dispute,
       WebhookEvent,
       MessageReport,
+      WorkoutReport,
       Notification,
       Venue,
       BlogPost,
@@ -105,6 +108,8 @@ import { AdminAuditService } from './services/admin-audit.service';
     AuthModule,
     PaymentModule,
     AccountDeletionModule,
+    // Workout reports: the queue, takedowns and the reported photo.
+    WorkoutModule,
   ],
   controllers: [
     AdminUsersController,

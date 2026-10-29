@@ -8,14 +8,16 @@ import {
 import type { LoggerService } from '@nestjs/common';
 import { InjectModel } from '@nestjs/sequelize';
 import { WINSTON_MODULE_NEST_PROVIDER } from 'nest-winston';
-import { Op, QueryTypes, Transaction } from 'sequelize';
+import { Includeable, Op, QueryTypes, Transaction } from 'sequelize';
 import { Sequelize } from 'sequelize-typescript';
 
 import {
   buildPaginatedResponse,
+  PaginatedResponse,
   getOffset,
 } from '../../common/dto/pagination.dto';
 import { PaginationDto } from '../../common/dto/pagination.dto';
+import { CoachClientLogsQueryDto } from './dto/coach-client-logs.query.dto';
 import {
   DEFAULT_LOCALE,
   apiError,
@@ -26,7 +28,10 @@ import {
 import { escapeLikeWildcards } from '../../common/utils/search.utils';
 import { stripHtml } from '../../common/utils/text.utils';
 import { resolveLevel } from '../profile/profile-privacy';
-import { ListWorkoutLogsQueryDto } from './dto/list-workout-logs.query.dto';
+import {
+  ListWorkoutLogsQueryDto,
+  WorkoutLogFilter,
+} from './dto/list-workout-logs.query.dto';
 import { Exercise } from '../exercise/entities/exercise.entity';
 import { ExerciseVisibility } from '../exercise/entities/exercise.enums';
 import { AssignedExercise } from './entities/assigned-exercise.entity';
@@ -65,8 +70,136 @@ import {
   CoachAccessService,
   isReadableByCoach,
   readableLogsWhere,
+  SHARED_WITH_COACHES,
 } from './coach-access.service';
+import { profileVisibleWhere } from './profile-visibility';
 import { streakFromWeeks } from './training-streak';
+
+/**
+ * What the apps learn about a workout's photo: whether there is one and
+ * which version. The Cloudinary id stays on the server; the bytes only
+ * come through `WorkoutPhotoService`.
+ */
+export function withPhotoFlag<T extends { photoPublicId?: string | null }>(
+  plain: T,
+): Omit<T, 'photoPublicId'> & { hasPhoto: boolean } {
+  const { photoPublicId, ...rest } = plain;
+  return { ...rest, hasPhoto: !!photoPublicId };
+}
+
+/** A workout as `GET /workout-logs/:id` (and the coach's read) returns it. */
+/**
+ * Who reads a timeline: its owner, who sees all of it, or a coach with the
+ * ids of their own plans for this client.
+ */
+type TimelineReader = 'owner' | { own: string[] };
+
+/** What narrows a timeline: the coach's chips, a day or month, and the page. */
+interface TimelineQuery {
+  page?: number;
+  limit?: number;
+  kind?: 'all' | 'plan' | 'own' | 'skipped';
+  dateFrom?: string;
+  dateTo?: string;
+}
+
+/** One row of the timeline query: a log, or a skipped plan day. */
+interface CoachTimelineEntry {
+  id: string;
+  kind: 'LOG' | 'SKIPPED';
+  at: Date | string;
+  name: string | null;
+  assignment_id: string | null;
+  program_name: string | null;
+  assignment_kind: string | null;
+  master_program_id: string | null;
+}
+
+/**
+ * A day of a coach's plan the client skipped, as a row of their history:
+ * the plan day's id (there is no log to open) and status SKIPPED.
+ */
+export interface SkippedPlanDay {
+  id: string;
+  userId: string;
+  name: string;
+  status: typeof WorkoutLogStatus.Skipped;
+  startedAt: Date;
+  completedAt: null;
+  durationSeconds: null;
+  feelingRating: null;
+  notes: null;
+  assignedWorkoutId: string;
+  programAssignmentId: string | null;
+  assignment: {
+    id: string;
+    programNameSnapshot: string | null;
+    masterProgramId: string | null;
+    assignmentKind: ProgramAssignmentKind;
+  } | null;
+  exercises: [];
+}
+
+export type WorkoutLogView = Omit<WorkoutLog, 'photoPublicId'> & {
+  hasPhoto: boolean;
+  personalRecords?: SessionRecord[];
+  summary?: WorkoutSummary;
+};
+
+/**
+ * The safe summary of a finished workout, for anyone its owner showed it
+ * to: never the note, weights, the plan or a coach.
+ */
+function profileSummary(
+  log: Pick<
+    WorkoutLog,
+    | 'id'
+    | 'name'
+    | 'completedAt'
+    | 'durationSeconds'
+    | 'shareCaption'
+    | 'exercises'
+    | 'photoVersion'
+  > & { photoPublicId?: string | null; hasPhoto?: boolean },
+  recordCount: number,
+): ProfileWorkout {
+  // A row from `listForUser` already carries the flag in place of the id.
+  const hasPhoto = log.hasPhoto ?? !!log.photoPublicId;
+  return {
+    id: log.id,
+    name: log.name,
+    completedAt: log.completedAt,
+    durationSeconds: log.durationSeconds,
+    setsCompleted: (log.exercises ?? [])
+      .flatMap((exercise) => exercise.sets ?? [])
+      .filter((set) => set.isCompleted).length,
+    recordCount,
+    shareCaption: log.shareCaption ?? null,
+    hasPhoto,
+    photoVersion: hasPhoto ? (log.photoVersion ?? null) : null,
+  };
+}
+
+/** A workout card in a group post; `onProfile` when its author made it Public. */
+export type PostWorkout = ProfileWorkout & { onProfile: boolean };
+
+/** A workout on someone's profile: the safe summary `listForProfile` builds. */
+export interface ProfileWorkout {
+  id: string;
+  name: string;
+  completedAt: Date | null;
+  durationSeconds: number | null;
+  setsCompleted: number;
+  recordCount: number;
+  shareCaption: string | null;
+  /**
+   * Whether it has a photo, which comes only through the profile's photo
+   * endpoint under the same rule; the version keeps a replaced one from
+   * being served from a cache.
+   */
+  hasPhoto: boolean;
+  photoVersion: number | null;
+}
 
 /** A record set in a session, as `GET /workout-logs/:id` returns it. */
 export interface SessionRecord {
@@ -94,6 +227,78 @@ export interface WorkoutSummary {
   coachName: string | null;
 }
 import { estimateOneRepMaxEpley } from './one-rep-max.estimate';
+import { ProgramAssignmentService } from './program-assignment.service';
+
+/** How far back History's memory looks, the longest span first. */
+const MEMORY_LOOKBACK_MONTHS = [12, 6, 3, 1] as const;
+
+/** Either side of each span's day, so a workout a few days off still counts. */
+const MEMORY_WINDOW_MS = 4 * 24 * 60 * 60_000;
+
+/** Workouts tried per span: the photo ones first, then the most recent. */
+const MEMORY_CANDIDATES = 5;
+
+/** History's memory card: an old workout and one lift's progress since. */
+export interface WorkoutMemory {
+  monthsAgo: number;
+  workout: {
+    id: string;
+    name: string;
+    completedAt: Date;
+    hasPhoto: boolean;
+    photoVersion: number | null;
+  };
+  /** The heaviest completed set then, and the heaviest since. */
+  exercise: { id: string; name: string; fromKg: number; toKg: number };
+}
+
+/** Left alone this long after its last ticked set, a workout ended there. */
+const IDLE_AFTER_LAST_SET_MS = 30 * 60_000;
+
+/** More active time than this is a clock left running, not training. */
+const MAX_ACTIVE_SECONDS = 6 * 60 * 60;
+
+/** Open and untouched this long, the nightly sweep closes a workout. */
+const STALE_OPEN_WORKOUT_MS = 24 * 60 * 60_000;
+
+/** How many stale workouts one night's sweep closes at most. */
+const STALE_SWEEP_BATCH = 500;
+
+/**
+ * When the training ended: when Finish was tapped, unless the workout sat
+ * untouched for over half an hour after its last ticked set. Then it
+ * ended at that set, so forgetting to tap Finish costs nothing and the
+ * workout lands on the day it was done.
+ */
+function endOfTraining(
+  startedAt: Date,
+  finishedAt: Date,
+  lastSetAt: Date | null,
+): Date {
+  if (!lastSetAt) return finishedAt;
+  if (finishedAt.getTime() - lastSetAt.getTime() <= IDLE_AFTER_LAST_SET_MS) {
+    return finishedAt;
+  }
+  return lastSetAt < startedAt ? startedAt : lastSetAt;
+}
+
+/**
+ * Active seconds from start to end, pauses out. Past what a session can
+ * be it is null, shown as unknown and left out of totals, rather than a
+ * number nobody trained.
+ */
+function activeSeconds(
+  startedAt: Date,
+  endedAt: Date,
+  pausedSeconds: number,
+): number | null {
+  const seconds = Math.max(
+    0,
+    Math.round((endedAt.getTime() - startedAt.getTime()) / 1000) -
+      pausedSeconds,
+  );
+  return seconds > MAX_ACTIVE_SECONDS ? null : seconds;
+}
 
 /**
  * WorkoutLogService — the client-side surface. Three core flows:
@@ -106,10 +311,11 @@ import { estimateOneRepMaxEpley } from './one-rep-max.estimate';
  *   2. **Log a set** — `logSet(workoutLogId, setId, dto)` updates one
  *      logged_set row. Mark-complete-only is valid (locked §11).
  *
- *   3. **Complete** — `complete(workoutLogId, dto)` computes duration,
+ *   3. **Complete** — `complete(workoutLogId, dto)` computes duration
+ *      (ending at the last set when the workout was left open after it),
  *      flips status, mirrors to the assigned_workout, updates the
- *      assignment's completion_percent, and optionally auto-suggests
- *      a 1RM from a heavy logged set via Epley.
+ *      assignment's completion_percent (finishing the plan when it was
+ *      the last), and optionally auto-suggests a 1RM via Epley.
  */
 @Injectable()
 export class WorkoutLogService {
@@ -139,6 +345,7 @@ export class WorkoutLogService {
     @InjectModel(User) private readonly userModel: typeof User,
     private readonly notificationService: NotificationService,
     private readonly coachAccess: CoachAccessService,
+    private readonly assignments: ProgramAssignmentService,
     private readonly sequelize: Sequelize,
     @Inject(WINSTON_MODULE_NEST_PROVIDER)
     private readonly logger: LoggerService,
@@ -952,10 +1159,27 @@ export class WorkoutLogService {
     if (log.status !== WorkoutLogStatus.InProgress) {
       throw new BadRequestException(apiError('workout.cannotDiscardFinished'));
     }
+    await this._discard(log);
+  }
 
+  /** Delete a running workout and put its plan day back as not started. */
+  private async _discard(
+    log: WorkoutLog,
+    /** Only if it is still running once locked: for the nightly sweep. */
+    { ifStillRunning = false } = {},
+  ): Promise<boolean> {
     const { assignedWorkoutId, programAssignmentId, sourceProgramId } = log;
 
-    await this.sequelize.transaction(async (tx) => {
+    const discarded = await this.sequelize.transaction(async (tx) => {
+      if (ifStillRunning) {
+        // The person may be finishing it this very moment.
+        const current = await this.logModel.findByPk(log.id, {
+          attributes: ['id', 'status'],
+          transaction: tx,
+          lock: tx.LOCK.UPDATE,
+        });
+        if (current?.status !== WorkoutLogStatus.InProgress) return false;
+      }
       // Starting mirrored IN_PROGRESS here; null is "not started yet".
       if (assignedWorkoutId) {
         await this.assignedWorkoutModel.update(
@@ -968,9 +1192,13 @@ export class WorkoutLogService {
       if (programAssignmentId) {
         await this.recomputeAssignmentProgress(programAssignmentId, tx);
       }
+      return true;
     });
 
-    if (sourceProgramId) await this._resyncLastPerformed(sourceProgramId);
+    if (discarded && sourceProgramId) {
+      await this._resyncLastPerformed(sourceProgramId);
+    }
+    return discarded;
   }
 
   /**
@@ -1012,7 +1240,7 @@ export class WorkoutLogService {
     workoutLogId: string,
     dto: CompleteWorkoutDto,
     userId: string,
-  ): Promise<WorkoutLog> {
+  ): Promise<WorkoutLogView> {
     const log = await this._loadOwnedLog(workoutLogId, userId);
     const feedback = this._feedbackFields(dto);
     if (log.status === WorkoutLogStatus.Completed) {
@@ -1020,7 +1248,7 @@ export class WorkoutLogService {
       // screen runs after the workout is already complete, so its rating,
       // note and share message arrive on this second call.
       if (Object.keys(feedback).length > 0) await log.update(feedback);
-      return log;
+      return this._view(log);
     }
     // Only a running workout becomes a finished one. Anything else would
     // turn a skipped or abandoned record into training that happened,
@@ -1031,53 +1259,231 @@ export class WorkoutLogService {
       );
     }
 
-    const completedAt = new Date();
-    // Finishing from a pause ends the pause there: it was not training.
-    const pausedSeconds = this._pausedSecondsAt(log, completedAt);
-    const durationSeconds = Math.max(
-      0,
-      Math.round((completedAt.getTime() - log.startedAt.getTime()) / 1000) -
-        pausedSeconds,
+    const finishedAt = new Date();
+    const completedAt = endOfTraining(
+      log.startedAt,
+      finishedAt,
+      await this._lastTickedSetAt(log.id),
     );
-
-    await this.sequelize.transaction(async (tx) => {
-      await log.update(
-        {
-          status: WorkoutLogStatus.Completed,
-          completedAt,
-          durationSeconds,
-          pausedAt: null,
-          pausedSeconds,
-          ...feedback,
-        },
-        { transaction: tx },
-      );
-
-      // Mirror status to the assigned_workout and bump the
-      // assignment-wide completion_percent.
-      if (log.assignedWorkoutId) {
-        await this.assignedWorkoutModel.update(
-          { status: WorkoutLogStatus.Completed },
-          { where: { id: log.assignedWorkoutId }, transaction: tx },
-        );
-      }
-      if (log.programAssignmentId) {
-        await this.recomputeAssignmentProgress(log.programAssignmentId, tx);
-      }
-
-      // PR detection — Epley-estimate a 1RM for every loaded set
-      // logged in this session and write a new one_rep_max row when it
-      // tops the user's prior best for that exercise. The completed-at
-      // timestamp on the row is the workout's completedAt so a GET on
-      // the log can find the new PRs by time-window.
-      await this._writePrsFromLog(log.id, userId, completedAt, tx);
-    });
+    await this.sequelize.transaction((tx) =>
+      this._finishInTx(log, { completedAt, finishedAt }, feedback, tx),
+    );
 
     // notify-after-commit — notify() opens its own transaction, so a
     // rollback above would otherwise orphan the alert.
     await this._notifyInstructorOfCompletion(log, userId);
+    await this._completePlanIfFinished(log.programAssignmentId);
 
-    return log;
+    return this._view(log);
+  }
+
+  /**
+   * A log as the owner's own reads return it: the photo as a flag, never
+   * its Cloudinary id. The feedback call comes after the photo upload, so
+   * without this it carried the id.
+   */
+  private _view(log: WorkoutLog): WorkoutLogView {
+    return withPhotoFlag(
+      log.get({ plain: true }) as WorkoutLog,
+    ) as WorkoutLogView;
+  }
+
+  /**
+   * Paused time before the end of training. The log keeps one running
+   * total, not when each pause was, so when the end moved back to the
+   * last set, pause time that fits in the idle stretch after it is taken
+   * to be there: pausing and walking away is how a workout gets left
+   * open. Counting it again would cut the training short, down to zero.
+   */
+  private _pausedSecondsBefore(
+    log: WorkoutLog,
+    { completedAt, finishedAt }: { completedAt: Date; finishedAt: Date },
+  ): number {
+    const idle = Math.max(
+      0,
+      Math.round((finishedAt.getTime() - completedAt.getTime()) / 1000),
+    );
+    return Math.max(0, this._pausedSecondsAt(log, finishedAt) - idle);
+  }
+
+  /**
+   * Turn a running workout into a finished one at `completedAt`, the end
+   * of training (`endOfTraining`) for a Finish at `finishedAt`: duration,
+   * the plan day and progress, and the records it set. The caller owns
+   * the transaction and the notifications after it.
+   */
+  private async _finishInTx(
+    log: WorkoutLog,
+    end: { completedAt: Date; finishedAt: Date },
+    feedback: Partial<
+      Pick<WorkoutLog, 'feelingRating' | 'notes' | 'shareCaption'>
+    >,
+    tx: Transaction,
+  ): Promise<void> {
+    const { completedAt } = end;
+    // Finishing from a pause ends the pause there: it was not training.
+    const pausedSeconds = this._pausedSecondsBefore(log, end);
+    await log.update(
+      {
+        status: WorkoutLogStatus.Completed,
+        completedAt,
+        durationSeconds: activeSeconds(
+          log.startedAt,
+          completedAt,
+          pausedSeconds,
+        ),
+        pausedAt: null,
+        pausedSeconds,
+        ...feedback,
+      },
+      { transaction: tx },
+    );
+
+    // Mirror status to the assigned_workout and bump the
+    // assignment-wide completion_percent.
+    if (log.assignedWorkoutId) {
+      await this.assignedWorkoutModel.update(
+        { status: WorkoutLogStatus.Completed },
+        { where: { id: log.assignedWorkoutId }, transaction: tx },
+      );
+    }
+    if (log.programAssignmentId) {
+      await this.recomputeAssignmentProgress(log.programAssignmentId, tx);
+    }
+
+    // PR detection — Epley-estimate a 1RM for every loaded set
+    // logged in this session and write a new one_rep_max row when it
+    // tops the user's prior best for that exercise. The completed-at
+    // timestamp on the row is the workout's completedAt so a GET on
+    // the log can find the new PRs by time-window.
+    await this._writePrsFromLog(log.id, log.userId, completedAt, tx);
+  }
+
+  /** When the workout's last ticked set was ticked, or null if none was. */
+  private async _lastTickedSetAt(workoutLogId: string): Promise<Date | null> {
+    const last = await this.loggedSetModel.findOne({
+      where: { isCompleted: true, completedAt: { [Op.ne]: null } },
+      include: [
+        {
+          model: LoggedExercise,
+          as: 'exercise',
+          attributes: [],
+          where: { workoutLogId },
+          required: true,
+        },
+      ],
+      attributes: ['completedAt'],
+      order: [['completedAt', 'DESC']],
+    });
+    return last?.completedAt ?? null;
+  }
+
+  /**
+   * A plan workout finished may have been the plan's last; finish the
+   * plan now rather than at the night's sweep. Best effort after commit:
+   * the workout did finish, and the sweep is the backstop.
+   */
+  private async _completePlanIfFinished(
+    programAssignmentId: string | null,
+  ): Promise<void> {
+    if (!programAssignmentId) return;
+    try {
+      await this.assignments.completeIfFinished(programAssignmentId);
+    } catch (err) {
+      this.logger.warn(
+        `Failed to finish plan ${programAssignmentId} after its last workout: ${(err as Error).message}`,
+        'WorkoutLogService',
+      );
+    }
+  }
+
+  /**
+   * The nightly tidy-up of workouts left open. One nobody has touched for
+   * a day closes itself, so it stops waiting on Home and blocking the next
+   * start. With sets ticked it was training: it completes, ending at the
+   * last set, with its records and plan progress, but no message to the
+   * coach about a day-old session. With nothing ticked nothing happened,
+   * so it is discarded as Discard would.
+   */
+  async closeStaleWorkouts(
+    now = new Date(),
+  ): Promise<{ completed: number; discarded: number }> {
+    const cutoff = new Date(now.getTime() - STALE_OPEN_WORKOUT_MS);
+    // Oldest first, a night's share at a time: the first run meets every
+    // workout ever left open, and the rest wait for the next night.
+    const open = await this.logModel.findAll({
+      where: {
+        status: WorkoutLogStatus.InProgress,
+        // Start, pause and resume stamp the log itself.
+        updatedAt: { [Op.lt]: cutoff },
+      },
+      order: [['updatedAt', 'ASC']],
+      limit: STALE_SWEEP_BATCH,
+    });
+
+    let completed = 0;
+    let discarded = 0;
+    for (const log of open) {
+      try {
+        // Typing into a set touches the set, not the log.
+        const touched = await this.loggedSetModel.findOne({
+          include: [
+            {
+              model: LoggedExercise,
+              as: 'exercise',
+              attributes: [],
+              where: { workoutLogId: log.id },
+              required: true,
+            },
+          ],
+          attributes: ['updatedAt'],
+          order: [['updatedAt', 'DESC']],
+        });
+        if (touched && touched.updatedAt >= cutoff) continue;
+
+        const lastSetAt = await this._lastTickedSetAt(log.id);
+        if (!lastSetAt) {
+          if (await this._discard(log, { ifStillRunning: true })) {
+            discarded += 1;
+          }
+          continue;
+        }
+        const finished = await this.sequelize.transaction(async (tx) => {
+          // The person may be finishing it this very moment.
+          const current = await this.logModel.findByPk(log.id, {
+            transaction: tx,
+            lock: tx.LOCK.UPDATE,
+          });
+          if (current?.status !== WorkoutLogStatus.InProgress) return false;
+          await this._finishInTx(
+            current,
+            {
+              completedAt: endOfTraining(current.startedAt, now, lastSetAt),
+              finishedAt: now,
+            },
+            {},
+            tx,
+          );
+          return true;
+        });
+        if (!finished) continue;
+        await this._completePlanIfFinished(log.programAssignmentId);
+        completed += 1;
+      } catch (err) {
+        this.logger.warn(
+          `Failed to close stale workout ${log.id}: ${(err as Error).message}`,
+          'WorkoutLogService',
+        );
+      }
+    }
+
+    if (completed + discarded > 0) {
+      this.logger.log(
+        `Closed stale workouts: completed=${completed} discarded=${discarded}`,
+        'WorkoutLogService',
+      );
+    }
+    return { completed, discarded };
   }
 
   /**
@@ -1375,6 +1781,30 @@ export class WorkoutLogService {
   // ────────────────────────────────────────────────────────────────────
 
   /**
+   * History's filters. A record is what `_countSessionPrs` counts: an
+   * estimated best set inside the workout that beat an earlier one, so a
+   * first time on an exercise is none.
+   */
+  private _historyFilter(has?: WorkoutLogFilter) {
+    if (has === 'photo') return { photoPublicId: { [Op.ne]: null } };
+    if (has !== 'record') return {};
+    return {
+      [Op.and]: [
+        this.sequelize.literal(`EXISTS (
+          SELECT 1 FROM one_rep_max orm
+          WHERE orm.user_id = "WorkoutLog"."user_id"
+            AND orm.source = '${OneRepMaxSource.EstimatedEpley}'
+            AND orm.recorded_at BETWEEN "WorkoutLog"."started_at" AND "WorkoutLog"."completed_at"
+            AND orm.recorded_at > (
+              SELECT MIN(first.recorded_at) FROM one_rep_max first
+              WHERE first.user_id = orm.user_id AND first.exercise_id = orm.exercise_id
+            )
+        )`),
+      ],
+    };
+  }
+
+  /**
    * `iLike` on the session name, with LIKE wildcards escaped — an
    * unescaped `%` would match everything and `_` any character.
    */
@@ -1395,6 +1825,8 @@ export class WorkoutLogService {
     userId: string,
     query: ListWorkoutLogsQueryDto,
     coachAssignmentIds?: string[],
+    /** Only these levels: a profile shows what its viewer may see. */
+    onlyLevels?: readonly WorkoutVisibility[],
   ) {
     const page = query.page ?? 1;
     const limit = query.limit ?? 20;
@@ -1405,6 +1837,8 @@ export class WorkoutLogService {
         userId,
         status: WorkoutLogStatus.Completed,
         ...(coachAssignmentIds ? readableLogsWhere(coachAssignmentIds) : {}),
+        // A profile never shows a workout staff took down.
+        ...(onlyLevels ? profileVisibleWhere(userId, onlyLevels) : {}),
         ...(query.dateFrom || query.dateTo
           ? {
               startedAt: {
@@ -1416,70 +1850,87 @@ export class WorkoutLogService {
             }
           : {}),
         ...this._nameSearch(query.search),
+        ...this._historyFilter(query.has),
       },
-      include: [
-        // Eager-load the program name so the row subtitle ("12-week
-        // hypertrophy base · W5") doesn't need a follow-up fetch, and the
-        // kind so a row can tell a coach's plan from a self-scheduled one.
-        // Nullable for freestyle logs.
-        {
-          model: ProgramAssignment,
-          as: 'assignment',
-          attributes: [
-            'id',
-            'programNameSnapshot',
-            'masterProgramId',
-            'assignmentKind',
-          ],
-          required: false,
-        },
-        // The routine it was started from, so a history row can say
-        // "Routine · Push day A" and link there instead of shrugging
-        // "Freestyle" at two different kinds of session.
-        {
-          model: Program,
-          as: 'sourceProgram',
-          attributes: ['id', 'name', 'isSingleWorkout'],
-          required: false,
-        },
-        // Bring back logged_exercise → logged_set just for the count.
-        // FE sums them client-side to render "18 sets".
-        {
-          model: LoggedExercise,
-          as: 'exercises',
-          attributes: ['id'],
-          include: [
-            {
-              model: LoggedSet,
-              as: 'sets',
-              attributes: ['id', 'isCompleted'],
-              required: false,
-            },
-          ],
-          required: false,
-        },
-      ],
+      include: this._historyIncludes(),
       order: [['startedAt', 'DESC']],
       offset: getOffset(page, limit),
       limit,
       distinct: true,
     });
 
-    // Tag each row with the PR count for the session window. The
-    // history view shows a "PR" trophy chip when this is > 0.
-    // Sequelize instances drop arbitrary attached props on JSON
-    // serialization, so we project to plain objects first.
+    return buildPaginatedResponse(
+      await this._historyRows(rows),
+      count,
+      page,
+      limit,
+    );
+  }
+
+  /** What a history row needs beside the log itself. */
+  private _historyIncludes(): Includeable[] {
+    return [
+      // Eager-load the program name so the row subtitle ("12-week
+      // hypertrophy base · W5") doesn't need a follow-up fetch, and the
+      // kind so a row can tell a coach's plan from a self-scheduled one.
+      // Nullable for freestyle logs.
+      {
+        model: ProgramAssignment,
+        as: 'assignment',
+        attributes: [
+          'id',
+          'programNameSnapshot',
+          'masterProgramId',
+          'assignmentKind',
+        ],
+        required: false,
+      },
+      // The routine it was started from, so a history row can say
+      // "Routine · Push day A" and link there instead of shrugging
+      // "Freestyle" at two different kinds of session.
+      {
+        model: Program,
+        as: 'sourceProgram',
+        attributes: ['id', 'name', 'isSingleWorkout'],
+        required: false,
+      },
+      // Bring back logged_exercise → logged_set just for the count.
+      // FE sums them client-side to render "18 sets".
+      {
+        model: LoggedExercise,
+        as: 'exercises',
+        attributes: ['id'],
+        include: [
+          {
+            model: LoggedSet,
+            as: 'sets',
+            attributes: ['id', 'isCompleted'],
+            required: false,
+          },
+        ],
+        required: false,
+      },
+    ];
+  }
+
+  /**
+   * Tag each row with the PR count for the session window; the history
+   * view shows a "PR" trophy chip when this is > 0. Sequelize instances
+   * drop arbitrary attached props on JSON serialization, so rows are
+   * projected to plain objects first, with the photo as a flag, never
+   * its Cloudinary id, as on every other read.
+   */
+  private async _historyRows(rows: WorkoutLog[]) {
     const prCounts =
       rows.length > 0
         ? await this._countSessionPrs(rows)
         : new Map<string, number>();
-    const plainRows = rows.map((r) => {
+    return rows.map((r) => {
       const plain = r.get({ plain: true }) as WorkoutLog & { prCount?: number };
       const n = prCounts.get(r.id) ?? 0;
       if (n > 0) plain.prCount = n;
-      return plain;
+      return withPhotoFlag(plain);
     });
-    return buildPaginatedResponse(plainRows, count, page, limit);
   }
 
   /**
@@ -1566,7 +2017,7 @@ export class WorkoutLogService {
      * person did, which a coach may not be allowed to know about.
      */
     options: { summary?: boolean } = {},
-  ): Promise<WorkoutLog> {
+  ): Promise<WorkoutLogView> {
     const log = await this.logModel.findByPk(id, {
       include: [
         // Same provenance the list carries, so the replay header can
@@ -1650,7 +2101,7 @@ export class WorkoutLogService {
       const summary = await this._ownerSummary(log);
       if (summary) plain.summary = summary;
     }
-    return plain;
+    return withPhotoFlag(plain);
   }
 
   /**
@@ -1784,21 +2235,209 @@ export class WorkoutLogService {
   // ────────────────────────────────────────────────────────────────────
 
   /**
-   * Coach view of a client's workout history. Same shape as
-   * `listForUser` (PR-tagged plain rows). Gated by ACTIVE coach link.
+   * Coach view of a client's training, newest first: the finished
+   * workouts the coach may read (their plans, or what the client shared;
+   * the same rule as `listForUser` with coach ids) and the days of the
+   * coach's plans the client skipped, which leave no log. Logs come back
+   * in `listForUser`'s shape (PR-tagged plain rows); a skip as a row of
+   * the same shape with status SKIPPED, the plan day's id and name, and
+   * nothing to open. Gated by ACTIVE coach link.
+   *
+   * `kind` picks: `all` for both, `plan` for the coach's plans, `own` for
+   * what is not from them, `skipped` for the skips; omitted, the finished
+   * logs alone, as callers before the skips expect. `dateFrom` / `dateTo`
+   * bound the day, for a calendar month or one tapped date.
    */
   async listForClientByInstructor(
     instructorId: string,
     clientId: string,
-    query: PaginationDto,
-  ) {
-    // 404 unless ACTIVE; then the coach's own assignments, which
-    // `listForUser` widens by what the client shared (CoachAccessService).
+    query: CoachClientLogsQueryDto,
+  ): Promise<PaginatedResponse<WorkoutLogView | SkippedPlanDay>> {
+    // 404 unless ACTIVE; then the coach's own assignments.
     const own = await this.coachAccess.readableAssignmentIds(
       instructorId,
       clientId,
     );
-    return this.listForUser(clientId, query, own);
+    return this._timelinePage(clientId, { own }, query);
+  }
+
+  /**
+   * The trainee's own History. `kind=all` is the timeline: every finished
+   * workout and the skipped days of their plans, which leave no log, paged
+   * together in date order. Narrowed by a photo or record chip, or a
+   * search, it is the finished workouts alone (`listForUser`), as is a
+   * request with no `kind`.
+   */
+  async listHistory(userId: string, query: ListWorkoutLogsQueryDto) {
+    if (query.kind === 'all' && !query.has && !query.search) {
+      return this._timelinePage(userId, 'owner', query);
+    }
+    return this.listForUser(userId, query);
+  }
+
+  /** One page of a timeline, logs hydrated as history rows. */
+  private async _timelinePage(
+    userId: string,
+    reader: TimelineReader,
+    query: TimelineQuery,
+  ): Promise<PaginatedResponse<WorkoutLogView | SkippedPlanDay>> {
+    const page = query.page ?? 1;
+    const limit = query.limit ?? 20;
+    const { sql, replacements } = this._timeline(userId, reader, query);
+
+    const [entries, totals] = await Promise.all([
+      this.sequelize.query<CoachTimelineEntry>(
+        `${sql} ORDER BY at DESC, id DESC LIMIT :limit OFFSET :offset`,
+        {
+          replacements: {
+            ...replacements,
+            limit,
+            offset: getOffset(page, limit),
+          },
+          type: QueryTypes.SELECT,
+        },
+      ),
+      this.sequelize.query<{ total: string }>(
+        `SELECT COUNT(*) AS total FROM (${sql}) AS timeline`,
+        { replacements, type: QueryTypes.SELECT },
+      ),
+    ]);
+
+    const logIds = entries.filter((e) => e.kind === 'LOG').map((e) => e.id);
+    const logs = logIds.length
+      ? await this._historyRows(
+          await this.logModel.findAll({
+            where: { id: { [Op.in]: logIds } },
+            include: this._historyIncludes(),
+          }),
+        )
+      : [];
+    const byId = new Map(logs.map((log) => [log.id, log]));
+    const items = entries.flatMap(
+      (entry): (WorkoutLogView | SkippedPlanDay)[] => {
+        if (entry.kind === 'SKIPPED') return [this._skippedRow(entry, userId)];
+        const log = byId.get(entry.id);
+        return log ? [log as WorkoutLogView] : [];
+      },
+    );
+    return buildPaginatedResponse(
+      items,
+      Number(totals[0]?.total ?? 0),
+      page,
+      limit,
+    );
+  }
+
+  /**
+   * The timeline as one query of ids, so the two sources page together:
+   * finished logs and skipped plan days. The owner sees all of theirs. A
+   * coach sees the logs they may read, and the skipped days of their own
+   * plans only: a skip has no visibility level, so only the plan's coach
+   * sees it. A skipped day sits at noon UTC, which is its own date in any
+   * timezone a client trains in.
+   */
+  private _timeline(
+    clientId: string,
+    reader: TimelineReader,
+    query: TimelineQuery,
+  ): { sql: string; replacements: Record<string, unknown> } {
+    const own = reader === 'owner' ? [] : reader.own;
+    const hasOwn = own.length > 0;
+    const fromOwn = hasOwn ? 'wl.program_assignment_id IN (:own)' : 'FALSE';
+    const readable =
+      reader === 'owner'
+        ? ''
+        : `AND (${fromOwn} OR wl.visibility IN (:shared))`;
+    const skipsOf =
+      reader === 'owner'
+        ? 'pa.client_id = :clientId AND pa.deleted_at IS NULL'
+        : 'aw.program_assignment_id IN (:own)';
+    const withSkips =
+      (reader === 'owner' || hasOwn) &&
+      (query.kind === 'all' || query.kind === 'skipped');
+    const logs =
+      query.kind === 'skipped'
+        ? null
+        : `
+        SELECT wl.id, 'LOG' AS kind, wl.started_at AS at,
+          NULL::varchar AS name, NULL::char(36) AS assignment_id,
+          NULL::varchar AS program_name, NULL::varchar AS assignment_kind,
+          NULL::char(36) AS master_program_id
+        FROM workout_log wl
+        WHERE wl.user_id = :clientId
+          AND wl.status = 'COMPLETED'
+          ${readable}
+          ${query.kind === 'plan' ? `AND ${fromOwn}` : ''}
+          ${query.kind === 'own' ? `AND NOT COALESCE(${fromOwn}, FALSE)` : ''}`;
+    const skips = withSkips
+      ? `
+        SELECT aw.id, 'SKIPPED' AS kind,
+          (aw.scheduled_date + TIME '12:00') AT TIME ZONE 'UTC' AS at,
+          aw.name::varchar AS name, pa.id AS assignment_id,
+          pa.program_name_snapshot::varchar AS program_name,
+          pa.assignment_kind::varchar AS assignment_kind,
+          pa.master_program_id AS master_program_id
+        FROM assigned_workout aw
+        JOIN program_assignment pa ON pa.id = aw.program_assignment_id
+        WHERE ${skipsOf}
+          AND aw.status = 'SKIPPED'
+          AND aw.scheduled_date IS NOT NULL`
+      : null;
+    const branches = [logs, skips].filter((b): b is string => b !== null);
+    const union = branches.length
+      ? branches.join('\n        UNION ALL')
+      : // Nothing this reader may see: an empty list, not an error.
+        `SELECT NULL::char(36) AS id, NULL::text AS kind, NULL::timestamptz AS at,
+          NULL::varchar AS name, NULL::char(36) AS assignment_id,
+          NULL::varchar AS program_name, NULL::varchar AS assignment_kind,
+          NULL::char(36) AS master_program_id
+        WHERE FALSE`;
+    const bounds = [
+      query.dateFrom ? 'at >= :dateFrom' : null,
+      query.dateTo ? 'at < :dateTo' : null,
+    ].filter((b): b is string => b !== null);
+
+    return {
+      sql: `SELECT * FROM (${union}) AS entries${
+        bounds.length ? ` WHERE ${bounds.join(' AND ')}` : ''
+      }`,
+      replacements: {
+        clientId,
+        ...(reader === 'owner' ? {} : { shared: [...SHARED_WITH_COACHES] }),
+        ...(hasOwn ? { own } : {}),
+        ...(query.dateFrom ? { dateFrom: new Date(query.dateFrom) } : {}),
+        ...(query.dateTo ? { dateTo: new Date(query.dateTo) } : {}),
+      },
+    };
+  }
+
+  /** A skipped plan day, in a history row's shape. */
+  private _skippedRow(
+    entry: CoachTimelineEntry,
+    clientId: string,
+  ): SkippedPlanDay {
+    return {
+      id: entry.id,
+      userId: clientId,
+      name: entry.name ?? '',
+      status: WorkoutLogStatus.Skipped,
+      startedAt: new Date(entry.at),
+      completedAt: null,
+      durationSeconds: null,
+      feelingRating: null,
+      notes: null,
+      assignedWorkoutId: entry.id,
+      programAssignmentId: entry.assignment_id,
+      assignment: entry.assignment_id
+        ? {
+            id: entry.assignment_id,
+            programNameSnapshot: entry.program_name,
+            masterProgramId: entry.master_program_id,
+            assignmentKind: entry.assignment_kind as ProgramAssignmentKind,
+          }
+        : null,
+      exercises: [],
+    };
   }
 
   /**
@@ -1809,7 +2448,7 @@ export class WorkoutLogService {
     id: string,
     instructorId: string,
     locale: Locale = DEFAULT_LOCALE,
-  ): Promise<WorkoutLog> {
+  ): Promise<WorkoutLogView> {
     const stub = await this.logModel.findByPk(id, {
       attributes: ['userId', 'programAssignmentId', 'visibility'],
     });
@@ -1852,6 +2491,123 @@ export class WorkoutLogService {
         'programAssignmentId',
       ],
     });
+  }
+
+  /**
+   * A workout from a while back, next to how far one of its lifts has come
+   * since: History's "A month ago" card. Looks a year, six, three and one
+   * month back (a few days either side), oldest first since the longer the
+   * span the better the story, and takes the first workout there whose
+   * heaviest set on some exercise has since been beaten; a photo is
+   * preferred. Null when nothing has improved: no card beats faked praise.
+   */
+  async memoryFor(
+    userId: string,
+    locale: Locale = DEFAULT_LOCALE,
+    now = new Date(),
+  ): Promise<WorkoutMemory | null> {
+    for (const monthsAgo of MEMORY_LOOKBACK_MONTHS) {
+      const centre = new Date(now);
+      centre.setMonth(centre.getMonth() - monthsAgo);
+      const candidates = await this.sequelize.query<{
+        id: string;
+        name: string;
+        completedAt: Date;
+        hasPhoto: boolean;
+        photoVersion: number | null;
+      }>(
+        `
+        SELECT id, name, completed_at AS "completedAt",
+               photo_public_id IS NOT NULL AS "hasPhoto", photo_version AS "photoVersion"
+        FROM workout_log
+        WHERE user_id = :userId
+          AND status = 'COMPLETED'
+          AND completed_at BETWEEN :from AND :to
+        ORDER BY (photo_public_id IS NOT NULL) DESC, completed_at DESC
+        LIMIT ${MEMORY_CANDIDATES}
+        `,
+        {
+          replacements: {
+            userId,
+            from: new Date(centre.getTime() - MEMORY_WINDOW_MS),
+            to: new Date(centre.getTime() + MEMORY_WINDOW_MS),
+          },
+          type: QueryTypes.SELECT,
+        },
+      );
+
+      for (const workout of candidates) {
+        const [gain] = await this.sequelize.query<{
+          exerciseId: string;
+          fromKg: string;
+          toKg: string;
+        }>(
+          `
+          WITH then_best AS (
+            SELECT le.exercise_id, MAX(ls.weight_kg) AS kg
+            FROM logged_exercise le
+            JOIN logged_set ls ON ls.logged_exercise_id = le.id
+            WHERE le.workout_log_id = :logId
+              AND le.exercise_id IS NOT NULL
+              AND ls.is_completed = TRUE
+              AND ls.weight_kg > 0
+            GROUP BY le.exercise_id
+          ),
+          since_best AS (
+            SELECT le.exercise_id, MAX(ls.weight_kg) AS kg
+            FROM workout_log wl
+            JOIN logged_exercise le ON le.workout_log_id = wl.id
+            JOIN logged_set ls ON ls.logged_exercise_id = le.id
+            WHERE wl.user_id = :userId
+              AND wl.status = 'COMPLETED'
+              AND wl.completed_at > :thenAt
+              AND wl.completed_at <= :now
+              AND le.exercise_id IN (SELECT exercise_id FROM then_best)
+              AND ls.is_completed = TRUE
+              AND ls.weight_kg > 0
+            GROUP BY le.exercise_id
+          )
+          SELECT t.exercise_id AS "exerciseId", t.kg AS "fromKg", s.kg AS "toKg"
+          FROM then_best t
+          JOIN since_best s ON s.exercise_id = t.exercise_id
+          WHERE s.kg > t.kg
+          ORDER BY (s.kg - t.kg) DESC, t.exercise_id
+          LIMIT 1
+          `,
+          {
+            replacements: {
+              logId: workout.id,
+              userId,
+              thenAt: workout.completedAt,
+              now,
+            },
+            type: QueryTypes.SELECT,
+          },
+        );
+        if (!gain) continue;
+
+        const exercise = await this.exerciseModel.findByPk(gain.exerciseId, {
+          attributes: ['id', 'name', 'translations'],
+        });
+        return {
+          monthsAgo,
+          workout: {
+            id: workout.id,
+            name: workout.name,
+            completedAt: workout.completedAt,
+            hasPhoto: workout.hasPhoto,
+            photoVersion: workout.hasPhoto ? workout.photoVersion : null,
+          },
+          exercise: {
+            id: gain.exerciseId,
+            name: this._exerciseName(exercise, locale),
+            fromKg: Number(gain.fromKg),
+            toKg: Number(gain.toKg),
+          },
+        };
+      }
+    }
+    return null;
   }
 
   /**
@@ -1901,9 +2657,152 @@ export class WorkoutLogService {
   }
 
   /**
+   * A person's workouts as their profile shows them: only `levels`, and
+   * only what is safe to show anyone who may see that level. Name, date,
+   * duration, sets, records and the share message; never the private
+   * note, weights, the plan behind it or a coach's name.
+   */
+  async listForProfile(
+    userId: string,
+    levels: readonly WorkoutVisibility[],
+    query: PaginationDto,
+  ): Promise<PaginatedResponse<ProfileWorkout>> {
+    const page = await this.listForUser(userId, query, undefined, levels);
+    return {
+      ...page,
+      items: page.items.map((log) => profileSummary(log, log.prCount ?? 0)),
+    };
+  }
+
+  /**
+   * One workout as its profile card shows it, under the same rule as the
+   * list: finished, one of `levels`, not taken down. Anything else is a
+   * 404, so the answer never confirms a hidden workout exists.
+   */
+  async findForProfile(
+    userId: string,
+    levels: readonly WorkoutVisibility[],
+    workoutLogId: string,
+  ): Promise<ProfileWorkout> {
+    const log = await this.logModel.findOne({
+      where: { id: workoutLogId, ...profileVisibleWhere(userId, levels) },
+      include: [
+        {
+          model: LoggedExercise,
+          as: 'exercises',
+          attributes: ['id'],
+          include: [
+            {
+              model: LoggedSet,
+              as: 'sets',
+              attributes: ['id', 'isCompleted'],
+              required: false,
+            },
+          ],
+          required: false,
+        },
+      ],
+    });
+    if (!log) throw new NotFoundException(apiError('workout.logNotFound'));
+    const prCounts = await this._countSessionPrs([log]);
+    return profileSummary(log, prCounts.get(log.id) ?? 0);
+  }
+
+  /**
+   * Cards for workouts shared into group posts: the same safe summary as a
+   * profile, plus whether it is also on the author's profile (Public), so
+   * a tap can go there. A feed mixes people, so records are counted per
+   * author (`_countSessionPrs` reads one person's rows).
+   */
+  async summariesForPosts(
+    ids: readonly string[],
+  ): Promise<Map<string, PostWorkout>> {
+    if (ids.length === 0) return new Map();
+    const logs = await this.logModel.findAll({
+      where: {
+        id: { [Op.in]: [...new Set(ids)] },
+        status: WorkoutLogStatus.Completed,
+        takenDownAt: null,
+      },
+      include: [
+        {
+          model: LoggedExercise,
+          as: 'exercises',
+          attributes: ['id'],
+          include: [
+            {
+              model: LoggedSet,
+              as: 'sets',
+              attributes: ['id', 'isCompleted'],
+              required: false,
+            },
+          ],
+          required: false,
+        },
+      ],
+    });
+    const byAuthor = new Map<string, WorkoutLog[]>();
+    for (const log of logs) {
+      byAuthor.set(log.userId, [...(byAuthor.get(log.userId) ?? []), log]);
+    }
+    const prCounts = new Map<string, number>();
+    for (const authored of byAuthor.values()) {
+      for (const [id, n] of await this._countSessionPrs(authored)) {
+        prCounts.set(id, n);
+      }
+    }
+    return new Map(
+      logs.map((log) => {
+        const onProfile = log.visibility === WorkoutVisibility.Public;
+        const summary = profileSummary(log, prCounts.get(log.id) ?? 0);
+        // A card carries no photo; one is there only to open on a Public
+        // profile, through its own endpoint.
+        return [
+          log.id,
+          {
+            ...summary,
+            hasPhoto: onProfile && summary.hasPhoto,
+            photoVersion: onProfile ? summary.photoVersion : null,
+            onProfile,
+          },
+        ];
+      }),
+    );
+  }
+
+  /**
+   * Only the author's own finished workout can go into a post. 404
+   * otherwise; one taken down after a report cannot go anywhere.
+   */
+  async assertShareable(workoutLogId: string, userId: string): Promise<void> {
+    const log = await this.logModel.findByPk(workoutLogId, {
+      attributes: ['id', 'userId', 'status', 'takenDownAt'],
+    });
+    if (
+      !log ||
+      log.userId !== userId ||
+      log.status !== WorkoutLogStatus.Completed
+    ) {
+      throw new NotFoundException(apiError('workout.logNotFound'));
+    }
+    if (log.takenDownAt) {
+      throw new BadRequestException(apiError('workout.takenDownNoShare'));
+    }
+  }
+
+  /** How many of `levels` there are, so a profile can leave the section out. */
+  countForProfile(
+    userId: string,
+    levels: readonly WorkoutVisibility[],
+  ): Promise<number> {
+    return this.logModel.count({ where: profileVisibleWhere(userId, levels) });
+  }
+
+  /**
    * Who sees a workout besides its owner. The coach whose plan it came
    * from sees it at any level (`isReadableByCoach`); this decides for
-   * everyone else.
+   * everyone else. One taken down after a report stays Only me: opening
+   * it to coaches again would show it to whoever reported it.
    */
   async setVisibility(
     workoutLogId: string,
@@ -1911,6 +2810,9 @@ export class WorkoutLogService {
     visibility: WorkoutVisibility,
   ): Promise<{ id: string; visibility: WorkoutVisibility }> {
     const log = await this._loadOwnedLog(workoutLogId, userId);
+    if (log.takenDownAt && visibility !== WorkoutVisibility.OnlyMe) {
+      throw new BadRequestException(apiError('workout.takenDownStaysPrivate'));
+    }
     if (log.visibility !== visibility) await log.update({ visibility });
     return { id: log.id, visibility };
   }

@@ -123,3 +123,35 @@ describe('CloudinaryService.extractPublicId', () => {
     expect(svc.extractPublicId('')).toBeNull();
   });
 });
+
+describe('CloudinaryService.fetchPrivateImage', () => {
+  const svc = makeService('motionhive-test');
+  const fetchSpy = jest.spyOn(global, 'fetch');
+
+  beforeEach(() => {
+    fetchSpy.mockReset();
+    fetchSpy.mockResolvedValue(new Response(new Uint8Array([1, 2, 3])));
+  });
+
+  afterAll(() => fetchSpy.mockRestore());
+
+  it('reads the whole photo through a signed authenticated address', async () => {
+    await expect(
+      svc.fetchPrivateImage('workout-photos/u/wl-1'),
+    ).resolves.toEqual(Buffer.from([1, 2, 3]));
+    const url = String(fetchSpy.mock.calls[0][0]);
+    expect(url).toContain('/image/authenticated/s--');
+    expect(url).not.toContain('c_fill');
+    // A stalled Cloudinary response must not hold the request open.
+    expect(fetchSpy.mock.calls[0][1]?.signal).toBeInstanceOf(AbortSignal);
+  });
+
+  // History's grid asks for a crop, and the crop is signed with the rest:
+  // an unsigned transformation of an authenticated asset is refused.
+  it('reads a signed 3:4 crop when asked for a width', async () => {
+    await svc.fetchPrivateImage('workout-photos/u/wl-1', { width: 480 });
+    const url = String(fetchSpy.mock.calls[0][0]);
+    expect(url).toContain('/image/authenticated/s--');
+    expect(url).toMatch(/c_fill,g_auto,h_640,q_auto,w_480/);
+  });
+});

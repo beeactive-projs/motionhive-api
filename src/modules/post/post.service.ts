@@ -20,6 +20,7 @@ import {
   GroupMemberRole,
 } from '../group/entities/group-member.entity';
 import { GroupService } from '../group/group.service';
+import { PostWorkout, WorkoutLogService } from '../workout/workout-log.service';
 import { User, USER_SAFE_ATTRIBUTES } from '../user/entities/user.entity';
 import { CreatePostDto } from './dto/create-post.dto';
 import { UpdatePostDto } from './dto/update-post.dto';
@@ -39,13 +40,7 @@ import {
   postRejectedForAuthor,
   postNewComment,
 } from './notifications';
-
-/**
- * Tombstone written into post/comment `content` when the row is
- * soft-deleted, so the plaintext doesn't sit in the DB after delete.
- * The row itself is kept (paranoid: true) for audit; the body is gone.
- */
-const DELETED_CONTENT_TOMBSTONE = '[deleted]';
+import { DELETED_CONTENT_TOMBSTONE, destroyPostFully } from './post-deletion';
 
 export interface FeedItem {
   id: string;
@@ -79,6 +74,8 @@ export interface FeedItem {
    * this `null` because the group is implicit in the URL.
    */
   group?: { id: string; name: string; logoUrl: string | null } | null;
+  /** A shared workout as a card; null for an ordinary post or a deleted workout. */
+  workout: PostWorkout | null;
 }
 
 /** Per-group spec used inside the create-post fan-out. */
@@ -103,6 +100,7 @@ export class PostService {
     private readonly notificationService: NotificationService,
     private readonly cloudinaryService: CloudinaryService,
     private readonly groupService: GroupService,
+    private readonly workoutLogService: WorkoutLogService,
     @Inject(WINSTON_MODULE_NEST_PROVIDER)
     private readonly logger: LoggerService,
   ) {}
@@ -135,6 +133,9 @@ export class PostService {
     if (dto.mediaUrls?.length) {
       this.cloudinaryService.assertOwnedUrls(dto.mediaUrls);
     }
+    if (dto.workoutLogId) {
+      await this.workoutLogService.assertShareable(dto.workoutLogId, authorId);
+    }
 
     const specs = await this.resolveCreateSpecs(authorId, uniqueGroupIds);
     const stagingUrls = dto.mediaUrls ?? [];
@@ -144,8 +145,9 @@ export class PostService {
       const post = await this.createSinglePost(
         authorId,
         spec,
-        dto.content,
+        dto.content ?? '',
         stagingUrls,
+        dto.workoutLogId ?? null,
       );
       created.push(post);
     }
@@ -247,6 +249,7 @@ export class PostService {
     spec: GroupCreateSpec,
     content: string,
     stagingUrls: string[],
+    workoutLogId: string | null,
   ): Promise<Post> {
     const sequelize = this.postModel.sequelize!;
     const tx = await sequelize.transaction();
@@ -259,6 +262,7 @@ export class PostService {
           approvalState: spec.approvalState,
           content,
           mediaUrls: null,
+          workoutLogId,
         },
         { transaction: tx },
       );
@@ -815,26 +819,13 @@ export class PostService {
   // SHARED HELPERS
   // =====================================================================
 
-  /**
-   * Inside-transaction cleanup when a post is being soft-deleted in full.
-   *
-   * Tombstones plaintext on the post, cascades the same treatment to its
-   * comments (paranoid: true on PostComment), and hard-deletes its
-   * reactions (paranoid: false — no content to retain).
-   */
-  private async destroyPostFully(post: Post, tx: Transaction): Promise<void> {
-    const postId = post.id;
-    await this.commentModel.update(
-      { content: DELETED_CONTENT_TOMBSTONE },
-      { where: { postId }, transaction: tx },
+  /** Inside-transaction cleanup when a post is soft-deleted in full. */
+  private destroyPostFully(post: Post, tx: Transaction): Promise<void> {
+    return destroyPostFully(
+      post,
+      { comment: this.commentModel, reaction: this.reactionModel },
+      tx,
     );
-    await this.commentModel.destroy({ where: { postId }, transaction: tx });
-    await this.reactionModel.destroy({ where: { postId }, transaction: tx });
-    await post.update(
-      { content: DELETED_CONTENT_TOMBSTONE, mediaUrls: null },
-      { transaction: tx },
-    );
-    await post.destroy({ transaction: tx });
   }
 
   /**
@@ -945,11 +936,15 @@ export class PostService {
     options: { includeGroup?: boolean } = {},
   ): Promise<FeedItem[]> {
     const postIds = posts.map((p) => p.id);
-    const [reactionCounts, commentCounts, myReactions] = await Promise.all([
-      this.countReactionsByPost(postIds),
-      this.countCommentsByPost(postIds),
-      this.fetchMyReactions(userId, postIds),
-    ]);
+    const [reactionCounts, commentCounts, myReactions, workouts] =
+      await Promise.all([
+        this.countReactionsByPost(postIds),
+        this.countCommentsByPost(postIds),
+        this.fetchMyReactions(userId, postIds),
+        this.workoutLogService.summariesForPosts(
+          posts.flatMap((p) => (p.workoutLogId ? [p.workoutLogId] : [])),
+        ),
+      ]);
 
     return posts.map((post) => ({
       id: post.id,
@@ -964,6 +959,7 @@ export class PostService {
       reactionCount: reactionCounts.get(post.id) ?? 0,
       commentCount: commentCounts.get(post.id) ?? 0,
       myReaction: myReactions.get(post.id) ?? null,
+      workout: (post.workoutLogId && workouts.get(post.workoutLogId)) || null,
       author: post.author
         ? {
             id: post.author.id,
@@ -999,11 +995,15 @@ export class PostService {
     });
     if (!post) throw new NotFoundException(apiError('post.notFound'));
 
-    const [reactionCount, commentCount, myReaction] = await Promise.all([
-      this.reactionModel.count({ where: { postId } }),
-      this.commentModel.count({ where: { postId } }),
-      this.reactionModel.findOne({ where: { postId, authorId: userId } }),
-    ]);
+    const [reactionCount, commentCount, myReaction, workouts] =
+      await Promise.all([
+        this.reactionModel.count({ where: { postId } }),
+        this.commentModel.count({ where: { postId } }),
+        this.reactionModel.findOne({ where: { postId, authorId: userId } }),
+        this.workoutLogService.summariesForPosts(
+          post.workoutLogId ? [post.workoutLogId] : [],
+        ),
+      ]);
 
     return {
       id: post.id,
@@ -1018,6 +1018,7 @@ export class PostService {
       reactionCount,
       commentCount,
       myReaction: myReaction?.reactionType ?? null,
+      workout: (post.workoutLogId && workouts.get(post.workoutLogId)) || null,
       author: post.author
         ? {
             id: post.author.id,

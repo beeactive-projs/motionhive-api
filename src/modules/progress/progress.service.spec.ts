@@ -7,6 +7,7 @@ import { Exercise } from '../exercise/entities/exercise.entity';
 import { CoachAccessService } from '../workout/coach-access.service';
 import { streakFromWeeks } from '../workout/training-streak';
 import { ProgressService } from './progress.service';
+import { RosterWindow } from './dto/roster.query.dto';
 import { makeSilentLogger } from '../../../test/helpers/sequelize-mocks';
 
 /**
@@ -19,6 +20,7 @@ import { makeSilentLogger } from '../../../test/helpers/sequelize-mocks';
  */
 describe('ProgressService — streaks', () => {
   let service: ProgressService;
+  let query: jest.Mock;
   // The pure helper the overview (and the workout summary) call; going
   // through `overview()` would mean mocking six queries to assert on
   // arithmetic.
@@ -37,6 +39,7 @@ describe('ProgressService — streaks', () => {
   };
 
   beforeEach(async () => {
+    query = jest.fn();
     const module = await Test.createTestingModule({
       providers: [
         ProgressService,
@@ -45,7 +48,7 @@ describe('ProgressService — streaks', () => {
           provide: CoachAccessService,
           useValue: { readableAssignmentIds: jest.fn() },
         },
-        { provide: Sequelize, useValue: { query: jest.fn() } },
+        { provide: Sequelize, useValue: { query } },
         { provide: WINSTON_MODULE_NEST_PROVIDER, useValue: makeSilentLogger() },
       ],
     }).compile();
@@ -115,6 +118,46 @@ describe('ProgressService — streaks', () => {
       expect(
         reason({ adherencePercent: null, previousAdherencePercent: null }),
       ).toBeNull();
+    });
+  });
+
+  // ─── roster: how much it reads ───────────────────────────────────
+
+  describe('roster — scope', () => {
+    const run = async (clientId?: string) => {
+      query.mockResolvedValue([]);
+      await service.roster(
+        'coach-1',
+        RosterWindow.FourWeeks,
+        '2026-10-29',
+        clientId,
+      );
+      const [sql, options] = query.mock.calls[0] as [
+        string,
+        { replacements: Record<string, unknown> },
+      ];
+      return { sql, replacements: options.replacements };
+    };
+
+    it("narrows to one client's row when a page asks about one person", async () => {
+      const { sql, replacements } = await run('client-1');
+      expect(sql).toContain('AND ic.client_id = :clientId');
+      expect(replacements.clientId).toBe('client-1');
+    });
+
+    it('reads the whole roster when no client is named', async () => {
+      const { sql, replacements } = await run();
+      expect(sql).not.toContain(':clientId');
+      expect(replacements).not.toHaveProperty('clientId');
+    });
+
+    it("reads only the coach's own clients' workouts for last seen", async () => {
+      const { sql } = await run();
+      const lastSeen = sql.slice(
+        sql.indexOf('last_seen AS'),
+        sql.indexOf('plan_counts AS'),
+      );
+      expect(lastSeen).toContain('user_id IN (SELECT client_id FROM clients)');
     });
   });
 

@@ -780,6 +780,28 @@ export const NOTIFICATION_SAMPLES: NotificationSample[] = [
         workoutsCompleted: 24,
       }),
   },
+  {
+    audience: 'client',
+    variant: 'sexual content',
+    build: () =>
+      workout.workoutTakenDownForOwner({
+        ownerId: U,
+        workoutLogId: 'l-1',
+        workoutName: 'Ziua 1: Picioare',
+        category: 'SEXUAL',
+      }),
+  },
+  {
+    audience: 'client',
+    variant: 'other reason',
+    build: () =>
+      workout.workoutTakenDownForOwner({
+        ownerId: U,
+        workoutLogId: 'l-1',
+        workoutName: 'Ziua 1: Picioare',
+        category: 'OTHER',
+      }),
+  },
 
   // ── messaging ──
   {

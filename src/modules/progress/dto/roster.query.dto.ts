@@ -1,5 +1,5 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
-import { IsEnum, IsOptional } from 'class-validator';
+import { IsEnum, IsOptional, IsUUID } from 'class-validator';
 
 /**
  * How far back adherence is measured. Short by design: "did they train
@@ -20,4 +20,14 @@ export class RosterQueryDto {
   @IsOptional()
   @IsEnum(RosterWindow)
   window?: RosterWindow;
+
+  @ApiPropertyOptional({
+    description:
+      "Just this client's row, for a page about one person. Narrows the " +
+      'roster you can already see; a person you do not coach comes back ' +
+      'as an empty list.',
+  })
+  @IsOptional()
+  @IsUUID('4')
+  clientId?: string;
 }

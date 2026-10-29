@@ -178,6 +178,9 @@ export const NOTIFICATION_DEFAULTS: Record<
   // entire plan happens a handful of times a year and is the moment a
   // coach should act on (debrief, re-assign), so it earns an email.
   [NotificationType.CLIENT_COMPLETED_PLAN]: IN_APP_AND_EMAIL,
+  // The person is told why something they posted was removed, and an
+  // email keeps that record outside the app too.
+  [NotificationType.WORKOUT_TAKEN_DOWN]: IN_APP_AND_EMAIL,
 };
 
 /**

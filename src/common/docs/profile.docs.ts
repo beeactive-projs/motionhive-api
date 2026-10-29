@@ -323,17 +323,108 @@ export const ProfileDocs = {
     ],
   } as ApiEndpointOptions,
 
+  getPublicUserWorkouts: {
+    summary: "List the workouts on a person's profile",
+    description:
+      'Completed workouts the viewer may see, newest first, as safe ' +
+      'summaries: name, date, duration, sets, records and the share ' +
+      'message. Never the private note, weights or the plan behind them. ' +
+      'Anonymous viewers and the owner get PUBLIC workouts (the owner sees ' +
+      'the page as the public would, or as their coaches would with ' +
+      '`previewAs=COACH`); an ACTIVE coach also gets COACHES_ONLY ones. ' +
+      'Paginated like every list.',
+    auth: false,
+    responses: [
+      { status: 200, description: 'Paginated workout summaries' },
+      { status: 404, description: 'No such handle, or the account is closing' },
+    ],
+  },
+
+  getPublicUserWorkout: {
+    summary: "Get one workout on a person's profile",
+    description:
+      'The same safe summary as one row of the list, for the workout page ' +
+      'and links to it. The same audience rule, `previewAs` included. A ' +
+      'workout the viewer cannot see there (another level, taken down, not ' +
+      'finished, someone else) is a 404, the same as one that does not ' +
+      'exist.',
+    auth: false,
+    responses: [
+      {
+        status: 200,
+        description: 'Workout summary',
+        example: {
+          id: 'workout-log-uuid',
+          name: 'Leg day',
+          completedAt: '2026-10-22T16:52:00.000Z',
+          durationSeconds: 3120,
+          setsCompleted: 18,
+          recordCount: 1,
+          shareCaption: 'First 100! Knee held up.',
+          hasPhoto: true,
+          photoVersion: 2,
+        },
+      },
+      { status: 404, description: 'No such handle, or no such workout on it' },
+    ],
+  },
+
+  getPublicUserWorkoutPhoto: {
+    summary: "Get the photo of a workout on a person's profile",
+    description:
+      'The JPEG bytes, streamed by the API (the stored asset has no public ' +
+      'address). The same rule as the workout: whoever may see it on the ' +
+      'profile sees its photo, `previewAs` included; anyone else, and a ' +
+      "workout with no photo, gets a 404. `v` is the summary's " +
+      '`photoVersion`, so a replaced photo is a new address. ' +
+      '`Cache-Control: private`.',
+    auth: false,
+    responses: [
+      { status: 200, description: 'image/jpeg' },
+      {
+        status: 404,
+        description: 'No such workout on the profile, or no photo',
+      },
+    ],
+  },
+
+  reportUserWorkout: {
+    summary: 'Report a workout on a profile',
+    description:
+      'Files a report about a workout this profile shows the caller, with the ' +
+      'categories of a message report and optional notes. Staff review it in ' +
+      'the admin queue and may take the workout down. A workout the caller ' +
+      'cannot see on the profile is a 404, so a report never confirms a ' +
+      'hidden one exists. Limited to 10 an hour.',
+    auth: true,
+    responses: [
+      { status: 201, description: 'Report filed: `{ id, status }`' },
+      {
+        status: 400,
+        description: 'Reporting your own workout, or a bad category',
+      },
+      { status: 404, description: 'No such handle, or no such workout on it' },
+      {
+        status: 409,
+        description: 'The caller already has an open report on it',
+      },
+    ],
+  },
+
   getPublicUserProfileByHandle: {
     summary: 'Get public profile by handle (any user)',
     description:
       'Resolves a `/@<handle>` profile for any user, not just instructors. ' +
-      'Anonymous viewers receive the PUBLIC slice; signed-in viewers may see ' +
-      'more — coaches connected to the profile owner see COACHES_ONLY fields, ' +
-      'and the owner themselves sees every field. Returns the audience tier ' +
-      'so the UI does not have to recompute it. Fields not visible to the ' +
-      'viewer are returned as `null`. `sharedGroups` lists the groups a ' +
-      'signed-in viewer and the owner are both active members of (empty for ' +
-      'a guest or the owner).',
+      'Anonymous viewers receive the PUBLIC slice; an ACTIVE coach of the ' +
+      'owner also sees COACHES_ONLY fields. The owner sees the page as the ' +
+      'public would, or as their coaches would with `previewAs=COACH` ' +
+      '(ignored for anyone else); `audience` still says OWNER so the UI can ' +
+      'offer editing. Fields not visible are returned as `null`. ' +
+      '`sharedGroups` lists the groups a signed-in viewer and the owner are ' +
+      'both active members of (empty for a guest or the owner). ' +
+      '`workoutCount` counts the workouts this viewer may see. ' +
+      "`yourCoachSince` is when the owner became the viewer's coach, and " +
+      'null unless that relationship is active now.',
     auth: false,
     responses: [
       {
@@ -358,6 +449,8 @@ export const ProfileDocs = {
           sharedGroups: [
             { id: 'group-uuid', name: 'Morning Crew', logoUrl: null },
           ],
+          workoutCount: 12,
+          yourCoachSince: null,
         },
       },
       ApiStandardResponses.NotFound,

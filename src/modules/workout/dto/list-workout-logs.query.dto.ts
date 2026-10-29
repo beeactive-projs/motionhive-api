@@ -1,6 +1,17 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
-import { IsISO8601, IsOptional, IsString, MaxLength } from 'class-validator';
+import {
+  IsIn,
+  IsISO8601,
+  IsOptional,
+  IsString,
+  MaxLength,
+} from 'class-validator';
 import { PaginationDto } from '../../../common/dto/pagination.dto';
+
+/** What a history filter keeps: workouts with a photo, or with a record. */
+export type WorkoutLogFilter = 'photo' | 'record';
+
+const WORKOUT_LOG_FILTERS: WorkoutLogFilter[] = ['photo', 'record'];
 
 /**
  * Query for `GET /workout-logs`.
@@ -34,4 +45,23 @@ export class ListWorkoutLogsQueryDto extends PaginationDto {
   @IsString()
   @MaxLength(100)
   search?: string;
+
+  /**
+   * Only workouts with a photo, or with a record (beating a previous best;
+   * a first time on an exercise is none). Server-side for the same reason
+   * as `search`.
+   */
+  @ApiPropertyOptional({ enum: WORKOUT_LOG_FILTERS, example: 'photo' })
+  @IsOptional()
+  @IsIn(WORKOUT_LOG_FILTERS)
+  has?: WorkoutLogFilter;
+
+  /**
+   * `all`: with the skipped days of your plans, which leave no log, as rows
+   * of status SKIPPED in date order. Ignored beside `has` or `search`.
+   */
+  @ApiPropertyOptional({ enum: ['all'] })
+  @IsOptional()
+  @IsIn(['all'])
+  kind?: 'all';
 }

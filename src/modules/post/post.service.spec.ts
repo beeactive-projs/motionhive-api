@@ -1,4 +1,8 @@
-import { BadRequestException, ForbiddenException } from '@nestjs/common';
+import {
+  NotFoundException,
+  BadRequestException,
+  ForbiddenException,
+} from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { getModelToken } from '@nestjs/sequelize';
 import { WINSTON_MODULE_NEST_PROVIDER } from 'nest-winston';
@@ -19,6 +23,7 @@ import { SearchIndexService } from '../search/search-index.service';
 import { NotificationService } from '../notification/notification.service';
 import { CloudinaryService } from '../../common/services/cloudinary.service';
 import { GroupService } from '../group/group.service';
+import { WorkoutLogService } from '../workout/workout-log.service';
 import { makeSilentLogger } from '../../../test/helpers/sequelize-mocks';
 
 interface PostModelMock {
@@ -86,6 +91,11 @@ describe('PostService', () => {
     deleteFolder: jest.Mock;
   };
   let groupService: { findMyGroupIds: jest.Mock };
+  // Ordinary posts carry no workout; the cases that do set it up themselves.
+  const workoutLogService = {
+    summariesForPosts: jest.fn().mockResolvedValue(new Map()),
+    assertShareable: jest.fn().mockResolvedValue(undefined),
+  };
 
   const tx = {
     commit: jest.fn().mockResolvedValue(undefined),
@@ -178,6 +188,7 @@ describe('PostService', () => {
         { provide: NotificationService, useValue: notificationService },
         { provide: CloudinaryService, useValue: cloudinaryService },
         { provide: GroupService, useValue: groupService },
+        { provide: WorkoutLogService, useValue: workoutLogService },
         { provide: WINSTON_MODULE_NEST_PROVIDER, useValue: makeSilentLogger() },
       ],
     }).compile();
@@ -235,6 +246,78 @@ describe('PostService', () => {
 
       expect(postModel.create).toHaveBeenCalledTimes(3);
       expect(result.posts).toHaveLength(3);
+    });
+
+    it('shares a finished workout into the group as a card', async () => {
+      groupModel.findAll.mockResolvedValue([
+        { id: 'g1', memberPostPolicy: MemberPostPolicy.OPEN },
+      ]);
+      memberModel.findAll.mockResolvedValue([
+        { groupId: 'g1', userId: authorId, role: GroupMemberRole.MEMBER },
+      ]);
+      postModel.create.mockResolvedValue({
+        id: 'post-1',
+        groupId: 'g1',
+        approvalState: PostApprovalState.APPROVED,
+        update: jest.fn().mockResolvedValue(undefined),
+      });
+      postModel.findByPk.mockResolvedValueOnce({
+        id: 'post-1',
+        authorId,
+        groupId: 'g1',
+        approvalState: PostApprovalState.APPROVED,
+        content: '',
+        mediaUrls: null,
+        workoutLogId: 'wl-1',
+        postedAt: new Date(),
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        author: null,
+      });
+      const card = {
+        id: 'wl-1',
+        name: 'Leg day',
+        completedAt: new Date(),
+        durationSeconds: 3134,
+        setsCompleted: 18,
+        recordCount: 1,
+        shareCaption: null,
+        onProfile: false,
+      };
+      workoutLogService.summariesForPosts.mockResolvedValueOnce(
+        new Map([['wl-1', card]]),
+      );
+
+      // No words needed: the card says enough.
+      const result = await service.createPost(authorId, {
+        content: '',
+        groupIds: ['g1'],
+        workoutLogId: 'wl-1',
+      });
+
+      expect(workoutLogService.assertShareable).toHaveBeenCalledWith(
+        'wl-1',
+        authorId,
+      );
+      expect(postModel.create).toHaveBeenCalledWith(
+        expect.objectContaining({ workoutLogId: 'wl-1', content: '' }),
+        expect.anything(),
+      );
+      expect(result.posts[0].workout).toEqual(card);
+    });
+
+    it("refuses someone else's workout before any post is made", async () => {
+      workoutLogService.assertShareable.mockRejectedValueOnce(
+        new NotFoundException(),
+      );
+      await expect(
+        service.createPost(authorId, {
+          content: 'look',
+          groupIds: ['g1'],
+          workoutLogId: 'wl-theirs',
+        }),
+      ).rejects.toBeInstanceOf(NotFoundException);
+      expect(postModel.create).not.toHaveBeenCalled();
     });
 
     it('staff post is APPROVED even when policy=DISABLED', async () => {

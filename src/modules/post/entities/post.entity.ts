@@ -82,6 +82,14 @@ export class Post extends Model {
   })
   declare mediaUrls: string[] | null;
 
+  /**
+   * A finished workout shared into the group (migration 075), shown as a
+   * card from its safe summary. Null for an ordinary post, or once the
+   * workout is gone.
+   */
+  @Column({ type: DataType.CHAR(36), allowNull: true })
+  declare workoutLogId: string | null;
+
   @Column({
     type: DataType.DATE,
     allowNull: false,

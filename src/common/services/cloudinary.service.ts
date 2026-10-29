@@ -8,6 +8,9 @@ import { ConfigService } from '@nestjs/config';
 import { v2 as cloudinary, UploadApiResponse } from 'cloudinary';
 import { apiError } from '../i18n';
 
+/** How long a private image may take to arrive from Cloudinary. */
+const PRIVATE_IMAGE_FETCH_TIMEOUT_MS = 10_000;
+
 /**
  * Cloudinary upload context. The combination produces a path like
  *   motionhive/<env>/<resource>/<userId?>/<postId?>/<filename>
@@ -246,11 +249,18 @@ export class CloudinaryService {
    * with the given folder path. Used when a post is destroyed — we
    * delete the whole `motionhive/<env>/posts/<userId>/<postId>/` folder
    * in one Cloudinary call rather than walking each mediaUrl.
+   *
+   * `type` is the delivery type the assets were uploaded with: private
+   * workout photos are `authenticated`, and a prefix delete only reaches
+   * the type it is given.
    */
-  async deleteFolder(folderPath: string): Promise<void> {
+  async deleteFolder(
+    folderPath: string,
+    type: 'upload' | 'authenticated' = 'upload',
+  ): Promise<void> {
     if (!this.configured) return;
     try {
-      await cloudinary.api.delete_resources_by_prefix(folderPath);
+      await cloudinary.api.delete_resources_by_prefix(folderPath, { type });
       // Best-effort: cleans up the now-empty folder node from the UI tree.
       // Cloudinary returns an error if the folder isn't empty or doesn't
       // exist; we swallow both.
@@ -266,6 +276,127 @@ export class CloudinaryService {
         }`,
       );
     }
+  }
+
+  // ─── Private images ────────────────────────────────────────────────
+  //
+  // Workout photos are `authenticated` assets: Cloudinary serves them only
+  // through a signed URL, and those signatures do not expire. So the
+  // signed URL never leaves the server. The API checks who is asking and
+  // streams the bytes (`fetchPrivateImage`); there is no link to leak.
+
+  /**
+   * Stores `jpeg` (already stripped of metadata by the caller) at a fixed
+   * public id, overwriting what was there: one photo per thing, no orphan
+   * left behind on a replace.
+   */
+  async uploadPrivateImage(
+    jpeg: Buffer,
+    folder: string,
+    name: string,
+  ): Promise<{ publicId: string; version: number }> {
+    if (!this.configured) {
+      throw new InternalServerErrorException(
+        'Cloudinary is not configured. Check CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, and CLOUDINARY_API_SECRET.',
+      );
+    }
+    const result = await new Promise<UploadApiResponse>((resolve, reject) => {
+      cloudinary.uploader
+        .upload_stream(
+          {
+            folder,
+            public_id: name,
+            type: 'authenticated',
+            resource_type: 'image',
+            overwrite: true,
+            invalidate: true,
+            // Re-encoded on the way in, so the stored file is ours: capped
+            // in size and written without whatever the camera embedded.
+            transformation: [
+              { width: 2048, height: 2048, crop: 'limit' },
+              { quality: 'auto', format: 'jpg' },
+            ],
+          },
+          (error, uploadResult) =>
+            error
+              ? reject(this._cloudinaryError(error))
+              : resolve(uploadResult!),
+        )
+        .end(jpeg);
+    });
+    return { publicId: result.public_id, version: result.version };
+  }
+
+  /**
+   * The image bytes, for the API to hand to a reader it has checked. With
+   * `width`, a 3:4 crop that wide, the subject kept in frame: a grid of
+   * thumbnails, not a grid of full photos.
+   */
+  async fetchPrivateImage(
+    publicId: string,
+    options: { width?: number } = {},
+  ): Promise<Buffer> {
+    const url = cloudinary.url(publicId, {
+      type: 'authenticated',
+      sign_url: true,
+      secure: true,
+      resource_type: 'image',
+      format: 'jpg',
+      ...(options.width && {
+        transformation: [
+          {
+            width: options.width,
+            height: Math.round((options.width * 4) / 3),
+            crop: 'fill',
+            gravity: 'auto',
+            quality: 'auto',
+          },
+        ],
+      }),
+    });
+    // A stalled response would otherwise hold the request open for good.
+    const res = await fetch(url, {
+      signal: AbortSignal.timeout(PRIVATE_IMAGE_FETCH_TIMEOUT_MS),
+    });
+    if (!res.ok) {
+      throw new InternalServerErrorException(
+        `Cloudinary private image fetch failed with ${res.status}`,
+      );
+    }
+    return Buffer.from(await res.arrayBuffer());
+  }
+
+  /** Best effort: the row no longer points at it either way. */
+  async deletePrivateImage(publicId: string): Promise<void> {
+    if (!this.configured) return;
+    try {
+      await cloudinary.uploader.destroy(publicId, {
+        type: 'authenticated',
+        resource_type: 'image',
+        invalidate: true,
+      });
+    } catch (err) {
+      this.logger.warn(
+        `Cloudinary destroy(${publicId}, authenticated) failed: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
+  }
+
+  /** Where a person's private photos of one kind live; erasure deletes it. */
+  buildPrivateFolder(resource: string, userId: string): string {
+    return this.buildFolder({ resource, userId });
+  }
+
+  private _cloudinaryError(error: unknown): Error {
+    const message =
+      error && typeof error === 'object' && 'message' in error
+        ? String((error as { message: unknown }).message)
+        : 'Unknown Cloudinary error';
+    return new InternalServerErrorException(
+      `Cloudinary upload failed: ${message}`,
+    );
   }
 
   /**

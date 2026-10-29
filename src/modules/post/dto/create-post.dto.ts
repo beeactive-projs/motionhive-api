@@ -8,6 +8,7 @@ import {
   ArrayMaxSize,
   ArrayMinSize,
   MaxLength,
+  ValidateIf,
 } from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
@@ -16,10 +17,23 @@ export class CreatePostDto {
     example: 'Big news for next week — new strength block kicks off Monday!',
     description: 'Post body, plain text. Newlines are preserved by the FE.',
   })
+  // A shared workout can go without words, sent empty or left out: the
+  // card says enough.
+  @ValidateIf(
+    (dto: CreatePostDto) => !dto.workoutLogId || (dto.content ?? '') !== '',
+  )
   @IsString()
   @IsNotEmpty()
   @MaxLength(5000)
   content: string;
+
+  @ApiPropertyOptional({
+    description:
+      "One of the author's own finished workouts, shown as a card in the post.",
+  })
+  @IsOptional()
+  @IsUUID('4')
+  workoutLogId?: string;
 
   @ApiProperty({
     description: 'Group IDs the post should appear in. Min 1, max 9.',

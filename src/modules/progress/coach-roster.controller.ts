@@ -36,6 +36,7 @@ export class CoachRosterController {
       req.user.id,
       query.window ?? RosterWindow.FourWeeks,
       today,
+      query.clientId,
     );
   }
 }

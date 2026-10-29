@@ -356,6 +356,7 @@ export class ProgressService {
     instructorId: string,
     window: RosterWindow,
     today: string,
+    clientId?: string,
   ): Promise<RosterSummary> {
     const days = window === RosterWindow.OneWeek ? 7 : 28;
 
@@ -379,6 +380,7 @@ export class ProgressService {
         FROM instructor_client ic
         WHERE ic.instructor_id = :instructorId
           AND ic.status = 'ACTIVE'
+          ${clientId ? 'AND ic.client_id = :clientId' : ''}
       ),
       -- Scheduled work in the window, and in the one before it, so a
       -- drop can be detected rather than just a low number.
@@ -411,14 +413,20 @@ export class ProgressService {
         FROM program_assignment pa
         JOIN assigned_workout aw ON aw.program_assignment_id = pa.id
         WHERE pa.instructor_id = :instructorId
+          AND pa.client_id IN (SELECT client_id FROM clients)
           AND pa.deleted_at IS NULL
-          AND aw.scheduled_date IS NOT NULL
+          -- Both windows and nothing older: every count above is inside it.
+          AND aw.scheduled_date > (:today::date - (:days::int * 2))
+          AND aw.scheduled_date <= :today::date
         GROUP BY pa.client_id
       ),
+      -- Only these clients' logs: unscoped, this took the latest workout
+      -- of every person on the platform on each read.
       last_seen AS (
         SELECT user_id, MAX(COALESCE(completed_at, started_at)) AS last_at
         FROM workout_log
         WHERE status = 'COMPLETED'
+          AND user_id IN (SELECT client_id FROM clients)
         GROUP BY user_id
       ),
       plan_counts AS (
@@ -450,7 +458,12 @@ export class ProgressService {
       WHERE u.deleted_at IS NULL
       `,
       {
-        replacements: { instructorId, days, today },
+        replacements: {
+          instructorId,
+          days,
+          today,
+          ...(clientId ? { clientId } : {}),
+        },
         type: QueryTypes.SELECT,
       },
     );
@@ -964,28 +977,53 @@ export class ProgressService {
       weightKg: string;
     }>(
       `
-      -- The heaviest completed set per session, exercise and rep count.
-      -- At a fixed rep count the estimate only grows with the load, so
-      -- these are the only sets that can be a session's best; the
-      -- estimate itself is taken in code by the shared function.
+      -- Each visible session's best set per exercise, ranked by the exact
+      -- Epley product (the value itself is taken in code by the shared
+      -- function), and only the sessions that beat every earlier one.
+      -- Rounding can only make fewer sessions records, never more, so
+      -- this is every record the loop below keeps and usually far fewer
+      -- rows than sessions: the database reads the history, the app gets
+      -- the records.
+      WITH best AS (
+        SELECT DISTINCT ON (wl.id, le.exercise_id)
+          wl.id                                    AS workout_log_id,
+          le.exercise_id,
+          COALESCE(wl.completed_at, wl.started_at) AS performed_at,
+          ls.reps,
+          ls.weight_kg,
+          ls.weight_kg * (30 + ls.reps)            AS strength
+        FROM workout_log wl
+        JOIN logged_exercise le ON le.workout_log_id = wl.id
+        JOIN logged_set ls      ON ls.logged_exercise_id = le.id AND ls.is_completed = TRUE
+        WHERE wl.user_id = :userId
+          AND wl.status = 'COMPLETED'
+          AND le.exercise_id IS NOT NULL
+          ${exerciseId ? 'AND le.exercise_id = :exerciseId' : ''}
+          -- The sets the estimate covers; it returns nothing for others.
+          AND ls.reps BETWEEN 1 AND 12
+          AND ls.weight_kg > 0
+          ${scoped.sql}
+        ORDER BY wl.id, le.exercise_id, strength DESC
+      ),
+      running AS (
+        SELECT
+          best.*,
+          MAX(strength) OVER (
+            PARTITION BY exercise_id
+            ORDER BY performed_at, workout_log_id
+            ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
+          ) AS prior_strength
+        FROM best
+      )
       SELECT
-        wl.id                                    AS "workoutLogId",
-        le.exercise_id                           AS "exerciseId",
-        COALESCE(wl.completed_at, wl.started_at) AS "performedAt",
-        ls.reps                                  AS "reps",
-        MAX(ls.weight_kg)                        AS "weightKg"
-      FROM workout_log wl
-      JOIN logged_exercise le ON le.workout_log_id = wl.id
-      JOIN logged_set ls      ON ls.logged_exercise_id = le.id AND ls.is_completed = TRUE
-      WHERE wl.user_id = :userId
-        AND wl.status = 'COMPLETED'
-        AND le.exercise_id IS NOT NULL
-        ${exerciseId ? 'AND le.exercise_id = :exerciseId' : ''}
-        AND ls.reps IS NOT NULL
-        AND ls.weight_kg IS NOT NULL
-        ${scoped.sql}
-      GROUP BY wl.id, le.exercise_id, wl.completed_at, wl.started_at, ls.reps
-      ORDER BY "performedAt" ASC, wl.id ASC
+        workout_log_id AS "workoutLogId",
+        exercise_id    AS "exerciseId",
+        performed_at   AS "performedAt",
+        reps           AS "reps",
+        weight_kg      AS "weightKg"
+      FROM running
+      WHERE prior_strength IS NULL OR strength > prior_strength
+      ORDER BY performed_at ASC, workout_log_id ASC
       `,
       {
         replacements: {
@@ -998,7 +1036,8 @@ export class ProgressService {
     );
 
     // Best estimate per (exercise, session). Rows arrive in session
-    // order, so insertion order is session order too.
+    // order, one per session and exercise, so insertion order is session
+    // order too.
     const sessionBest = new Map<
       string,
       { exerciseId: string; recordedAt: Date; best: number }

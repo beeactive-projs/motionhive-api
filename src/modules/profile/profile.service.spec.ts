@@ -13,6 +13,10 @@ import { SearchIndexService } from '../search/search-index.service';
 import { ReviewService } from '../review/review.service';
 import { GroupService } from '../group/group.service';
 import { VenueService } from '../venue/venue.service';
+import { WorkoutLogService } from '../workout/workout-log.service';
+import { WorkoutReportService } from '../workout/workout-report.service';
+import { WorkoutPhotoService } from '../workout/workout-photo.service';
+import { MessageReportCategory } from '../messaging/entities/message-report.entity';
 import { User } from '../user/entities/user.entity';
 import { InstructorClient } from '../client/entities/instructor-client.entity';
 import {
@@ -55,6 +59,22 @@ describe('ProfileService (smoke — not exhaustive)', () => {
     escape: jest.fn((v: string) => `'${v}'`),
   };
 
+  const workoutReportService = {
+    submit: jest.fn().mockResolvedValue({ id: 'r-1', status: 'OPEN' }),
+  };
+  const workoutPhotoService = {
+    photoForProfile: jest.fn().mockResolvedValue(Buffer.from('jpeg')),
+  };
+  const workoutLogService = {
+    countForProfile: jest.fn().mockResolvedValue(0),
+    findForProfile: jest.fn(),
+    listForProfile: jest.fn().mockResolvedValue({
+      items: [],
+      total: 0,
+      page: 1,
+      pageSize: 20,
+    }),
+  };
   const roleService = {
     assignRoleToUserByName: jest.fn(),
     getUserRoles: jest.fn(),
@@ -100,6 +120,9 @@ describe('ProfileService (smoke — not exhaustive)', () => {
         { provide: ReviewService, useValue: reviewService },
         { provide: GroupService, useValue: groupService },
         { provide: VenueService, useValue: venueService },
+        { provide: WorkoutLogService, useValue: workoutLogService },
+        { provide: WorkoutReportService, useValue: workoutReportService },
+        { provide: WorkoutPhotoService, useValue: workoutPhotoService },
         {
           provide: WINSTON_MODULE_NEST_PROVIDER,
           useValue: makeSilentLogger(),
@@ -551,6 +574,168 @@ describe('ProfileService (smoke — not exhaustive)', () => {
     });
   });
 
+  // ───── getPublicUserWorkouts ──────────────────────────────────────
+
+  describe('getPublicUserWorkouts — which levels a profile shows', () => {
+    const owner = { id: 'u-1', handle: 'jane' } as unknown as User;
+    const levelsFor = async (
+      viewerId: string | null,
+      isCoach: boolean,
+      previewAs?: 'PUBLIC' | 'COACH',
+    ) => {
+      jest.spyOn(User, 'findOne').mockResolvedValueOnce(owner);
+      jest
+        .spyOn(InstructorClient, 'findAll')
+        .mockResolvedValueOnce(
+          (isCoach
+            ? [{ instructorId: viewerId }]
+            : []) as unknown as InstructorClient[],
+        );
+      await service.getPublicUserWorkouts('jane', viewerId, {
+        page: 1,
+        limit: 20,
+        previewAs,
+      });
+      return workoutLogService.listForProfile.mock.calls.at(-1)?.[1];
+    };
+
+    it('shows only Public workouts to someone not signed in', async () => {
+      expect(await levelsFor(null, false)).toEqual(['PUBLIC']);
+    });
+
+    it('shows a signed-in stranger only Public ones too', async () => {
+      expect(await levelsFor(stranger, false)).toEqual(['PUBLIC']);
+    });
+
+    it('adds Coaches only for an active coach of theirs', async () => {
+      expect(await levelsFor('coach-1', true)).toEqual([
+        'PUBLIC',
+        'COACHES_ONLY',
+      ]);
+    });
+
+    it('shows the owner their page as the public would', async () => {
+      expect(await levelsFor('u-1', false)).toEqual(['PUBLIC']);
+    });
+
+    it('shows the owner what their coaches see when previewing that', async () => {
+      expect(await levelsFor('u-1', false, 'COACH')).toEqual([
+        'PUBLIC',
+        'COACHES_ONLY',
+      ]);
+    });
+
+    it('never lets anyone else borrow the coach view', async () => {
+      expect(await levelsFor(stranger, false, 'COACH')).toEqual(['PUBLIC']);
+    });
+
+    it('does not pass the preview on as a list filter', async () => {
+      await levelsFor('u-1', false, 'COACH');
+      expect(workoutLogService.listForProfile.mock.calls.at(-1)?.[2]).toEqual({
+        page: 1,
+        limit: 20,
+      });
+    });
+  });
+
+  describe('getPublicUserWorkout — one workout, same rule', () => {
+    it('looks the workout up with the levels this viewer sees', async () => {
+      jest.spyOn(User, 'findOne').mockResolvedValueOnce({
+        id: 'u-1',
+        handle: 'jane',
+      } as unknown as User);
+      jest
+        .spyOn(InstructorClient, 'findAll')
+        .mockResolvedValueOnce([
+          { instructorId: 'coach-1' },
+        ] as unknown as InstructorClient[]);
+      workoutLogService.findForProfile.mockResolvedValueOnce({ id: 'wl-1' });
+
+      await expect(
+        service.getPublicUserWorkout('jane', 'coach-1', 'wl-1'),
+      ).resolves.toEqual({ id: 'wl-1' });
+      expect(workoutLogService.findForProfile).toHaveBeenCalledWith(
+        'u-1',
+        ['PUBLIC', 'COACHES_ONLY'],
+        'wl-1',
+      );
+    });
+  });
+
+  describe("getPublicUserWorkoutPhoto — the workout's own rule", () => {
+    const owner = { id: 'u-1', handle: 'jane' } as unknown as User;
+
+    it('asks for the photo under the levels this viewer sees', async () => {
+      jest.spyOn(User, 'findOne').mockResolvedValueOnce(owner);
+      jest
+        .spyOn(InstructorClient, 'findAll')
+        .mockResolvedValueOnce([] as unknown as InstructorClient[]);
+
+      await service.getPublicUserWorkoutPhoto(
+        'jane',
+        stranger,
+        'wl-1',
+        'COACH',
+      );
+
+      // A stranger cannot borrow the coach view.
+      expect(workoutPhotoService.photoForProfile).toHaveBeenCalledWith(
+        'u-1',
+        ['PUBLIC'],
+        'wl-1',
+      );
+    });
+
+    it('lets the owner preview what their coaches see', async () => {
+      jest.spyOn(User, 'findOne').mockResolvedValueOnce(owner);
+
+      await service.getPublicUserWorkoutPhoto('jane', 'u-1', 'wl-1', 'COACH');
+
+      expect(workoutPhotoService.photoForProfile).toHaveBeenCalledWith(
+        'u-1',
+        ['PUBLIC', 'COACHES_ONLY'],
+        'wl-1',
+      );
+    });
+  });
+
+  describe('reportUserWorkout — you report what you can see', () => {
+    const owner = { id: 'u-1', handle: 'jane' } as unknown as User;
+
+    it('checks the report against the levels the reporter sees on that profile', async () => {
+      jest.spyOn(User, 'findOne').mockResolvedValueOnce(owner);
+      jest
+        .spyOn(InstructorClient, 'findAll')
+        .mockResolvedValueOnce([
+          { instructorId: 'coach-1' },
+        ] as unknown as InstructorClient[]);
+
+      await service.reportUserWorkout('jane', 'coach-1', 'wl-1', {
+        category: MessageReportCategory.HARASSMENT,
+        notes: 'Mocks another member',
+      });
+
+      expect(workoutReportService.submit).toHaveBeenCalledWith({
+        reporterId: 'coach-1',
+        ownerId: 'u-1',
+        workoutLogId: 'wl-1',
+        levels: ['PUBLIC', 'COACHES_ONLY'],
+        category: MessageReportCategory.HARASSMENT,
+        notes: 'Mocks another member',
+      });
+    });
+
+    it('is a 404 for a handle that is gone', async () => {
+      jest.spyOn(User, 'findOne').mockResolvedValueOnce(null);
+      await expect(
+        service.reportUserWorkout('ghost', 'me', 'wl-1', {
+          category: MessageReportCategory.SPAM,
+        }),
+      ).rejects.toThrow(NotFoundException);
+      expect(workoutReportService.submit).not.toHaveBeenCalled();
+    });
+  });
+
   // ───── getPublicUserProfileByHandle ───────────────────────────────
 
   describe('getPublicUserProfileByHandle', () => {
@@ -645,8 +830,10 @@ describe('ProfileService (smoke — not exhaustive)', () => {
         createdAt: new Date(),
       } as unknown as User);
       jest
-        .spyOn(InstructorClient, 'findOne')
-        .mockResolvedValueOnce({ id: 'link-1' } as unknown as InstructorClient);
+        .spyOn(InstructorClient, 'findAll')
+        .mockResolvedValueOnce([
+          { instructorId: 'coach-1' },
+        ] as unknown as InstructorClient[]);
       instructorProfileModel.findOne.mockResolvedValueOnce(null);
       roleService.getUserRoles.mockResolvedValueOnce([]);
 
@@ -700,6 +887,122 @@ describe('ProfileService (smoke — not exhaustive)', () => {
       expect(guest.sharedGroups).toEqual([]);
       expect(own.sharedGroups).toEqual([]);
       expect(groupService.sharedGroups).not.toHaveBeenCalled();
+    });
+
+    const person = (fields: Record<string, unknown> = {}) =>
+      ({
+        id: 'coach-1',
+        handle: 'alex',
+        firstName: 'Alex',
+        lastName: 'Rivera',
+        avatarUrl: null,
+        email: 'alex@example.com',
+        phone: null,
+        city: null,
+        countryCode: null,
+        language: 'en',
+        timezone: 'Europe/Bucharest',
+        privacySettings: {},
+        createdAt: new Date('2026-07-01'),
+        ...fields,
+      }) as unknown as User;
+
+    it("says since when the person is the viewer's coach", async () => {
+      jest.spyOn(User, 'findOne').mockResolvedValueOnce(person());
+      const since = new Date('2026-03-12');
+      const findAll = jest
+        .spyOn(InstructorClient, 'findAll')
+        .mockResolvedValueOnce([
+          { instructorId: 'coach-1', startedAt: since, createdAt: new Date() },
+        ] as unknown as InstructorClient[]);
+      instructorProfileModel.findOne.mockResolvedValueOnce({ id: 'ip-1' });
+      roleService.getUserRoles.mockResolvedValueOnce([]);
+      groupService.sharedGroups.mockResolvedValueOnce([]);
+
+      const out = await service.getPublicUserProfileByHandle('alex', 'me');
+
+      expect(out.yourCoachSince).toEqual(since);
+      // Coaching me is not me coaching them: no coach-only fields.
+      expect(out.audience).toBe('PUBLIC');
+      expect(out.language).toBeNull();
+      // Both directions in one query, active links only.
+      expect(findAll).toHaveBeenCalledTimes(1);
+      expect(findAll).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({ status: 'ACTIVE' }),
+        }),
+      );
+    });
+
+    it('has no coach-since for a stranger, a guest or the owner', async () => {
+      instructorProfileModel.findOne.mockResolvedValue(null);
+      roleService.getUserRoles.mockResolvedValue([]);
+      groupService.sharedGroups.mockResolvedValue([]);
+      const findAll = jest
+        .spyOn(InstructorClient, 'findAll')
+        .mockResolvedValueOnce([] as unknown as InstructorClient[]);
+
+      jest.spyOn(User, 'findOne').mockResolvedValueOnce(person());
+      const stranger = await service.getPublicUserProfileByHandle('alex', 'me');
+      jest.spyOn(User, 'findOne').mockResolvedValueOnce(person());
+      const guest = await service.getPublicUserProfileByHandle('alex', null);
+      jest.spyOn(User, 'findOne').mockResolvedValueOnce(person());
+      const own = await service.getPublicUserProfileByHandle('alex', 'coach-1');
+
+      expect(stranger.yourCoachSince).toBeNull();
+      expect(guest.yourCoachSince).toBeNull();
+      expect(own.yourCoachSince).toBeNull();
+      // Only the stranger needed a lookup.
+      expect(findAll).toHaveBeenCalledTimes(1);
+    });
+
+    it('shows the owner the coach slice when previewing as their coaches', async () => {
+      instructorProfileModel.findOne.mockResolvedValue(null);
+      roleService.getUserRoles.mockResolvedValue([]);
+
+      jest.spyOn(User, 'findOne').mockResolvedValueOnce(person());
+      const asPublic = await service.getPublicUserProfileByHandle(
+        'alex',
+        'coach-1',
+      );
+      jest.spyOn(User, 'findOne').mockResolvedValueOnce(person());
+      const asCoach = await service.getPublicUserProfileByHandle(
+        'alex',
+        'coach-1',
+        'COACH',
+      );
+
+      // Language goes to coaches by default; email stays theirs alone.
+      expect(asPublic.language).toBeNull();
+      expect(asCoach.language).toBe('en');
+      expect(asCoach.email).toBeNull();
+      expect(asCoach.audience).toBe('OWNER');
+      expect(workoutLogService.countForProfile).toHaveBeenLastCalledWith(
+        'coach-1',
+        ['PUBLIC', 'COACHES_ONLY'],
+      );
+    });
+
+    it('ignores the coach preview from anyone but the owner', async () => {
+      jest.spyOn(User, 'findOne').mockResolvedValueOnce(person());
+      jest
+        .spyOn(InstructorClient, 'findAll')
+        .mockResolvedValueOnce([] as unknown as InstructorClient[]);
+      instructorProfileModel.findOne.mockResolvedValueOnce(null);
+      roleService.getUserRoles.mockResolvedValueOnce([]);
+      groupService.sharedGroups.mockResolvedValueOnce([]);
+
+      const out = await service.getPublicUserProfileByHandle(
+        'alex',
+        'me',
+        'COACH',
+      );
+
+      expect(out.language).toBeNull();
+      expect(workoutLogService.countForProfile).toHaveBeenLastCalledWith(
+        'coach-1',
+        ['PUBLIC'],
+      );
     });
   });
 });

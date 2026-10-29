@@ -11,6 +11,7 @@ import { PostService } from './post.service';
 import { CloudinaryService } from '../../common/services/cloudinary.service';
 import { SearchModule } from '../search/search.module';
 import { GroupModule } from '../group/group.module';
+import { WorkoutModule } from '../workout/workout.module';
 
 @Module({
   imports: [
@@ -24,6 +25,8 @@ import { GroupModule } from '../group/group.module';
     ]),
     SearchModule,
     GroupModule,
+    // A post can carry a shared workout; the cards come from there.
+    WorkoutModule,
   ],
   controllers: [PostController],
   providers: [PostService, CloudinaryService],

@@ -214,7 +214,10 @@ function fakeQuery(logs: FakeLog[], oneRepMaxes: FakeOneRepMax[]) {
           setsCompleted: String(w.reduce((s, l) => s + l.sets.length, 0)),
         },
       ];
-    } else if (sql.includes('SELECT DISTINCT')) {
+    } else if (
+      sql.includes('SELECT DISTINCT') &&
+      !sql.includes('DISTINCT ON')
+    ) {
       const weeks = [...new Set(visible.map((l) => +mondayOf(l.at)))];
       rows = weeks
         .sort((a, b) => b - a)
@@ -263,10 +266,13 @@ function fakeQuery(logs: FakeLog[], oneRepMaxes: FakeOneRepMax[]) {
           };
         });
     } else if (sql.includes('AS "reps"')) {
-      // Heaviest set per (log, exercise, reps), sessions oldest first.
+      // The best set per (log, exercise) by weight × (30 + reps), kept
+      // only when it beats every earlier log's: the query's own filter,
+      // so the records below come from the reduced rows it returns.
       const out: Array<Record<string, unknown>> = [];
+      const prior = new Map<string, number>();
       for (const l of [...visible].sort((a, b) => +a.at - +b.at)) {
-        const best = new Map<string, number>();
+        const best = new Map<string, { reps: number; weightKg: number }>();
         for (const s of l.sets) {
           if (
             sql.includes('le.exercise_id = :exerciseId') &&
@@ -274,17 +280,26 @@ function fakeQuery(logs: FakeLog[], oneRepMaxes: FakeOneRepMax[]) {
           ) {
             continue;
           }
-          const k = `${s.exerciseId}|${s.reps}`;
-          best.set(k, Math.max(best.get(k) ?? 0, s.weightKg));
+          if (s.reps < 1 || s.reps > 12 || s.weightKg <= 0) continue;
+          const cur = best.get(s.exerciseId);
+          if (
+            !cur ||
+            s.weightKg * (30 + s.reps) > cur.weightKg * (30 + cur.reps)
+          ) {
+            best.set(s.exerciseId, { reps: s.reps, weightKg: s.weightKg });
+          }
         }
-        for (const [k, w] of best) {
-          const [exerciseId, reps] = k.split('|');
+        for (const [exerciseId, set] of best) {
+          const strength = set.weightKg * (30 + set.reps);
+          const before = prior.get(exerciseId);
+          prior.set(exerciseId, Math.max(before ?? 0, strength));
+          if (before !== undefined && strength <= before) continue;
           out.push({
             workoutLogId: l.id,
             exerciseId,
             performedAt: l.at,
-            reps: Number(reps),
-            weightKg: String(w),
+            reps: set.reps,
+            weightKg: String(set.weightKg),
           });
         }
       }

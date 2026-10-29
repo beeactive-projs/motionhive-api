@@ -212,6 +212,16 @@ describe('SessionInstanceService', () => {
       expect(where.startAt[Op.gte]).toEqual(new Date('2026-06-01T00:00:00Z'));
       expect(where.startAt[Op.lt]).toEqual(new Date('2026-06-08T00:00:00Z'));
     });
+
+    it('sorts oldest first unless asked for the most recent first', async () => {
+      instanceMock.findAndCountAll.mockResolvedValue({ rows: [], count: 0 });
+      await service.list('usr-1', { page: 1, limit: 5 });
+      await service.list('usr-1', { page: 1, limit: 5, order: 'desc' });
+      const orders = instanceMock.findAndCountAll.mock.calls.map(
+        ([call]) => (call as { order: unknown }).order,
+      );
+      expect(orders).toEqual([[['startAt', 'ASC']], [['startAt', 'DESC']]]);
+    });
   });
 
   describe('getById', () => {

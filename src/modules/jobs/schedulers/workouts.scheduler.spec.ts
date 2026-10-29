@@ -25,6 +25,19 @@ describe('WorkoutsScheduler', () => {
     );
   });
 
+  it('closeStaleWorkouts enqueues workouts.close_stale_workouts', async () => {
+    await scheduler.closeStaleWorkouts();
+    expect(enqueue).toHaveBeenCalledWith(
+      'workouts.close_stale_workouts',
+      expect.any(Object),
+      expect.objectContaining({
+        jobId: expect.stringMatching(
+          /^workouts\.close_stale_workouts-/,
+        ) as string,
+      }),
+    );
+  });
+
   it('autoCompleteAssignments enqueues workouts.auto_complete_assignments', async () => {
     await scheduler.autoCompleteAssignments();
     expect(enqueue).toHaveBeenCalledWith(
