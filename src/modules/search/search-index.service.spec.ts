@@ -105,6 +105,12 @@ describe('SearchIndexService (smoke — not exhaustive)', () => {
       expect(Array.isArray(insertOpts.bind[5])).toBe(true);
       // ownerId at bind[8] — users own themselves in the index
       expect(insertOpts.bind[8]).toBe('u-1');
+      // Stored folded, as the query folds its term (migration 077): the
+      // title's tsvector and the similarity text both lose accents and case.
+      expect(insertSql).toContain(
+        "to_tsvector('simple', fold_for_search(coalesce($3::text, '')))",
+      );
+      expect(insertSql).not.toMatch(/\blower\(/);
     });
 
     it('falls back to "Member" when both names are null', async () => {

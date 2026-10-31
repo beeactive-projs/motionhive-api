@@ -4,7 +4,6 @@ import {
   baseLayout,
   calloutBox,
   eyebrow,
-  expiryNote,
   heading,
   paragraph,
   personCard,
@@ -61,11 +60,10 @@ export function clientInvitationImportedTemplate(
       role: c.html('personRole'),
       avatarUrl: instructorAvatarUrl ? escapeHtml(instructorAvatarUrl) : null,
     })}
-    ${paragraph(c.html(hasAccount ? 'bodyExisting' : 'bodyNew', name))}
+    ${paragraph(c.html(hasAccount ? 'bodyExisting' : 'bodyNew'))}
     ${message ? calloutBox('info', `<em>${c.html('messageQuote', { message })}</em>`) : ''}
-    ${primaryButton(c.html(hasAccount ? 'ctaExisting' : 'ctaNew', name), link)}
-    ${expiryNote(c.html('expiry'), locale)}
-    ${securityNote(c.html('why', name))}
+    ${primaryButton(c.html(hasAccount ? 'ctaExisting' : 'ctaNew'), link)}
+    ${securityNote(`${c.html('expiry')} ${c.html('why', name)}`)}
   `;
 
   return baseLayout(content, {
@@ -97,13 +95,13 @@ export function clientInvitationImportedTemplateText(
         heading: c.text('heading', name),
         body: [
           c.text('greeting', { recipient: recipientFirstName || null }),
-          c.text(hasAccount ? 'bodyExisting' : 'bodyNew', name),
+          c.text(hasAccount ? 'bodyExisting' : 'bodyNew'),
           ...(message ? [c.text('messageLine', { message })] : []),
           c.text('expiry'),
         ],
         ctas: [
           {
-            label: c.text(hasAccount ? 'ctaExisting' : 'ctaNew', name),
+            label: c.text(hasAccount ? 'ctaExisting' : 'ctaNew'),
             url: link,
           },
         ],

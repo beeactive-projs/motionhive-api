@@ -15,6 +15,11 @@ import { HttpExceptionFilter } from './common/filters/http-exception.filter';
 import { validationErrorBody } from './common/i18n';
 import { setupBullBoard } from './modules/jobs/bull-board.setup';
 
+/** How long shutdown lets open connections finish before cutting them. */
+const SHUTDOWN_GRACE_MS = 8_000;
+/** And how long after that before exiting regardless. */
+const SHUTDOWN_FORCE_MS = 2_000;
+
 async function bootstrap() {
   const app = await NestFactory.create<NestExpressApplication>(AppModule, {
     bufferLogs: true,
@@ -300,8 +305,23 @@ A comprehensive REST API for managing fitness training sessions, trainers, and c
 
   // Railway/Docker sends SIGTERM on container stop; we drain in-flight
   // requests + close DB connections before exiting.
+  //
+  // The HTTP server only finishes closing once every open connection has
+  // ended, and a long-lived stream (the messaging SSE an open app holds)
+  // never ends on its own: `app.close()` then waits forever with the port
+  // already released, so nothing serves and nothing exits. Past the grace
+  // period the remaining connections are cut, and if shutdown still hangs
+  // the process goes anyway.
   const gracefulShutdown = async (signal: string) => {
     appLogger.warn(`${signal} signal received: closing HTTP server`);
+
+    setTimeout(() => {
+      appLogger.warn(
+        `Shutdown still waiting after ${SHUTDOWN_GRACE_MS / 1000}s: closing open connections`,
+      );
+      app.getHttpServer().closeAllConnections();
+      setTimeout(() => process.exit(1), SHUTDOWN_FORCE_MS).unref();
+    }, SHUTDOWN_GRACE_MS).unref();
 
     try {
       await app.close();

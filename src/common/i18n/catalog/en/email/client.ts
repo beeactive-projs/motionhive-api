@@ -48,17 +48,17 @@ export const client = {
     preheader: '{name} invited you to train together on MotionHive.',
     eyebrow: 'INVITATION',
     greeting: '{recipient, select, null {Hi,} other {Hi {recipient},}}',
-    heading: '{name} is now on MotionHive',
+    heading: '{name} invited you to MotionHive',
     personRole: 'Coach',
     bodyNew:
-      '**{name}** added you to their client list on MotionHive. Create your account and you are connected straight away, with your programs, sessions and messages in one place.',
+      "You're on their client list. Create your account and you're connected straight away, with your programs, sessions and messages in one place.",
     bodyExisting:
-      '**{name}** added you to their client list on MotionHive. Accept the request and your programs, sessions and messages are all in one place.',
+      "You're on their client list. Accept the request and your programs, sessions and messages are all in one place.",
     messageQuote: '"{message}"',
     messageLine: 'Message: "{message}"',
-    ctaNew: 'Join {name} on MotionHive',
+    ctaNew: 'Create your account',
     ctaExisting: 'Review the request',
-    expiry: 'The invitation is open for 30 days.',
+    expiry: 'The invitation is valid for 30 days.',
     why: "You are getting this because {name} added your email address to their client list. If you don't know them, you can ignore this email.",
   },
   /** `sendClientRequestToInstructorEmail`: a user asks a coach to take them on. */

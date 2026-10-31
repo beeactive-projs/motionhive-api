@@ -28,6 +28,35 @@ export const ProgressDocs = {
     responses: [{ status: 200, description: 'Roster adherence summary' }],
   },
 
+  activity: {
+    summary: "My clients' latest workouts",
+    description:
+      "The coach Home's activity feed: finished workouts across every " +
+      'ACTIVE client from the last two weeks, newest first, each with the ' +
+      'records it set. Only workouts the coach may read: from their own ' +
+      'plans, or shared with coaches by the client.',
+    auth: true,
+    responses: [
+      {
+        status: 200,
+        description: 'Recent client workouts',
+        example: [
+          {
+            workoutLogId: '5b0c2a9e-1f3d-4c8e-9a71-2d6f0e4b8c13',
+            clientId: '329c9c83-9d0d-4ee5-8192-e6d46c803f69',
+            name: 'Anna Popescu',
+            avatarUrl: null,
+            handle: 'anna',
+            workoutName: 'Push day',
+            completedAt: '2026-10-30T18:42:00.000Z',
+            durationSeconds: 3120,
+            recordCount: 1,
+          },
+        ],
+      },
+    ],
+  },
+
   exerciseHistory: {
     summary: 'My history for one exercise',
     description:

@@ -11,8 +11,12 @@ import {
 import { InjectModel } from '@nestjs/sequelize';
 import { randomBytes } from 'crypto';
 import { WINSTON_MODULE_NEST_PROVIDER } from 'nest-winston';
-import { col, fn, Op, where as whereFn } from 'sequelize';
+import { Op } from 'sequelize';
 import { Sequelize } from 'sequelize-typescript';
+import {
+  foldedContains,
+  normalizeSearchTerm,
+} from '../../common/utils/search.utils';
 import { FilterSettingsDto } from '../../common/dto/filter-settings.dto';
 import { ClientDirection } from './dto/list-clients.dto';
 import {
@@ -92,10 +96,13 @@ function matchClientRows(rows: ClientRow[], tokens: string[]): ClientRow[] {
       row.invitedLastName,
     ]
       .filter(Boolean)
-      .join(' ')
-      .toLowerCase();
+      .join(' ');
+    // Folded like the query half (`foldedContains`): "stefan" finds "Ștefan".
+    const folded = normalizeSearchTerm(haystack).toLowerCase();
 
-    return tokens.every((token) => haystack.includes(token.toLowerCase()));
+    return tokens.every((token) =>
+      folded.includes(normalizeSearchTerm(token).toLowerCase()),
+    );
   });
 }
 
@@ -445,38 +452,61 @@ export class ClientService {
   }
 
   /**
-   * Total count of pending client_request rows where this instructor is
-   * either sender (INSTRUCTOR_TO_CLIENT) or recipient (CLIENT_TO_INSTRUCTOR),
-   * status = PENDING, not expired. Powers the Pending-requests badge.
+   * Pending, unexpired client_request rows that concern the caller, split by
+   * who has to act on them:
+   *
+   * - `incoming`: trainees asking this coach (CLIENT_TO_INSTRUCTOR, to them).
+   *   The coach answers these in their Clients list.
+   * - `outgoing`: invitations this coach sent (INSTRUCTOR_TO_CLIENT, from
+   *   them). Waiting on someone else.
+   * - `invitations`: coaches inviting the caller as a client
+   *   (INSTRUCTOR_TO_CLIENT, to them). The trainee answers these.
+   *
+   * Every count is scoped to the caller, so any signed-in account may ask:
+   * a trainee gets zeros for the coach's two and the number that lights their
+   * own "a coach invited you" dot. `invitations` is its own field rather than
+   * folded into `incoming` because one account can be both: a coach who is
+   * also someone's client would otherwise see another coach's invitation
+   * counted on the Clients tab, where it cannot be answered.
    */
-  async getPendingRequestsCount(
-    instructorId: string,
-  ): Promise<{ count: number; incoming: number; outgoing: number }> {
+  async getPendingRequestsCount(userId: string): Promise<{
+    count: number;
+    incoming: number;
+    outgoing: number;
+    invitations: number;
+  }> {
     const live = {
       status: ClientRequestStatus.PENDING,
       expiresAt: { [Op.gt]: new Date() },
     };
 
-    const [outgoing, incoming] = await Promise.all([
+    const [outgoing, incoming, invitations] = await Promise.all([
       this.clientRequestModel.count({
         where: {
           ...live,
-          fromUserId: instructorId,
+          fromUserId: userId,
           type: ClientRequestType.INSTRUCTOR_TO_CLIENT,
         },
       }),
       this.clientRequestModel.count({
         where: {
           ...live,
-          toUserId: instructorId,
+          toUserId: userId,
           type: ClientRequestType.CLIENT_TO_INSTRUCTOR,
+        },
+      }),
+      this.clientRequestModel.count({
+        where: {
+          ...live,
+          toUserId: userId,
+          type: ClientRequestType.INSTRUCTOR_TO_CLIENT,
         },
       }),
     ]);
 
-    // `count` keeps its old meaning (both directions) so existing callers
-    // are unaffected; the split is what makes the number explainable.
-    return { count: incoming + outgoing, incoming, outgoing };
+    // `count` keeps its old meaning (the coach's two directions) so existing
+    // callers are unaffected; the split is what makes the number explainable.
+    return { count: incoming + outgoing, incoming, outgoing, invitations };
   }
 
   /**
@@ -494,30 +524,26 @@ export class ClientService {
     };
     if (tokens.length === 0) return base;
 
-    // Concatenated so one token can straddle the two columns ("anna pop"),
-    // which a per-column LIKE can never match.
-    const fullName = fn(
-      'concat_ws',
-      ' ',
-      col('client.first_name'),
-      col('client.last_name'),
-    );
+    // The full name is concatenated so one token can straddle the two
+    // columns ("anna pop"), which a per-column LIKE can never match. Folded
+    // and escaped (`foldedContains`): "stefan" finds "Ștefan", and a typed
+    // `%` no longer matches the whole roster.
+    const esc = (value: string) => this.sequelize.escape(value);
 
     return {
       ...base,
       required: true,
       where: {
-        [Op.and]: tokens.map((token) => {
-          const like = `%${token}%`;
-          return {
-            [Op.or]: [
-              { email: { [Op.iLike]: like } },
-              { firstName: { [Op.iLike]: like } },
-              { lastName: { [Op.iLike]: like } },
-              whereFn(fullName, { [Op.iLike]: like }),
-            ],
-          };
-        }),
+        [Op.and]: tokens.map((token) => ({
+          [Op.or]: [
+            foldedContains('"client"."email"', token, esc),
+            foldedContains(
+              `concat_ws(' ', "client"."first_name", "client"."last_name")`,
+              token,
+              esc,
+            ),
+          ],
+        })),
       },
     };
   }

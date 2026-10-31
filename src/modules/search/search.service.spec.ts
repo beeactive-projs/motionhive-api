@@ -104,6 +104,10 @@ describe('SearchService (smoke — not exhaustive)', () => {
       // indexes. CLAUDE.md spells this out for Postgres.
       expect(sql).not.toMatch(/\bLIKE\b/i);
       expect(sql).not.toMatch(/\biLike\b/i);
+      // Folded like the index (migration 077): "bucuresti" finds "București".
+      expect(sql).toContain("to_tsquery('simple', fold_for_search(:tsQuery))");
+      expect(sql).toContain('similarity(search_text, fold_for_search(:q))');
+      expect(sql).not.toContain("to_tsquery('simple', :tsQuery)");
 
       // Parametrised — never string-interpolated. The tsquery is a
       // prefix query so partial words match incrementally.

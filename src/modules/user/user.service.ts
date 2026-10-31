@@ -14,10 +14,7 @@ import {
   QueryTypes,
   Transaction,
   UniqueConstraintError,
-  col,
-  fn,
   literal,
-  where as whereFn,
 } from 'sequelize';
 import { Sequelize } from 'sequelize-typescript';
 import { User } from './entities/user.entity';
@@ -30,7 +27,7 @@ import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { CryptoService } from '../../common/services';
 import { apiError } from '../../common/i18n';
-import { escapeLikeWildcards } from '../../common/utils/search.utils';
+import { foldedContains } from '../../common/utils/search.utils';
 import { CloudinaryService } from '../../common/services/cloudinary.service';
 import { InstructorProfile } from '../profile/entities/instructor-profile.entity';
 import { GroupMember } from '../group/entities/group-member.entity';
@@ -255,27 +252,22 @@ export class UserService {
       }
     }
 
-    // One token matches if it appears in any searchable column. `handle` is
-    // in the list because the result row displays it: searching what you
-    // were just shown used to return nobody. The concatenated full name
-    // catches "elena dum" as a single token too.
-    const fullName = fn(
-      'concat_ws',
-      ' ',
-      col('User.first_name'),
-      col('User.last_name'),
-    );
-    const tokenMatches = tokens.map((token) => {
-      const like = `%${escapeLikeWildcards(token)}%`;
-      return {
-        [Op.or]: [
-          { firstName: { [Op.iLike]: like } },
-          { lastName: { [Op.iLike]: like } },
-          { handle: { [Op.iLike]: like } },
-          whereFn(fullName, { [Op.iLike]: like }),
-        ],
-      };
-    });
+    // One token matches if it appears in the full name or the handle.
+    // `handle` is in because the result row displays it: searching what
+    // you were just shown used to return nobody. The full name covers the
+    // first and last names on their own and catches "elena dum" as a
+    // single token. Both are folded, so "stefan" finds "Ștefan".
+    const esc = (value: string) => this.sequelize.escape(value);
+    const tokenMatches = tokens.map((token) => ({
+      [Op.or]: [
+        foldedContains(
+          `concat_ws(' ', "User"."first_name", "User"."last_name")`,
+          token,
+          esc,
+        ),
+        foldedContains('"User"."handle"', token, esc),
+      ],
+    }));
 
     const where: Record<string, unknown> = {
       isActive: true,

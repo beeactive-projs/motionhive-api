@@ -102,6 +102,78 @@ interface OneRepMaxPoint {
 /** How many recent records the overview shows. */
 const RECENT_RECORDS_LIMIT = 10;
 
+/** How far back the coach's activity feed reaches, in days. */
+const ACTIVITY_DAYS = 14;
+
+// ── Coach reads across clients ───────────────────────────────────────
+// SQL pieces the roster and the activity feed share, so "who", "may the
+// coach read it" and "was it a record" mean the same in both. Each binds
+// `:instructorId`; the one-client form binds `:clientId` too.
+
+/** The coach's ACTIVE clients, or the one a page asks about. */
+function coachClientsCte(oneClient: boolean): string {
+  return `
+      clients AS (
+        SELECT ic.client_id
+        FROM instructor_client ic
+        -- A deleted account is off the roster, so off its totals too.
+        JOIN "user" u ON u.id = ic.client_id AND u.deleted_at IS NULL
+        WHERE ic.instructor_id = :instructorId
+          AND ic.status = 'ACTIVE'
+          ${oneClient ? 'AND ic.client_id = :clientId' : ''}
+      )`;
+}
+
+/**
+ * `isReadableByCoach` on a workout_log alias: one from the coach's own
+ * plans, or one the client shared with coaches. `alias` is always a
+ * literal from this file, never input.
+ */
+function readableByCoach(alias: string): string {
+  return `(
+            ${alias}.visibility IN ('COACHES_ONLY', 'PUBLIC')
+            OR ${alias}.program_assignment_id IN (
+              SELECT pa.id
+              FROM program_assignment pa
+              WHERE pa.instructor_id = :instructorId
+                AND pa.deleted_at IS NULL
+            )
+          )`;
+}
+
+/**
+ * The clients' estimated-1RM rows that beat an earlier one. A first time
+ * on an exercise beat nothing, so it is no record: History's rule
+ * (`WorkoutLogService._countSessionPrs`), in SQL.
+ */
+const CLIENT_RECORDS_CTE = `
+      records AS (
+        SELECT x.user_id, x.recorded_at
+        FROM (
+          SELECT
+            orm.user_id,
+            orm.source,
+            orm.recorded_at,
+            MIN(orm.recorded_at) OVER (
+              PARTITION BY orm.user_id, orm.exercise_id
+            ) AS first_at
+          FROM one_rep_max orm
+          WHERE orm.user_id IN (SELECT client_id FROM clients)
+        ) x
+        WHERE x.source = 'ESTIMATED_EPLEY'
+          AND x.recorded_at > x.first_at
+      )`;
+
+/** Records set inside one workout, from `records`, as History counts them. */
+function sessionRecords(alias: string): string {
+  return `(
+          SELECT COUNT(*)
+          FROM records r
+          WHERE r.user_id = ${alias}.user_id
+            AND r.recorded_at BETWEEN ${alias}.started_at AND ${alias}.completed_at
+        )`;
+}
+
 export interface RosterClient {
   clientId: string;
   name: string;
@@ -143,7 +215,28 @@ export interface RosterSummary {
     needsAttention: number;
     /** Mean adherence across clients who had work due. */
     adherencePercent: number | null;
+    /**
+     * Finished workouts the coach may read, in the window and in the one
+     * before it, planned or the client's own.
+     */
+    workouts: number;
+    previousWorkouts: number;
+    /** Records set in the window's workouts. */
+    records: number;
   };
+}
+
+/** One finished workout in the coach's activity feed. */
+export interface CoachActivityItem {
+  workoutLogId: string;
+  clientId: string;
+  name: string;
+  avatarUrl: string | null;
+  handle: string | null;
+  workoutName: string;
+  completedAt: string;
+  durationSeconds: number | null;
+  recordCount: number;
 }
 
 /**
@@ -375,13 +468,7 @@ export class ProgressService {
       activePlans: string;
     }>(
       `
-      WITH clients AS (
-        SELECT ic.client_id
-        FROM instructor_client ic
-        WHERE ic.instructor_id = :instructorId
-          AND ic.status = 'ACTIVE'
-          ${clientId ? 'AND ic.client_id = :clientId' : ''}
-      ),
+      WITH ${coachClientsCte(!!clientId)},
       -- Scheduled work in the window, and in the one before it, so a
       -- drop can be detected rather than just a low number.
       windowed AS (
@@ -422,12 +509,17 @@ export class ProgressService {
       ),
       -- Only these clients' logs: unscoped, this took the latest workout
       -- of every person on the platform on each read.
+      -- And only the workouts the coach may read (\`isReadableByCoach\`):
+      -- one from their own plans, or one the client shared with coaches.
+      -- A private workout must not date "last workout" or count as
+      -- training on the coach's Home.
       last_seen AS (
-        SELECT user_id, MAX(COALESCE(completed_at, started_at)) AS last_at
-        FROM workout_log
-        WHERE status = 'COMPLETED'
-          AND user_id IN (SELECT client_id FROM clients)
-        GROUP BY user_id
+        SELECT wl.user_id, MAX(COALESCE(wl.completed_at, wl.started_at)) AS last_at
+        FROM workout_log wl
+        WHERE wl.status = 'COMPLETED'
+          AND wl.user_id IN (SELECT client_id FROM clients)
+          AND ${readableByCoach('wl')}
+        GROUP BY wl.user_id
       ),
       plan_counts AS (
         SELECT client_id, COUNT(*) AS active_plans
@@ -487,6 +579,10 @@ export class ProgressService {
       return (a.adherencePercent ?? 101) - (b.adherencePercent ?? 101);
     });
 
+    const activity = clients.length
+      ? await this._rosterActivity(instructorId, days, today, clientId)
+      : { workouts: 0, previousWorkouts: 0, records: 0 };
+
     return {
       window,
       clients,
@@ -494,8 +590,137 @@ export class ProgressService {
         clients: clients.length,
         needsAttention: clients.filter((c) => c.attention !== null).length,
         adherencePercent: mean,
+        ...activity,
       },
     };
+  }
+
+  /**
+   * How much the coach's clients trained, as the coach may see it: their
+   * finished workouts in the window and the one before (planned or their
+   * own, under `isReadableByCoach`), and the records set in the window.
+   * Days are the server's, like the roster's window.
+   */
+  private async _rosterActivity(
+    instructorId: string,
+    days: number,
+    today: string,
+    clientId?: string,
+  ): Promise<{ workouts: number; previousWorkouts: number; records: number }> {
+    const [row] = await this.sequelize.query<{
+      workouts: string | null;
+      previousWorkouts: string | null;
+      records: string | null;
+    }>(
+      `
+      WITH ${coachClientsCte(!!clientId)},
+      ${CLIENT_RECORDS_CTE},
+      logs AS (
+        SELECT
+          wl.user_id,
+          wl.started_at,
+          wl.completed_at,
+          wl.completed_at::date > (:today::date - :days::int) AS in_window
+        FROM workout_log wl
+        WHERE wl.status = 'COMPLETED'
+          AND wl.completed_at IS NOT NULL
+          AND wl.user_id IN (SELECT client_id FROM clients)
+          AND ${readableByCoach('wl')}
+          AND wl.completed_at::date > (:today::date - (:days::int * 2))
+          AND wl.completed_at::date <= :today::date
+      )
+      SELECT
+        COUNT(*) FILTER (WHERE in_window)     AS "workouts",
+        COUNT(*) FILTER (WHERE NOT in_window) AS "previousWorkouts",
+        COALESCE(SUM(${sessionRecords('logs')}) FILTER (WHERE in_window), 0) AS "records"
+      FROM logs
+      `,
+      {
+        replacements: {
+          instructorId,
+          days,
+          today,
+          ...(clientId ? { clientId } : {}),
+        },
+        type: QueryTypes.SELECT,
+      },
+    );
+
+    return {
+      workouts: Number(row?.workouts ?? 0),
+      previousWorkouts: Number(row?.previousWorkouts ?? 0),
+      records: Number(row?.records ?? 0),
+    };
+  }
+
+  /**
+   * The coach Home's "Hive activity": their clients' latest finished
+   * workouts across everyone, newest first, each with the records it set.
+   * Only ACTIVE relationships and only what the coach may read
+   * (`isReadableByCoach`), so a private workout never appears here even as
+   * a line. Bounded to the last two weeks: older news is the client page's.
+   */
+  async activity(
+    instructorId: string,
+    limit: number,
+  ): Promise<CoachActivityItem[]> {
+    const rows = await this.sequelize.query<{
+      workoutLogId: string;
+      clientId: string;
+      firstName: string | null;
+      lastName: string | null;
+      avatarUrl: string | null;
+      handle: string | null;
+      workoutName: string;
+      completedAt: Date;
+      durationSeconds: number | null;
+      recordCount: string;
+    }>(
+      `
+      WITH ${coachClientsCte(false)},
+      ${CLIENT_RECORDS_CTE}
+      SELECT
+        wl.id               AS "workoutLogId",
+        wl.user_id          AS "clientId",
+        u.first_name        AS "firstName",
+        u.last_name         AS "lastName",
+        u.avatar_url        AS "avatarUrl",
+        u.handle            AS "handle",
+        wl.name             AS "workoutName",
+        wl.completed_at     AS "completedAt",
+        wl.duration_seconds AS "durationSeconds",
+        ${sessionRecords('wl')} AS "recordCount"
+      FROM workout_log wl
+      JOIN "user" u ON u.id = wl.user_id
+      WHERE wl.status = 'COMPLETED'
+        AND wl.completed_at IS NOT NULL
+        AND wl.completed_at >= NOW() - (:activityDays || ' days')::INTERVAL
+        AND wl.user_id IN (SELECT client_id FROM clients)
+        AND u.deleted_at IS NULL
+        AND ${readableByCoach('wl')}
+      ORDER BY wl.completed_at DESC
+      LIMIT :limit
+      `,
+      {
+        replacements: { instructorId, limit, activityDays: ACTIVITY_DAYS },
+        type: QueryTypes.SELECT,
+      },
+    );
+
+    return rows.map((r) => ({
+      workoutLogId: r.workoutLogId,
+      clientId: r.clientId,
+      name:
+        [r.firstName, r.lastName].filter(Boolean).join(' ') ||
+        r.handle ||
+        'Client',
+      avatarUrl: r.avatarUrl,
+      handle: r.handle,
+      workoutName: r.workoutName,
+      completedAt: new Date(r.completedAt).toISOString(),
+      durationSeconds: r.durationSeconds,
+      recordCount: Number(r.recordCount),
+    }));
   }
 
   private _toRosterClient(

@@ -22,6 +22,7 @@ import { PrescribedSet } from './entities/prescribed-set.entity';
 import { ProgramWorkout } from './entities/program-workout.entity';
 import { ProgramAssignment } from './entities/program-assignment.entity';
 import { User } from '../user/entities/user.entity';
+import { InstructorProfile } from '../profile/entities/instructor-profile.entity';
 import { NotificationService } from '../notification/notification.service';
 import { Program } from './entities/program.entity';
 import { WorkoutLog } from './entities/workout-log.entity';
@@ -34,6 +35,7 @@ import {
   fakeTx,
   makeSilentLogger,
 } from '../../../test/helpers/sequelize-mocks';
+import { foldedLike } from '../../../test/helpers/folded-search';
 
 /**
  * Smoke tests for WorkoutLogService — covers the gnarly bits:
@@ -96,6 +98,7 @@ describe('WorkoutLogService (smoke — not exhaustive)', () => {
   const instructorClientModel = { findOne: jest.fn() };
   const assignmentModel = { findByPk: jest.fn(), findAll: jest.fn() };
   const userModel = { findByPk: jest.fn() };
+  const instructorProfileModel = { findOne: jest.fn() };
   const notificationService = { notify: jest.fn().mockResolvedValue({}) };
   const assignments = {
     completeIfFinished: jest.fn().mockResolvedValue(false),
@@ -106,6 +109,8 @@ describe('WorkoutLogService (smoke — not exhaustive)', () => {
     ),
     query: jest.fn(),
     literal: jest.fn((sql: string) => ({ sql })),
+    // History's folded name search quotes its term with it.
+    escape: (value: string) => `'${value.replace(/'/g, "''")}'`,
   };
 
   beforeEach(async () => {
@@ -152,6 +157,10 @@ describe('WorkoutLogService (smoke — not exhaustive)', () => {
           useValue: assignmentModel,
         },
         { provide: getModelToken(User), useValue: userModel },
+        {
+          provide: getModelToken(InstructorProfile),
+          useValue: instructorProfileModel,
+        },
         { provide: NotificationService, useValue: notificationService },
         { provide: ProgramAssignmentService, useValue: assignments },
         { provide: Sequelize, useValue: sequelize },
@@ -1107,16 +1116,27 @@ describe('WorkoutLogService (smoke — not exhaustive)', () => {
   });
 
   describe('history filters', () => {
-    const where = async (has: 'photo' | 'record') => {
+    const where = async (has?: 'photo' | 'record', search?: string) => {
       logModel.findAndCountAll.mockResolvedValueOnce({ rows: [], count: 0 });
-      await service.listForUser('me', { page: 1, limit: 20, has });
+      await service.listForUser('me', { page: 1, limit: 20, has, search });
       return logModel.findAndCountAll.mock.calls.at(-1)?.[0].where;
     };
 
     it('keeps only workouts with a photo', async () => {
-      expect(await where('photo')).toEqual(
-        expect.objectContaining({ photoPublicId: { [Op.ne]: null } }),
-      );
+      const filter = await where('photo');
+      expect(filter[Op.and]).toEqual([{ photoPublicId: { [Op.ne]: null } }]);
+    });
+
+    // "sala" finds "Sală", and a search and a chip narrow together rather
+    // than one overwriting the other.
+    it('searches the name blind to accents, beside a chip', async () => {
+      const filter = await where('photo', 'Sală');
+      expect(filter[Op.and]).toEqual([
+        expect.objectContaining({
+          val: foldedLike('"WorkoutLog"."name"', 'Sala'),
+        }),
+        { photoPublicId: { [Op.ne]: null } },
+      ]);
     });
 
     // The same rule as the record count: a best set inside the workout
@@ -1455,6 +1475,7 @@ describe('WorkoutLogService (smoke — not exhaustive)', () => {
           streakWeeks: 3,
           previousVolumeKg: 5780,
           coachName: null,
+          mentionableCoach: null,
         });
       });
 
@@ -1485,6 +1506,128 @@ describe('WorkoutLogService (smoke — not exhaustive)', () => {
         })) as unknown as { summary?: { coachName: unknown } };
 
         expect(out.summary?.coachName).toBe(expected);
+      });
+
+      describe('the coach a shared card may name', () => {
+        type Summary = { coachName: unknown; mentionableCoach: unknown };
+
+        async function summaryFor(
+          assignment: Record<string, unknown>,
+        ): Promise<Summary | undefined> {
+          logModel.findByPk.mockResolvedValueOnce(
+            finishedLog({ programAssignmentId: 'asg-1' }),
+          );
+          oneRepMaxModel.findAll.mockResolvedValueOnce([]);
+          logModel.count.mockResolvedValueOnce(4);
+          sequelize.query.mockResolvedValueOnce([]);
+          assignmentModel.findByPk.mockResolvedValueOnce({
+            id: 'asg-1',
+            assignmentKind: 'COACH',
+            instructorId: 'coach-1',
+            ...assignment,
+          });
+          const out = (await service.findById('wl-1', 'me', undefined, {
+            summary: true,
+          })) as unknown as { summary?: Summary };
+          return out.summary;
+        }
+
+        const coach = {
+          id: 'coach-1',
+          firstName: 'Bogdan',
+          lastName: 'Daniel',
+          handle: 'bogdan',
+          isActive: true,
+        };
+
+        it('names a coach who lets clients mention them, by their coaching name', async () => {
+          instructorProfileModel.findOne.mockResolvedValueOnce({
+            id: 'ip-1',
+            displayName: 'Coach Bogdan',
+            allowClientMentions: true,
+          });
+
+          const summary = await summaryFor({ instructor: coach });
+
+          expect(summary?.coachName).toBe('Bogdan Daniel');
+          expect(summary?.mentionableCoach).toEqual({ name: 'Coach Bogdan' });
+          expect(instructorProfileModel.findOne).toHaveBeenCalledWith(
+            expect.objectContaining({ where: { userId: 'coach-1' } }),
+          );
+        });
+
+        it('falls back to the full name', async () => {
+          instructorProfileModel.findOne.mockResolvedValueOnce({
+            id: 'ip-1',
+            displayName: '  ',
+            allowClientMentions: true,
+          });
+
+          const summary = await summaryFor({
+            instructor: { ...coach, handle: null },
+          });
+
+          expect(summary?.mentionableCoach).toEqual({ name: 'Bogdan Daniel' });
+        });
+
+        it('keeps the coach line off until the coach allows it', async () => {
+          instructorProfileModel.findOne.mockResolvedValueOnce({
+            id: 'ip-1',
+            displayName: 'Coach Bogdan',
+            allowClientMentions: false,
+          });
+
+          const summary = await summaryFor({ instructor: coach });
+
+          // The in-app name stays; only the outside mention needs consent.
+          expect(summary?.coachName).toBe('Bogdan Daniel');
+          expect(summary?.mentionableCoach).toBeNull();
+        });
+
+        it('names nobody for a coach without a coaching profile', async () => {
+          instructorProfileModel.findOne.mockResolvedValueOnce(null);
+
+          const summary = await summaryFor({ instructor: coach });
+
+          expect(summary?.mentionableCoach).toBeNull();
+        });
+
+        it('never names a closing account', async () => {
+          const summary = await summaryFor({
+            instructor: { ...coach, isActive: false },
+          });
+
+          expect(summary?.coachName).toBe('Bogdan Daniel');
+          expect(summary?.mentionableCoach).toBeNull();
+          expect(instructorProfileModel.findOne).not.toHaveBeenCalled();
+        });
+
+        it('never asks for your own plan', async () => {
+          const summary = await summaryFor({
+            assignmentKind: 'SELF',
+            instructorId: 'me',
+            instructor: { ...coach, id: 'me' },
+          });
+
+          expect(summary?.coachName).toBeNull();
+          expect(summary?.mentionableCoach).toBeNull();
+          expect(instructorProfileModel.findOne).not.toHaveBeenCalled();
+        });
+
+        it('has no coach for freestyle', async () => {
+          logModel.findByPk.mockResolvedValueOnce(finishedLog());
+          oneRepMaxModel.findAll.mockResolvedValueOnce([]);
+          logModel.count.mockResolvedValueOnce(4);
+          sequelize.query.mockResolvedValueOnce([]);
+
+          const out = (await service.findById('wl-1', 'me', undefined, {
+            summary: true,
+          })) as unknown as { summary?: Summary };
+
+          expect(out.summary?.mentionableCoach).toBeNull();
+          expect(assignmentModel.findByPk).not.toHaveBeenCalled();
+          expect(instructorProfileModel.findOne).not.toHaveBeenCalled();
+        });
       });
 
       it('compares no volume for a plan workout or freestyle', async () => {
@@ -2410,6 +2553,9 @@ describe('WorkoutLogService (smoke — not exhaustive)', () => {
       // The apps learn whether there is a photo, never where it is stored.
       expect(out).toEqual({ ...plainProjection, hasPhoto: false });
       expect(out).not.toHaveProperty('photoPublicId');
+      // The owner's summary, coach line included, is never the coach's.
+      expect(out).not.toHaveProperty('summary');
+      expect(instructorProfileModel.findOne).not.toHaveBeenCalled();
     });
   });
 

@@ -43,6 +43,7 @@ import { InstructorClientStatus } from './entities/instructor-client.entity';
  * - GET    /clients                                  → List my clients (INSTRUCTOR)
  * - GET    /clients/my-instructors                   → List instructors I'm a client of
  * - GET    /clients/requests/pending                 → List my pending incoming requests
+ * - GET    /clients/requests/pending/count           → Count my pending requests, by who acts
  * - GET    /clients/invites                          → List pending email-only invitations (INSTRUCTOR)
  * - GET    /clients/invite/:token                    → Get invite details by token (PUBLIC)
  * - POST   /clients/invite                           → Send client invitation (INSTRUCTOR)
@@ -173,18 +174,22 @@ export class ClientController {
 
   /**
    * GET /clients/requests/pending/count
-   * Counts pending client_request rows in BOTH directions — invitations the
-   * instructor sent and requests addressed to them — and reports each
-   * separately alongside the total.
+   * Counts the caller's pending client_request rows by who has to act:
+   * `incoming` (trainees asking this coach), `outgoing` (invitations this
+   * coach sent), `invitations` (coaches inviting the caller), plus `count`
+   * (incoming + outgoing, the old total).
    *
    * The total alone read as a contradiction next to
    * `GET /clients/requests/pending`, which lists incoming rows only: one
    * outgoing invitation made the badge say "1 pending" over an empty list.
    * Same numbers, but now the shape says which is which.
+   *
+   * Open to any signed-in account, like `requests/pending`: every count is
+   * scoped to the caller, and a trainee needs `invitations` for the dot that
+   * says a coach invited them. Coach-only, it answered every trainee 403.
    */
   @Get('requests/pending/count')
-  @UseGuards(AuthGuard('jwt'), RolesGuard)
-  @Roles('INSTRUCTOR', 'ADMIN', 'SUPER_ADMIN')
+  @UseGuards(AuthGuard('jwt'))
   @ApiEndpoint(ClientDocs.getPendingRequestsCount)
   getPendingRequestsCount(@Request() req: AuthenticatedRequest) {
     return this.clientService.getPendingRequestsCount(req.user.id);

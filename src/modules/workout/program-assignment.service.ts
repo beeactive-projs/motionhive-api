@@ -17,7 +17,7 @@ import {
   translatedText,
   type Locale,
 } from '../../common/i18n';
-import { escapeLikeWildcards } from '../../common/utils/search.utils';
+import { foldedContains } from '../../common/utils/search.utils';
 
 import {
   InstructorClient,
@@ -303,34 +303,46 @@ export class ProgramAssignmentService {
   }
 
   /**
-   * `iLike` on the denormalised name, so search needs no join. Escapes
-   * the LIKE wildcards — otherwise a stray `%` matches everything and a
-   * `_` silently matches any character.
+   * On the denormalised name, so search needs no join. Blind to accents
+   * and case on both sides, LIKE wildcards escaped (`foldedContains`):
+   * "forta" finds "Forță", and a stray `%` is only a `%`.
    */
   private _searchWhere(search?: string) {
     const term = search?.trim();
     if (!term) return {};
-    const escaped = escapeLikeWildcards(term);
-    return { programNameSnapshot: { [Op.iLike]: `%${escaped}%` } };
+    const esc = (value: string) => this.sequelize.escape(value);
+    return {
+      [Op.and]: [
+        foldedContains(
+          '"ProgramAssignment"."program_name_snapshot"',
+          term,
+          esc,
+        ),
+      ],
+    };
   }
 
   /**
-   * Same escaping as `_searchWhere`, widened to the eager-loaded coach.
-   *
-   * The `$instructor.x$` form is resolved as raw SQL against the joined
-   * table, so it needs the *column* name, not the model attribute —
-   * `underscored: true` means `firstName` is `first_name` on disk and
-   * the camelCase form errors with "column does not exist".
+   * Same as `_searchWhere`, widened to the eager-loaded coach's full name,
+   * so "ana pop" finds Ana Pop. The joined table is the include's alias,
+   * `instructor`, with its on-disk column names.
    */
   private _clientSearchWhere(search?: string) {
     const term = search?.trim();
     if (!term) return {};
-    const like = `%${escapeLikeWildcards(term)}%`;
+    const esc = (value: string) => this.sequelize.escape(value);
     return {
       [Op.or]: [
-        { programNameSnapshot: { [Op.iLike]: like } },
-        { '$instructor.first_name$': { [Op.iLike]: like } },
-        { '$instructor.last_name$': { [Op.iLike]: like } },
+        foldedContains(
+          '"ProgramAssignment"."program_name_snapshot"',
+          term,
+          esc,
+        ),
+        foldedContains(
+          `concat_ws(' ', "instructor"."first_name", "instructor"."last_name")`,
+          term,
+          esc,
+        ),
       ],
     };
   }

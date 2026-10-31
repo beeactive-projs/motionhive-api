@@ -5,6 +5,7 @@ import {
 } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { getModelToken } from '@nestjs/sequelize';
+import { Op } from 'sequelize';
 import { Sequelize } from 'sequelize-typescript';
 import { WINSTON_MODULE_NEST_PROVIDER } from 'nest-winston';
 
@@ -27,6 +28,7 @@ import {
   fakeTx,
   makeSilentLogger,
 } from '../../../test/helpers/sequelize-mocks';
+import { foldedLike } from '../../../test/helpers/folded-search';
 
 /**
  * Smoke tests for ProgramAssignmentService — the headliner. Covers:
@@ -60,6 +62,7 @@ describe('ProgramAssignmentService (smoke — not exhaustive)', () => {
     transaction: jest.fn((cb: (tx: unknown) => unknown) =>
       Promise.resolve(cb(fakeTx)),
     ),
+    escape: jest.fn((value: string) => `'${value.replace(/'/g, "''")}'`),
   };
   const notificationService = {
     notify: jest.fn().mockResolvedValue(undefined),
@@ -263,23 +266,30 @@ describe('ProgramAssignmentService (smoke — not exhaustive)', () => {
       assignmentModel.findAndCountAll.mockResolvedValue({ rows: [], count: 0 });
     });
 
+    const searchOf = () =>
+      (whereOf() as Record<symbol, Array<{ val: string }> | undefined>)[
+        Op.and
+      ]?.map((clause) => clause.val);
+
     it('omits the name clause entirely when no term is given', async () => {
       await service.listForInstructor(me, { clientId: 'c-1' });
-      expect(whereOf()).not.toHaveProperty('programNameSnapshot');
+      expect(searchOf()).toBeUndefined();
     });
 
     it('treats whitespace as no search', async () => {
       await service.listForInstructor(me, { clientId: 'c-1', search: '   ' });
-      expect(whereOf()).not.toHaveProperty('programNameSnapshot');
+      expect(searchOf()).toBeUndefined();
     });
 
-    it('escapes LIKE wildcards so % cannot match everything', async () => {
-      await service.listForInstructor(me, { clientId: 'c-1', search: '100%' });
-      const clause = whereOf()['programNameSnapshot'] as Record<symbol, string>;
-      const value = Object.getOwnPropertySymbols(clause)
-        .map((sym) => clause[sym])
-        .find((v) => typeof v === 'string');
-      expect(value).toBe('%100\\%%');
+    // "forta" finds "Forță", and a % is a %: escaped after the fold.
+    it('searches the plan name blind to accents, wildcards literal', async () => {
+      await service.listForInstructor(me, {
+        clientId: 'c-1',
+        search: 'Forță 100%',
+      });
+      expect(searchOf()).toEqual([
+        foldedLike('"ProgramAssignment"."program_name_snapshot"', 'Forta 100%'),
+      ]);
     });
   });
 

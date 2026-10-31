@@ -40,7 +40,7 @@ import {
   InstructorClient,
   InstructorClientStatus,
 } from '../client/entities/instructor-client.entity';
-import { buildSearchTerm } from '../../common/utils/search.utils';
+import { foldedContains } from '../../common/utils/search.utils';
 import { apiError } from '../../common/i18n';
 import { SearchIndexService } from '../search/search-index.service';
 import { ReviewService } from '../review/review.service';
@@ -321,8 +321,13 @@ export class ProfileService {
     // A coach whose account is closing (or switched off) is not listed.
     const userWhere: Record<string | symbol, unknown> = { isActive: true };
 
+    // Folded on both sides (`foldedContains`): "brasov" finds "Brașov" and
+    // "stefan" finds "Ștefan". Folding only the typed term made accented
+    // input miss accented names.
+    const esc = (value: string) => this.sequelize.escape(value);
+
     if (dto.city) {
-      userWhere.city = { [Op.iLike]: buildSearchTerm(dto.city) };
+      userWhere[Op.and] = [foldedContains('"user"."city"', dto.city, esc)];
     }
 
     if (dto.country) {
@@ -330,15 +335,20 @@ export class ProfileService {
     }
 
     if (dto.search) {
-      const term = buildSearchTerm(dto.search);
+      const term = dto.search;
       where[Op.or] = [
-        { displayName: { [Op.iLike]: term } },
-        { bio: { [Op.iLike]: term } },
-        { '$user.first_name$': { [Op.iLike]: term } },
-        { '$user.last_name$': { [Op.iLike]: term } },
-        { '$user.city$': { [Op.iLike]: term } },
-        literal(
-          `CAST("InstructorProfile"."specializations" AS TEXT) ILIKE ${this.sequelize.escape(term)}`,
+        foldedContains('"InstructorProfile"."display_name"', term, esc),
+        foldedContains('"InstructorProfile"."bio"', term, esc),
+        foldedContains(
+          `concat_ws(' ', "user"."first_name", "user"."last_name")`,
+          term,
+          esc,
+        ),
+        foldedContains('"user"."city"', term, esc),
+        foldedContains(
+          'CAST("InstructorProfile"."specializations" AS TEXT)',
+          term,
+          esc,
         ),
       ];
     }
@@ -673,6 +683,7 @@ export class ProfileService {
             isAcceptingClients: instructorProfile.isAcceptingClients,
             socialLinks: instructorProfile.socialLinks,
             showSocialLinks: instructorProfile.showSocialLinks,
+            allowClientMentions: instructorProfile.allowClientMentions,
           }
         : null,
     };

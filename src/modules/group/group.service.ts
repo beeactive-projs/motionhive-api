@@ -12,7 +12,7 @@ import { Op, Transaction, WhereOptions, literal } from 'sequelize';
 import { buildPaginatedResponse } from '../../common/dto/pagination.dto';
 import { CryptoService } from '../../common/services/crypto.service';
 import { EmailService } from '../../common/services/email.service';
-import { buildSearchTerm } from '../../common/utils/search.utils';
+import { foldedContains } from '../../common/utils/search.utils';
 import { InstructorClient } from '../client/entities/instructor-client.entity';
 import { NotificationService } from '../notification/notification.service';
 import {
@@ -753,7 +753,7 @@ export class GroupService {
             ),
           )
         : null;
-    const term = dto.search ? buildSearchTerm(dto.search) : null;
+    const esc = (value: string) => sequelize.escape(value);
 
     // When the caller is signed in, exclude any group where they're an
     // active member. Member groups belong in "Your groups", not Discover.
@@ -765,25 +765,29 @@ export class GroupService {
         ]
       : [];
 
-    const andClauses = [...(tagConditions ?? []), ...excludeMemberClause];
+    const andClauses = [
+      ...(tagConditions ?? []),
+      ...excludeMemberClause,
+      // Folded and escaped like the search below: "brasov" finds "Brașov".
+      ...(dto.city ? [foldedContains('"Group"."city"', dto.city, esc)] : []),
+    ];
 
     const where: WhereOptions<Group> = {
       isPublic: true,
       isActive: true,
       joinPolicy: { [Op.ne]: JoinPolicy.INVITE_ONLY },
-      ...(dto.city && { city: { [Op.iLike]: `%${dto.city}%` } }),
       ...(dto.country && { country: dto.country }),
       ...(andClauses.length > 0 && { [Op.and]: andClauses }),
       // Accent- and case-blind, as exercise and program search are: someone
       // typing "forta" is looking for "Forță", and most phones type without
       // diacritics. `fold_for_search` is the shared unaccent + lower (063).
-      ...(term && {
+      ...(dto.search && {
         [Op.or]: [
-          literal(
-            `fold_for_search("Group"."name") LIKE fold_for_search(${sequelize.escape(term)})`,
-          ),
-          literal(
-            `fold_for_search(COALESCE("Group"."description", '')) LIKE fold_for_search(${sequelize.escape(term)})`,
+          foldedContains('"Group"."name"', dto.search, esc),
+          foldedContains(
+            `COALESCE("Group"."description", '')`,
+            dto.search,
+            esc,
           ),
         ],
       }),

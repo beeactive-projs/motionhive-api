@@ -14,6 +14,7 @@ import {
   PaginatedResponse,
 } from '../../../common/dto/pagination.dto';
 import { apiError } from '../../../common/i18n';
+import { foldedContains } from '../../../common/utils/search.utils';
 import { User } from '../../user/entities/user.entity';
 import { Venue } from '../../venue/entities/venue.entity';
 import {
@@ -200,11 +201,14 @@ export class SessionDiscoverService {
       { [Op.or]: accessClauses },
     ];
     if (query.q) {
-      const term = `%${query.q.trim()}%`;
+      // Blind to accents and case on both sides, wildcards escaped
+      // (`foldedContains`): "forta" finds "Forță", a typed `%` is a `%`.
+      const esc = (value: string) =>
+        this.instanceModel.sequelize!.escape(value);
       andClauses.push({
         [Op.or]: [
-          { title: { [Op.iLike]: term } },
-          { description: { [Op.iLike]: term } },
+          foldedContains('"template"."title"', query.q, esc),
+          foldedContains('"template"."description"', query.q, esc),
         ],
       });
     }

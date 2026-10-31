@@ -3,6 +3,7 @@ import { Op } from 'sequelize';
 import { UserController } from './user.controller';
 import { UserService } from './user.service';
 import type { AuthenticatedRequest } from '../../common/types/authenticated-request';
+import { foldedLike } from '../../../test/helpers/folded-search';
 
 // Smoke test for the /users/me response shape.
 //
@@ -75,10 +76,14 @@ describe('UserService.searchUsers', () => {
         handle: 'elena',
       },
     ]);
+    // Only `escape` is read: the folded search quotes its term with it.
+    const sequelize = {
+      escape: (value: string) => `'${value.replace(/'/g, "''")}'`,
+    };
     const service = new UserService(
       { findAll } as never,
       undefined as never,
-      undefined as never,
+      sequelize as never,
       undefined as never,
       undefined as never,
       undefined as never,
@@ -93,8 +98,9 @@ describe('UserService.searchUsers', () => {
     return { service, findAll, match };
   }
 
-  function columnsOf(tokenClause: Clause): string[] {
-    return (tokenClause[Op.or] as Clause[]).flatMap((c) => Object.keys(c));
+  /** The SQL of each column a token is matched against (folded literals). */
+  function sqlOf(tokenClause: Clause): string[] {
+    return (tokenClause[Op.or] as Array<{ val: string }>).map((c) => c.val);
   }
 
   it('never returns an email, nor asks the database for one', async () => {
@@ -114,7 +120,22 @@ describe('UserService.searchUsers', () => {
     await service.searchUsers({ q: 'elena.d' });
 
     const tokens = match()[Op.and] as Clause[];
-    expect(columnsOf(tokens[0])).not.toContain('email');
+    expect(sqlOf(tokens[0]).join(' ')).not.toContain('email');
+  });
+
+  it('matches the full name and the handle blind to accents', async () => {
+    const { service, match } = setup();
+
+    await service.searchUsers({ q: 'Ștefan' });
+
+    const tokens = match()[Op.and] as Clause[];
+    expect(sqlOf(tokens[0])).toEqual([
+      foldedLike(
+        `concat_ws(' ', "User"."first_name", "User"."last_name")`,
+        'Stefan',
+      ),
+      foldedLike('"User"."handle"', 'Stefan'),
+    ]);
   });
 
   it('finds the owner of a whole email address', async () => {
@@ -132,7 +153,6 @@ describe('UserService.searchUsers', () => {
     await service.searchUsers({ q: '@el_na' });
 
     const tokens = match()[Op.and] as Clause[];
-    const firstName = (tokens[0][Op.or] as Clause[])[0];
-    expect(firstName).toEqual({ firstName: { [Op.iLike]: '%el\\_na%' } });
+    expect(sqlOf(tokens[0])[1]).toBe(foldedLike('"User"."handle"', 'el_na'));
   });
 });

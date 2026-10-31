@@ -424,14 +424,18 @@ export function baseLayout(
       .mh-text-heading{color:#ffffff!important;}
       .mh-text-muted{color:#94a3b8!important;}
       .mh-line{border-color:#334155!important;}
-      .mh-callout-info{background-color:#1e293b!important;}
+      /* Boxes inside the card: their colour is inline on the cell, so the
+         class sits on that cell too, or the override never shows. */
+      .mh-callout{background-color:${COLORS.navy900}!important;}
+      .mh-callout-text{color:#e2e8f0!important;}
+      .mh-panel{background-color:${COLORS.navy900}!important;}
     }
   </style>
 </head>
 <body style="margin:0;padding:0;background-color:${COLORS.surface50};font-family:${FONT_BODY};" class="mh-shell">
   ${preheader ? `<div style="display:none;max-height:0px;overflow:hidden;mso-hide:all;">${preheader}&nbsp;&zwnj;&nbsp;&zwnj;&nbsp;&zwnj;&nbsp;&zwnj;&nbsp;&zwnj;&nbsp;&zwnj;&nbsp;&zwnj;&nbsp;&zwnj;</div>` : ''}
 
-  <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="background-color:${COLORS.surface50};">
+  <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" class="mh-shell" style="background-color:${COLORS.surface50};">
     <tr>
       <td align="center" style="padding:40px 16px;">
 
@@ -678,10 +682,10 @@ export function calloutBox(kind: CalloutKind, text: string): string {
   };
   const s = map[kind];
   return `
-    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:0 0 20px;" class="mh-callout-info">
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:0 0 20px;">
       <tr>
-        <td style="background-color:${s.bg};border-radius:12px;padding:14px 18px;border-left:3px solid ${s.rule};">
-          <p style="margin:0;font-family:${FONT_BODY};font-size:14px;color:${s.fg};line-height:1.55;">${text}</p>
+        <td class="mh-callout" style="background-color:${s.bg};border-radius:12px;padding:14px 18px;border-left:3px solid ${s.rule};">
+          <p class="mh-callout-text" style="margin:0;font-family:${FONT_BODY};font-size:14px;color:${s.fg};line-height:1.55;">${text}</p>
         </td>
       </tr>
     </table>`;
@@ -768,20 +772,22 @@ export function personCard(params: {
 }): string {
   const { name, role, avatarUrl, meta } = params;
   const initial = (name || '?').trim().charAt(0).toUpperCase() || '?';
+  // A blocked image (spam folders, "load images" off) shows its alt text
+  // in the box, so the alt is the initial, styled like the initial tile.
   const avatar = avatarUrl
-    ? `<img src="${avatarUrl}" width="56" height="56" alt="" style="display:block;width:56px;height:56px;border-radius:16px;background-color:${COLORS.honey100};" />`
+    ? `<img src="${avatarUrl}" width="56" height="56" alt="${initial}" style="display:block;width:56px;height:56px;border-radius:16px;background-color:${COLORS.honey};font-family:${FONT_DISPLAY};font-size:22px;font-weight:600;color:${COLORS.navy900};line-height:56px;text-align:center;" />`
     : `<table role="presentation" cellpadding="0" cellspacing="0"><tr><td width="56" height="56" align="center" style="width:56px;height:56px;background-color:${COLORS.honey};border-radius:16px;font-family:${FONT_DISPLAY};font-size:22px;font-weight:600;color:${COLORS.navy900};line-height:56px;text-align:center;letter-spacing:-0.02em;">${initial}</td></tr></table>`;
 
   return `
-    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:0 0 22px;background-color:${COLORS.surface50};border-radius:16px;">
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:0 0 22px;">
       <tr>
-        <td style="padding:18px 20px;">
+        <td class="mh-panel" style="padding:18px 20px;background-color:${COLORS.surface50};border-radius:16px;">
           <table role="presentation" cellpadding="0" cellspacing="0">
             <tr>
               <td style="width:56px;vertical-align:middle;">${avatar}</td>
               <td style="padding-left:14px;vertical-align:middle;font-family:${FONT_BODY};">
-                <div style="font-family:${FONT_DISPLAY};font-size:17px;font-weight:600;color:${COLORS.navy900};letter-spacing:-0.01em;line-height:1.3;">${name}</div>
-                <div style="margin-top:3px;font-size:13px;color:${COLORS.ink2};line-height:1.4;">${role}${meta ? ` &middot; ${meta}` : ''}</div>
+                <div class="mh-text-heading" style="font-family:${FONT_DISPLAY};font-size:17px;font-weight:600;color:${COLORS.navy900};letter-spacing:-0.01em;line-height:1.3;">${name}</div>
+                <div class="mh-text-muted" style="margin-top:3px;font-size:13px;color:${COLORS.ink2};line-height:1.4;">${role}${meta ? ` &middot; ${meta}` : ''}</div>
               </td>
             </tr>
           </table>

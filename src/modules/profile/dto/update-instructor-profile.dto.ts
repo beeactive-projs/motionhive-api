@@ -99,4 +99,13 @@ export class UpdateInstructorProfileDto {
   @IsBoolean()
   @IsOptional()
   showPhone?: boolean;
+
+  @ApiPropertyOptional({
+    example: false,
+    description:
+      'Whether clients may name this coach on a workout they share outside the app (the share card coach line). Off by default.',
+  })
+  @IsBoolean()
+  @IsOptional()
+  allowClientMentions?: boolean;
 }

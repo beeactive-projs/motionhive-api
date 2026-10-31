@@ -7,13 +7,15 @@ import { ProgressDocs } from '../../common/docs/progress.docs';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { RolesGuard } from '../../common/guards/roles.guard';
 import type { AuthenticatedRequest } from '../../common/types/authenticated-request';
+import { CoachActivityQueryDto } from './dto/coach-activity.query.dto';
 import { RosterQueryDto, RosterWindow } from './dto/roster.query.dto';
 import { ProgressService } from './progress.service';
 
 /**
- * The coach's roster. Separate from ProgressController on purpose: that
- * one is strictly "my own training" and open to both roles, whereas this
- * is other people's data and INSTRUCTOR-only.
+ * The coach's roster, and the activity feed beside it on Home. Separate
+ * from ProgressController on purpose: that one is strictly "my own
+ * training" and open to both roles, whereas this is other people's data
+ * and INSTRUCTOR-only.
  *
  * Pathed under `coach/` to sit with the other coach reads
  * (`coach/clients/:id/workout-logs`) rather than under `progress/`.
@@ -38,5 +40,14 @@ export class CoachRosterController {
       today,
       query.clientId,
     );
+  }
+
+  @Get('coach/activity')
+  @ApiEndpoint(ProgressDocs.activity)
+  async activity(
+    @Request() req: AuthenticatedRequest,
+    @Query() query: CoachActivityQueryDto,
+  ) {
+    return this.progressService.activity(req.user.id, query.limit ?? 5);
   }
 }

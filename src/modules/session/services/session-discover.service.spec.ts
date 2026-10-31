@@ -14,6 +14,7 @@ import {
   SessionInstanceStatus,
   SessionTemplateStatus,
 } from '../entities/session.enums';
+import { foldedLike } from '../../../../test/helpers/folded-search';
 import { makeSilentLogger } from '../../../../test/helpers/sequelize-mocks';
 
 describe('SessionDiscoverService', () => {
@@ -22,6 +23,7 @@ describe('SessionDiscoverService', () => {
     findOne: jest.Mock;
     findAndCountAll: jest.Mock;
     build: jest.Mock;
+    sequelize: { escape: jest.Mock };
   };
   let templateModel: { findOne: jest.Mock; build: jest.Mock };
   let clientModel: { findAll: jest.Mock };
@@ -36,6 +38,9 @@ describe('SessionDiscoverService', () => {
         ...data,
         setDataValue: jest.fn(),
       })),
+      sequelize: {
+        escape: jest.fn((value: string) => `'${value.replace(/'/g, "''")}'`),
+      },
     };
     templateModel = {
       findOne: jest.fn(),
@@ -173,9 +178,14 @@ describe('SessionDiscoverService', () => {
       // Access OR still has only OPEN/FREE for anon
       const accessOr = tplWhere[Op.and][0][Op.or];
       expect(accessOr).toHaveLength(1);
-      // Search OR has title + description
-      const searchOr = tplWhere[Op.and][1][Op.or];
-      expect(searchOr).toHaveLength(2);
+      // Search OR has title + description, blind to accents, a % literal
+      const searchOr = tplWhere[Op.and][1][Op.or] as unknown as Array<{
+        val: string;
+      }>;
+      expect(searchOr.map((clause) => clause.val)).toEqual([
+        foldedLike('"template"."title"', 'yoga'),
+        foldedLike('"template"."description"', 'yoga'),
+      ]);
     });
 
     it('E7: rejects date range > 90 days', async () => {

@@ -6,6 +6,7 @@ import { ExerciseModule } from '../exercise/exercise.module';
 import { RoleModule } from '../role/role.module';
 import { SearchModule } from '../search/search.module';
 import { User } from '../user/entities/user.entity';
+import { InstructorProfile } from '../profile/entities/instructor-profile.entity';
 import { AssignedExercise } from './entities/assigned-exercise.entity';
 import { AssignedSet } from './entities/assigned-set.entity';
 import { AssignedWorkout } from './entities/assigned-workout.entity';
@@ -64,6 +65,8 @@ import { WorkoutReportService } from './workout-report.service';
       PostReaction,
       InstructorClient,
       User,
+      // Whether a plan's coach lets a client name them on a shared card.
+      InstructorProfile,
     ]),
     ExerciseModule,
     RoleModule,

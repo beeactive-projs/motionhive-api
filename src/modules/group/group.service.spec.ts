@@ -629,8 +629,12 @@ describe('GroupService', () => {
       expect(clauses).toContain(
         'fold_for_search(COALESCE(\\"Group\\".\\"description\\"',
       );
-      // The term goes through escape, never straight into the SQL.
-      expect(escape).toHaveBeenCalledWith('%forta%');
+      // The term goes through escape, never straight into the SQL, and is
+      // escaped for LIKE only after the fold.
+      expect(escape).toHaveBeenCalledWith('forta');
+      expect(clauses).toContain(
+        "replace(replace(replace(fold_for_search('forta')",
+      );
     });
   });
 

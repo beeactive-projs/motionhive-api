@@ -53,14 +53,17 @@ export const ClientDocs = {
   getPendingRequestsCount: {
     summary: 'Count pending client requests',
     description:
-      'Returns the total number of pending client_request rows where the authenticated instructor is either ' +
-      'sender (INSTRUCTOR_TO_CLIENT) or recipient (CLIENT_TO_INSTRUCTOR). Only PENDING and not-expired rows ' +
-      'are counted. Used to render the badge on the Pending-requests button.',
+      "Counts the caller's PENDING, not-expired client_request rows by who has to act: `incoming` " +
+      '(CLIENT_TO_INSTRUCTOR to the caller), `outgoing` (INSTRUCTOR_TO_CLIENT from the caller), `invitations` ' +
+      '(INSTRUCTOR_TO_CLIENT to the caller) and `count` (incoming + outgoing). Open to every signed-in account.',
     auth: true,
     responses: [
-      { status: 200, description: 'Pending count', example: { count: 3 } },
+      {
+        status: 200,
+        description: 'Pending counts',
+        example: { count: 3, incoming: 1, outgoing: 2, invitations: 0 },
+      },
       ApiStandardResponses.Unauthorized,
-      ApiStandardResponses.Forbidden,
     ],
   } as ApiEndpointOptions,
 

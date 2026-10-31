@@ -23,6 +23,7 @@ import {
   fakeTx,
   makeSilentLogger,
 } from '../../../test/helpers/sequelize-mocks';
+import { foldedLike } from '../../../test/helpers/folded-search';
 
 /**
  * Smoke tests for ProfileService — covers the surface the FE relies on:
@@ -192,6 +193,61 @@ describe('ProfileService (smoke — not exhaustive)', () => {
         undefined,
       );
       expect(out.id).toBe('ip-1');
+    });
+  });
+
+  // ───── Clients may mention me (allowClientMentions) ──────────────
+
+  describe('allowClientMentions', () => {
+    it('saves the switch through PATCH /profile/me, in the same transaction', async () => {
+      const update = jest.fn().mockResolvedValue(undefined);
+      instructorProfileModel.findOne
+        // The section's own lookup, then updateInstructorProfile's.
+        .mockResolvedValueOnce({ id: 'ip-1', userId: me, update })
+        .mockResolvedValueOnce({ id: 'ip-1', userId: me, update });
+
+      await service.updateFullProfile(me, {
+        instructor: { allowClientMentions: true },
+      });
+
+      expect(update).toHaveBeenCalledWith(
+        { allowClientMentions: true },
+        { transaction: fakeTx },
+      );
+      expect(userService.updateUser).not.toHaveBeenCalled();
+    });
+
+    it('is part of GET /profile/me', async () => {
+      instructorProfileModel.findOne.mockResolvedValueOnce({
+        displayName: 'Coach Alex',
+        bio: null,
+        specializations: [],
+        certifications: [],
+        yearsOfExperience: 4,
+        isAcceptingClients: true,
+        socialLinks: {},
+        showSocialLinks: true,
+        allowClientMentions: true,
+      });
+      roleService.getUserRoles.mockResolvedValueOnce([
+        { name: 'USER' },
+        { name: 'INSTRUCTOR' },
+      ]);
+      jest.spyOn(User, 'findByPk').mockResolvedValueOnce({
+        handle: 'alex',
+        privacySettings: {},
+      } as unknown as User);
+
+      const out = await service.getProfileOverview({
+        id: me,
+        email: 'alex@example.com',
+        firstName: 'Alex',
+        lastName: 'Pop',
+      } as unknown as User);
+
+      expect(out.instructorProfile).toEqual(
+        expect.objectContaining({ allowClientMentions: true }),
+      );
     });
   });
 
@@ -432,6 +488,30 @@ describe('ProfileService (smoke — not exhaustive)', () => {
 
       const out = await service.discoverInstructors({});
       expect(out[0].socialLinks).toBeNull();
+    });
+
+    // "brasov" finds "Brașov" and "stefan" finds "Ștefan": both sides fold.
+    it('searches and filters by city blind to accents', async () => {
+      instructorProfileModel.findAll.mockResolvedValueOnce([]);
+
+      await service.discoverInstructors({ search: 'Ștefan', city: 'Brașov' });
+
+      const call = instructorProfileModel.findAll.mock.calls.at(-1)?.[0] as {
+        where: Record<symbol, Array<{ val: string }>>;
+        include: Array<{ where: Record<symbol, Array<{ val: string }>> }>;
+      };
+      expect(call.include[0].where[Op.and].map((c) => c.val)).toEqual([
+        foldedLike('"user"."city"', 'Brasov'),
+      ]);
+      expect(call.where[Op.or].map((c) => c.val)).toEqual(
+        expect.arrayContaining([
+          foldedLike('"InstructorProfile"."display_name"', 'Stefan'),
+          foldedLike(
+            `concat_ws(' ', "user"."first_name", "user"."last_name")`,
+            'Stefan',
+          ),
+        ]),
+      );
     });
   });
 

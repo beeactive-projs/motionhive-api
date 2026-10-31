@@ -159,6 +159,151 @@ describe('ProgressService — streaks', () => {
       );
       expect(lastSeen).toContain('user_id IN (SELECT client_id FROM clients)');
     });
+
+    // A private workout said "trained 2 days ago" on the coach's Home
+    // while the log itself stayed closed to them.
+    it('dates last seen only from workouts the coach may read', async () => {
+      const { sql } = await run();
+      const lastSeen = sql.slice(
+        sql.indexOf('last_seen AS'),
+        sql.indexOf('plan_counts AS'),
+      );
+      expect(lastSeen).toContain("wl.visibility IN ('COACHES_ONLY', 'PUBLIC')");
+      expect(lastSeen).toContain('pa.instructor_id = :instructorId');
+      expect(lastSeen).toContain('pa.deleted_at IS NULL');
+      expect(lastSeen).not.toContain('ONLY_ME');
+    });
+
+    it('asks for no activity totals when there is nobody to count', async () => {
+      await run();
+      expect(query).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  // ─── roster: how much the clients trained ────────────────────────
+
+  describe('roster — activity totals', () => {
+    const clientRow = {
+      clientId: 'client-1',
+      firstName: 'Anna',
+      lastName: 'Popescu',
+      avatarUrl: null,
+      handle: null,
+      due: '3',
+      completed: '2',
+      skipped: '0',
+      prevDue: '3',
+      prevCompleted: '2',
+      lastWorkoutAt: new Date('2026-10-28T16:20:00Z'),
+      activePlans: '1',
+    };
+
+    it('adds workouts, the window before and records to the totals', async () => {
+      query
+        .mockResolvedValueOnce([clientRow])
+        .mockResolvedValueOnce([
+          { workouts: '5', previousWorkouts: '3', records: '2' },
+        ]);
+      const roster = await service.roster(
+        'coach-1',
+        RosterWindow.OneWeek,
+        '2026-10-31',
+      );
+      expect(roster.totals).toMatchObject({
+        clients: 1,
+        workouts: 5,
+        previousWorkouts: 3,
+        records: 2,
+      });
+    });
+
+    it('counts only what the coach may read, in both windows', async () => {
+      query
+        .mockResolvedValueOnce([clientRow])
+        .mockResolvedValueOnce([
+          { workouts: '0', previousWorkouts: '0', records: '0' },
+        ]);
+      await service.roster(
+        'coach-1',
+        RosterWindow.OneWeek,
+        '2026-10-31',
+        'client-1',
+      );
+      const [sql, options] = query.mock.calls[1] as [
+        string,
+        { replacements: Record<string, unknown> },
+      ];
+      expect(sql).toContain("wl.visibility IN ('COACHES_ONLY', 'PUBLIC')");
+      expect(sql).toContain('pa.instructor_id = :instructorId');
+      expect(sql).toContain('AND ic.client_id = :clientId');
+      expect(sql).toContain("x.source = 'ESTIMATED_EPLEY'");
+      expect(sql).toContain('x.recorded_at > x.first_at');
+      expect(options.replacements).toMatchObject({
+        days: 7,
+        today: '2026-10-31',
+        clientId: 'client-1',
+      });
+    });
+  });
+
+  // ─── the coach's activity feed ───────────────────────────────────
+
+  describe('activity', () => {
+    it("reads only active clients' workouts the coach may read, newest first", async () => {
+      query.mockResolvedValue([]);
+      await service.activity('coach-1', 5);
+      const [sql, options] = query.mock.calls[0] as [
+        string,
+        { replacements: Record<string, unknown> },
+      ];
+      expect(sql).toContain("ic.status = 'ACTIVE'");
+      expect(sql).toContain("wl.visibility IN ('COACHES_ONLY', 'PUBLIC')");
+      expect(sql).toContain('pa.deleted_at IS NULL');
+      expect(sql).toContain('ORDER BY wl.completed_at DESC');
+      expect(sql).toContain('LIMIT :limit');
+      expect(options.replacements).toMatchObject({
+        instructorId: 'coach-1',
+        limit: 5,
+      });
+    });
+
+    it('counts a first time on an exercise as no record', async () => {
+      query.mockResolvedValue([]);
+      await service.activity('coach-1', 5);
+      const [sql] = query.mock.calls[0] as [string];
+      expect(sql).toContain('PARTITION BY orm.user_id, orm.exercise_id');
+      expect(sql).toContain('x.recorded_at > x.first_at');
+      expect(sql).toContain('BETWEEN wl.started_at AND wl.completed_at');
+    });
+
+    it('names the client and turns the counts into numbers', async () => {
+      query.mockResolvedValue([
+        {
+          workoutLogId: 'log-1',
+          clientId: 'client-1',
+          firstName: 'Anna',
+          lastName: 'Popescu',
+          avatarUrl: null,
+          handle: 'anna',
+          workoutName: 'Upper A',
+          completedAt: new Date('2026-10-28T16:20:00Z'),
+          durationSeconds: 3120,
+          recordCount: '2',
+        },
+      ]);
+      const [item] = await service.activity('coach-1', 5);
+      expect(item).toEqual({
+        workoutLogId: 'log-1',
+        clientId: 'client-1',
+        name: 'Anna Popescu',
+        avatarUrl: null,
+        handle: 'anna',
+        workoutName: 'Upper A',
+        completedAt: '2026-10-28T16:20:00.000Z',
+        durationSeconds: 3120,
+        recordCount: 2,
+      });
+    });
   });
 
   it('reports nothing for someone who has never trained', () => {

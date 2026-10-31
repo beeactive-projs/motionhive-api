@@ -8,7 +8,13 @@ import {
 import type { LoggerService } from '@nestjs/common';
 import { InjectModel } from '@nestjs/sequelize';
 import { WINSTON_MODULE_NEST_PROVIDER } from 'nest-winston';
-import { Includeable, Op, QueryTypes, Transaction } from 'sequelize';
+import {
+  Includeable,
+  Op,
+  QueryTypes,
+  Transaction,
+  WhereOptions,
+} from 'sequelize';
 import { Sequelize } from 'sequelize-typescript';
 
 import {
@@ -25,7 +31,7 @@ import {
   translatedText,
   type Locale,
 } from '../../common/i18n';
-import { escapeLikeWildcards } from '../../common/utils/search.utils';
+import { foldedContains } from '../../common/utils/search.utils';
 import { stripHtml } from '../../common/utils/text.utils';
 import { resolveLevel } from '../profile/profile-privacy';
 import {
@@ -65,6 +71,7 @@ import {
 } from './dto/save-log-as-routine.dto';
 import { NotificationService } from '../notification/notification.service';
 import { User } from '../user/entities/user.entity';
+import { InstructorProfile } from '../profile/entities/instructor-profile.entity';
 import { clientCompletedWorkoutForInstructor } from './notifications';
 import {
   CoachAccessService,
@@ -225,6 +232,18 @@ export interface WorkoutSummary {
   previousVolumeKg: number | null;
   /** The coach behind a plan workout, for the shared card. */
   coachName: string | null;
+  /**
+   * That coach again, only when their coaching profile lets clients name
+   * them on a workout shared outside the app (`allowClientMentions`):
+   * what the Full share card's coach line may show. Null otherwise.
+   */
+  mentionableCoach: MentionableCoach | null;
+}
+
+/** A coach a client may name on a shared card: the public name. */
+export interface MentionableCoach {
+  /** The coaching profile's display name, else their full name. */
+  name: string;
 }
 import { estimateOneRepMaxEpley } from './one-rep-max.estimate';
 import { ProgramAssignmentService } from './program-assignment.service';
@@ -343,6 +362,8 @@ export class WorkoutLogService {
     @InjectModel(ProgramAssignment)
     private readonly assignmentModel: typeof ProgramAssignment,
     @InjectModel(User) private readonly userModel: typeof User,
+    @InjectModel(InstructorProfile)
+    private readonly instructorProfileModel: typeof InstructorProfile,
     private readonly notificationService: NotificationService,
     private readonly coachAccess: CoachAccessService,
     private readonly assignments: ProgramAssignmentService,
@@ -1785,12 +1806,11 @@ export class WorkoutLogService {
    * estimated best set inside the workout that beat an earlier one, so a
    * first time on an exercise is none.
    */
-  private _historyFilter(has?: WorkoutLogFilter) {
-    if (has === 'photo') return { photoPublicId: { [Op.ne]: null } };
-    if (has !== 'record') return {};
-    return {
-      [Op.and]: [
-        this.sequelize.literal(`EXISTS (
+  private _historyFilter(has?: WorkoutLogFilter): WhereOptions<WorkoutLog>[] {
+    if (has === 'photo') return [{ photoPublicId: { [Op.ne]: null } }];
+    if (has !== 'record') return [];
+    return [
+      this.sequelize.literal(`EXISTS (
           SELECT 1 FROM one_rep_max orm
           WHERE orm.user_id = "WorkoutLog"."user_id"
             AND orm.source = '${OneRepMaxSource.EstimatedEpley}'
@@ -1800,19 +1820,22 @@ export class WorkoutLogService {
               WHERE first.user_id = orm.user_id AND first.exercise_id = orm.exercise_id
             )
         )`),
-      ],
-    };
+    ];
   }
 
   /**
-   * `iLike` on the session name, with LIKE wildcards escaped — an
-   * unescaped `%` would match everything and `_` any character.
+   * A "contains" on the session name, blind to accents and case and with
+   * LIKE wildcards escaped (`foldedContains`): "sala" finds "Sală", and an
+   * unescaped `%` would match everything.
    */
-  private _nameSearch(search?: string) {
+  private _nameSearch(search?: string): WhereOptions<WorkoutLog>[] {
     const term = search?.trim();
-    if (!term) return {};
-    const escaped = escapeLikeWildcards(term);
-    return { name: { [Op.iLike]: `%${escaped}%` } };
+    if (!term) return [];
+    return [
+      foldedContains('"WorkoutLog"."name"', term, (value) =>
+        this.sequelize.escape(value),
+      ),
+    ];
   }
 
   /**
@@ -1849,8 +1872,12 @@ export class WorkoutLogService {
               },
             }
           : {}),
-        ...this._nameSearch(query.search),
-        ...this._historyFilter(query.has),
+        // One list, so a search and a chip narrow together rather than
+        // one `Op.and` key overwriting the other.
+        [Op.and]: [
+          ...this._nameSearch(query.search),
+          ...this._historyFilter(query.has),
+        ],
       },
       include: this._historyIncludes(),
       order: [['startedAt', 'DESC']],
@@ -2114,33 +2141,38 @@ export class WorkoutLogService {
     if (log.status !== WorkoutLogStatus.Completed || !log.completedAt) {
       return null;
     }
-    const [workoutNumber, weeks, previousVolumeKg, coachName] =
-      await Promise.all([
-        this.logModel.count({
-          where: {
-            userId: log.userId,
-            status: WorkoutLogStatus.Completed,
-            completedAt: { [Op.lte]: log.completedAt },
-          },
-        }),
-        this._activeWeeks(log.userId),
-        this._previousRoutineVolume(log),
-        this._coachName(log),
-      ]);
+    const [workoutNumber, weeks, previousVolumeKg, coach] = await Promise.all([
+      this.logModel.count({
+        where: {
+          userId: log.userId,
+          status: WorkoutLogStatus.Completed,
+          completedAt: { [Op.lte]: log.completedAt },
+        },
+      }),
+      this._activeWeeks(log.userId),
+      this._previousRoutineVolume(log),
+      this._planCoach(log),
+    ]);
     return {
       workoutNumber,
       streakWeeks: streakFromWeeks(weeks).currentWeeks,
       previousVolumeKg,
-      coachName,
+      coachName: coach?.fullName ?? null,
+      mentionableCoach: coach?.mentionable ?? null,
     };
   }
 
   /**
-   * The coach whose plan this workout came from, for "Program by …" on a
-   * shared card. Null for freestyle, a routine, or a plan the person set
-   * themselves: nobody is their own coach.
+   * The coach whose plan this workout came from: the full name for
+   * "Program by …" on a shared card, and, only when their coaching
+   * profile allows it, how a card that leaves the app may name them.
+   * Null for freestyle, a routine, or a plan the person set themselves:
+   * nobody is their own coach.
    */
-  private async _coachName(log: WorkoutLog): Promise<string | null> {
+  private async _planCoach(log: WorkoutLog): Promise<{
+    fullName: string;
+    mentionable: MentionableCoach | null;
+  } | null> {
     if (!log.programAssignmentId) return null;
     const assignment = await this.assignmentModel.findByPk(
       log.programAssignmentId,
@@ -2150,7 +2182,7 @@ export class WorkoutLogService {
           {
             model: User,
             as: 'instructor',
-            attributes: ['id', 'firstName', 'lastName'],
+            attributes: ['id', 'firstName', 'lastName', 'handle', 'isActive'],
             required: false,
           },
         ],
@@ -2163,12 +2195,32 @@ export class WorkoutLogService {
     ) {
       return null;
     }
-    const coach = assignment.instructor;
-    const name = [coach?.firstName, coach?.lastName]
+    // Typed as always loaded, but the coach row can be gone.
+    const coach = assignment.instructor as User | null | undefined;
+    const fullName = [coach?.firstName, coach?.lastName]
       .filter(Boolean)
       .join(' ')
       .trim();
-    return name || null;
+    if (!coach || !fullName) return null;
+    return { fullName, mentionable: await this._mentionable(coach, fullName) };
+  }
+
+  /**
+   * The coach as a card outside the app may name them, or null unless
+   * they switched on `allowClientMentions`. A closing account is never
+   * named: it has no public page left to point at.
+   */
+  private async _mentionable(
+    coach: User,
+    fullName: string,
+  ): Promise<MentionableCoach | null> {
+    if (coach.isActive === false) return null;
+    const profile = await this.instructorProfileModel.findOne({
+      where: { userId: coach.id },
+      attributes: ['id', 'displayName', 'allowClientMentions'],
+    });
+    if (!profile?.allowClientMentions) return null;
+    return { name: profile.displayName?.trim() || fullName };
   }
 
   /** Monday-based weeks with a completed workout, newest first. */
