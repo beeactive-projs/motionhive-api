@@ -75,6 +75,30 @@ export interface ExerciseHistory {
 }
 
 /**
+ * One exercise the person has trained, for the Progress list: what it is,
+ * how often, and the top set of its latest sessions (newest first, up to
+ * TRAINED_RECENT_SESSIONS) so the app can draw its trend.
+ */
+export interface TrainedExercise {
+  exerciseId: string;
+  exerciseName: string;
+  kind: string;
+  sessionCount: number;
+  lastPerformedAt: Date;
+  recent: Array<{
+    workoutLogId: string;
+    performedAt: Date;
+    topWeightKg: number | null;
+    topReps: number | null;
+    bestDurationSeconds: number | null;
+    bestDistanceMeters: number | null;
+  }>;
+}
+
+/** Sessions per exercise the Progress list draws its trend from. */
+const TRAINED_RECENT_SESSIONS = 6;
+
+/**
  * Whose logs a progress read covers, and which of them.
  *
  *   assignmentIds === null → every completed log of `userId`: the
@@ -312,6 +336,28 @@ export class ProgressService {
     return this._exerciseHistory(scope, exerciseId);
   }
 
+  /**
+   * Every exercise the caller has trained, most recently trained first:
+   * the Progress tab's list, which lifts, holds and runs alike, where the
+   * records list only had exercises with a weight.
+   */
+  async trainedExercises(
+    userId: string,
+    locale: Locale,
+  ): Promise<TrainedExercise[]> {
+    return this._trainedExercises({ userId, assignmentIds: null }, locale);
+  }
+
+  /** The same list for a coach, scoped like `overviewForCoach`. */
+  async trainedExercisesForCoach(
+    instructorId: string,
+    clientId: string,
+    locale: Locale,
+  ): Promise<TrainedExercise[]> {
+    const scope = await this._coachScope(instructorId, clientId);
+    return this._trainedExercises(scope, locale);
+  }
+
   private async _coachScope(
     instructorId: string,
     clientId: string,
@@ -432,6 +478,110 @@ export class ProgressService {
         bestDistanceMeters: s.bestDistanceMeters,
       })),
     };
+  }
+
+  /**
+   * One row per exercise from the per-session top sets (the same top set
+   * `_exerciseHistory` names: the heaviest set's reps, the longest hold,
+   * the furthest distance), keeping each exercise's latest sessions.
+   */
+  private async _trainedExercises(
+    scope: LogScope,
+    locale: Locale,
+  ): Promise<TrainedExercise[]> {
+    const scoped = this._scopeFilter(scope, 'wl.program_assignment_id');
+    const rows = await this.sequelize.query<{
+      exerciseId: string;
+      exerciseName: string;
+      kind: string;
+      sessionCount: string;
+      lastPerformedAt: Date;
+      recent: Array<{
+        workoutLogId: string;
+        performedAt: string;
+        topWeightKg: string | number | null;
+        topReps: number | null;
+        bestDurationSeconds: number | null;
+        bestDistanceMeters: number | null;
+      }>;
+    }>(
+      `
+      WITH sessions AS (
+        SELECT
+          le.exercise_id,
+          wl.id                                    AS workout_log_id,
+          COALESCE(wl.completed_at, wl.started_at) AS performed_at,
+          MAX(ls.weight_kg)                        AS top_weight_kg,
+          (ARRAY_AGG(ls.reps ORDER BY ls.weight_kg DESC NULLS LAST, ls.reps DESC))[1]
+                                                   AS top_reps,
+          MAX(ls.duration_seconds)                 AS best_duration_seconds,
+          MAX(ls.distance_meters)                  AS best_distance_meters
+        FROM logged_set ls
+        JOIN logged_exercise le ON le.id = ls.logged_exercise_id
+        JOIN workout_log wl     ON wl.id = le.workout_log_id
+        WHERE wl.user_id = :userId
+          AND le.exercise_id IS NOT NULL
+          AND ls.is_completed = TRUE
+          AND wl.status = 'COMPLETED'
+          ${scoped.sql}
+        GROUP BY le.exercise_id, wl.id, wl.completed_at, wl.started_at
+      ),
+      ranked AS (
+        SELECT
+          s.*,
+          ROW_NUMBER() OVER (PARTITION BY s.exercise_id ORDER BY s.performed_at DESC) AS rn,
+          COUNT(*)     OVER (PARTITION BY s.exercise_id)                              AS session_count
+        FROM sessions s
+      )
+      SELECT
+        r.exercise_id                                         AS "exerciseId",
+        COALESCE(e.translations -> :locale ->> 'name', e.name) AS "exerciseName",
+        e.kind                                                AS "kind",
+        r.session_count                                       AS "sessionCount",
+        MAX(r.performed_at)                                   AS "lastPerformedAt",
+        JSON_AGG(
+          JSON_BUILD_OBJECT(
+            'workoutLogId', r.workout_log_id,
+            'performedAt', r.performed_at,
+            'topWeightKg', r.top_weight_kg,
+            'topReps', r.top_reps,
+            'bestDurationSeconds', r.best_duration_seconds,
+            'bestDistanceMeters', r.best_distance_meters
+          ) ORDER BY r.performed_at DESC
+        )                                                     AS "recent"
+      FROM ranked r
+      JOIN exercise e ON e.id = r.exercise_id
+      WHERE r.rn <= :recentSessions
+      GROUP BY r.exercise_id, e.id, r.session_count
+      ORDER BY "lastPerformedAt" DESC
+      LIMIT 200
+      `,
+      {
+        replacements: {
+          userId: scope.userId,
+          locale,
+          recentSessions: TRAINED_RECENT_SESSIONS,
+          ...scoped.params,
+        },
+        type: QueryTypes.SELECT,
+      },
+    );
+
+    return rows.map((row) => ({
+      exerciseId: row.exerciseId,
+      exerciseName: row.exerciseName,
+      kind: row.kind,
+      sessionCount: Number(row.sessionCount),
+      lastPerformedAt: row.lastPerformedAt,
+      recent: row.recent.map((s) => ({
+        workoutLogId: s.workoutLogId,
+        performedAt: new Date(s.performedAt),
+        topWeightKg: s.topWeightKg == null ? null : Number(s.topWeightKg),
+        topReps: s.topReps,
+        bestDurationSeconds: s.bestDurationSeconds,
+        bestDistanceMeters: s.bestDistanceMeters,
+      })),
+    }));
   }
 
   /**

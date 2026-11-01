@@ -57,6 +57,30 @@ export const ProgressDocs = {
     ],
   },
 
+  trainedExercises: {
+    summary: 'Every exercise I have trained',
+    description:
+      'One row per exercise with at least one completed set, most ' +
+      "recently trained first: its name in the reader's language, kind, " +
+      'how many sessions, and the top set of its latest 6 sessions ' +
+      '(newest first) for a trend. Capped at 200 exercises.',
+    auth: true,
+    responses: [{ status: 200, description: 'Trained exercises' }],
+  },
+
+  clientTrainedExercises: {
+    summary: 'Every exercise a client has trained',
+    description:
+      "Same shape as GET /progress/exercises, read by the client's " +
+      'coach and scoped like the coach overview: only workouts the coach ' +
+      'may see.',
+    auth: true,
+    responses: [
+      { status: 200, description: 'Trained exercises' },
+      { status: 404, description: 'Not an active client of the caller' },
+    ],
+  },
+
   exerciseHistory: {
     summary: 'My history for one exercise',
     description:

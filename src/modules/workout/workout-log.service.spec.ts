@@ -1131,12 +1131,22 @@ describe('WorkoutLogService (smoke — not exhaustive)', () => {
     // than one overwriting the other.
     it('searches the name blind to accents, beside a chip', async () => {
       const filter = await where('photo', 'Sală');
-      expect(filter[Op.and]).toEqual([
-        expect.objectContaining({
-          val: foldedLike('"WorkoutLog"."name"', 'Sala'),
-        }),
-        { photoPublicId: { [Op.ne]: null } },
-      ]);
+      const [search, chip] = filter[Op.and] as [{ sql: string }, unknown];
+      expect(search.sql).toContain(foldedLike('"WorkoutLog"."name"', 'Sala'));
+      expect(chip).toEqual({ photoPublicId: { [Op.ne]: null } });
+    });
+
+    // "bench" finds the workouts that had a bench press in them, by the
+    // name logged or by the catalog's names in every language.
+    it('searches the exercises in a workout too', async () => {
+      const filter = await where(undefined, 'Împins');
+      const [search] = filter[Op.and] as [{ sql: string }];
+      expect(search.sql).toContain('EXISTS (');
+      expect(search.sql).toContain('le.workout_log_id = "WorkoutLog"."id"');
+      expect(search.sql).toContain(
+        foldedLike('le.exercise_name_snapshot', 'Impins'),
+      );
+      expect(search.sql).toContain(foldedLike('e.search_name', 'Impins'));
     });
 
     // The same rule as the record count: a best set inside the workout
@@ -2497,6 +2507,87 @@ describe('WorkoutLogService (smoke — not exhaustive)', () => {
       await expect(
         service.setVisibility('wl-1', 'me', 'ONLY_ME'),
       ).resolves.toEqual({ id: 'wl-1', visibility: 'ONLY_ME' });
+    });
+  });
+
+  describe('setDuration — the owner corrects how long it took', () => {
+    const finished = (over: Record<string, unknown> = {}) => ({
+      id: 'wl-1',
+      userId: 'me',
+      status: WorkoutLogStatus.Completed,
+      durationSeconds: 3120,
+      update: jest.fn(),
+      ...over,
+    });
+
+    it('404s on a workout that is not yours, as every owner route does', async () => {
+      logModel.findByPk.mockResolvedValueOnce(finished({ userId: 'other' }));
+      await expect(
+        service.setDuration('wl-1', 'me', 4320),
+      ).rejects.toBeInstanceOf(NotFoundException);
+      logModel.findByPk.mockResolvedValueOnce(null);
+      await expect(
+        service.setDuration('wl-1', 'me', 4320),
+      ).rejects.toBeInstanceOf(NotFoundException);
+    });
+
+    it('stores the corrected length, and only it', async () => {
+      const log = finished();
+      logModel.findByPk.mockResolvedValueOnce(log);
+      await expect(service.setDuration('wl-1', 'me', 4320)).resolves.toEqual({
+        id: 'wl-1',
+        durationSeconds: 4320,
+      });
+      // The start, the end and the pauses stay: the day it lands on does
+      // not move, and the measured length can still be worked out.
+      expect(log.update).toHaveBeenCalledWith({ durationSeconds: 4320 });
+    });
+
+    it('corrects an unknown (over six hours) duration into a real one', async () => {
+      const log = finished({ durationSeconds: null });
+      logModel.findByPk.mockResolvedValueOnce(log);
+      await service.setDuration('wl-1', 'me', 5400);
+      expect(log.update).toHaveBeenCalledWith({ durationSeconds: 5400 });
+    });
+
+    it('writes nothing when the length is already that', async () => {
+      const log = finished();
+      logModel.findByPk.mockResolvedValueOnce(log);
+      await service.setDuration('wl-1', 'me', 3120);
+      expect(log.update).not.toHaveBeenCalled();
+    });
+
+    it('refuses a workout that is not finished', async () => {
+      for (const status of [
+        WorkoutLogStatus.InProgress,
+        WorkoutLogStatus.Skipped,
+      ]) {
+        const log = finished({ status });
+        logModel.findByPk.mockResolvedValueOnce(log);
+        await expect(
+          service.setDuration('wl-1', 'me', 4320),
+        ).rejects.toMatchObject({
+          response: { messageKey: 'workout.durationNotFinished' },
+        });
+        expect(log.update).not.toHaveBeenCalled();
+      }
+    });
+
+    it('keeps to a minute through six hours, the line the measured clock uses', async () => {
+      for (const seconds of [0, 59, 21_601, 90.5]) {
+        logModel.findByPk.mockResolvedValueOnce(finished());
+        await expect(
+          service.setDuration('wl-1', 'me', seconds),
+        ).rejects.toMatchObject({
+          response: { messageKey: 'workout.durationOutOfRange' },
+        });
+      }
+      for (const seconds of [60, 21_600]) {
+        logModel.findByPk.mockResolvedValueOnce(finished());
+        await expect(
+          service.setDuration('wl-1', 'me', seconds),
+        ).resolves.toEqual({ id: 'wl-1', durationSeconds: seconds });
+      }
     });
   });
 

@@ -36,7 +36,9 @@ export class ListWorkoutLogsQueryDto extends PaginationDto {
   dateTo?: string;
 
   /**
-   * Case-insensitive match on the session name. Server-side because the
+   * Accent- and case-blind match on the session name or on any exercise in
+   * it (its logged name, or its catalog name in any language). Server-side
+   * because the
    * list is paged: filtering in the browser would only ever search the
    * page already loaded, and quietly miss the rest.
    */

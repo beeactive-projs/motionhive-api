@@ -25,13 +25,17 @@ import {
 import { PaginationDto } from '../../common/dto/pagination.dto';
 import { CoachClientLogsQueryDto } from './dto/coach-client-logs.query.dto';
 import {
+  MAX_WORKOUT_SECONDS,
+  MIN_WORKOUT_SECONDS,
+} from './dto/set-workout-duration.dto';
+import {
   DEFAULT_LOCALE,
   apiError,
   translate,
   translatedText,
   type Locale,
 } from '../../common/i18n';
-import { foldedContains } from '../../common/utils/search.utils';
+import { foldedContainsSql } from '../../common/utils/search.utils';
 import { stripHtml } from '../../common/utils/text.utils';
 import { resolveLevel } from '../profile/profile-privacy';
 import {
@@ -274,8 +278,11 @@ export interface WorkoutMemory {
 /** Left alone this long after its last ticked set, a workout ended there. */
 const IDLE_AFTER_LAST_SET_MS = 30 * 60_000;
 
-/** More active time than this is a clock left running, not training. */
-const MAX_ACTIVE_SECONDS = 6 * 60 * 60;
+/**
+ * More active time than this is a clock left running, not training. The
+ * same bound caps an owner's correction (`setDuration`).
+ */
+const MAX_ACTIVE_SECONDS = MAX_WORKOUT_SECONDS;
 
 /** Open and untouched this long, the nightly sweep closes a workout. */
 const STALE_OPEN_WORKOUT_MS = 24 * 60 * 60_000;
@@ -1824,17 +1831,32 @@ export class WorkoutLogService {
   }
 
   /**
-   * A "contains" on the session name, blind to accents and case and with
-   * LIKE wildcards escaped (`foldedContains`): "sala" finds "Sală", and an
-   * unescaped `%` would match everything.
+   * A "contains" on the session name or on any exercise in it, blind to
+   * accents and case and with LIKE wildcards escaped (`foldedContainsSql`):
+   * "sala" finds "Sală", "bench" finds every workout with a bench press, and
+   * an unescaped `%` would match everything. An exercise matches by the name
+   * logged with it or by its catalog names in every language
+   * (`exercise.search_name`), so "impins" finds a workout logged in English.
    */
-  private _nameSearch(search?: string): WhereOptions<WorkoutLog>[] {
+  private _logSearch(search?: string): WhereOptions<WorkoutLog>[] {
     const term = search?.trim();
     if (!term) return [];
+    const contains = (sql: string) =>
+      foldedContainsSql(sql, term, (value) => this.sequelize.escape(value));
     return [
-      foldedContains('"WorkoutLog"."name"', term, (value) =>
-        this.sequelize.escape(value),
-      ),
+      this.sequelize.literal(`(
+        ${contains('"WorkoutLog"."name"')}
+        OR EXISTS (
+          SELECT 1
+          FROM logged_exercise le
+          LEFT JOIN exercise e ON e.id = le.exercise_id
+          WHERE le.workout_log_id = "WorkoutLog"."id"
+            AND (
+              ${contains('le.exercise_name_snapshot')}
+              OR ${contains('e.search_name')}
+            )
+        )
+      )`),
     ];
   }
 
@@ -1875,7 +1897,7 @@ export class WorkoutLogService {
         // One list, so a search and a chip narrow together rather than
         // one `Op.and` key overwriting the other.
         [Op.and]: [
-          ...this._nameSearch(query.search),
+          ...this._logSearch(query.search),
           ...this._historyFilter(query.has),
         ],
       },
@@ -2867,6 +2889,38 @@ export class WorkoutLogService {
     }
     if (log.visibility !== visibility) await log.update({ visibility });
     return { id: log.id, visibility };
+  }
+
+  /**
+   * The owner's correction of how long a finished workout took: a clock
+   * started late, or left running after the last set. It replaces the
+   * measured `durationSeconds`, so History, Progress and the share card
+   * all read the corrected length; the measured one can still be worked
+   * out from `startedAt`, `completedAt` and `pausedSeconds`, which stay as
+   * they are (the day the workout lands on does not move). A minute to
+   * six hours: past six hours a measured duration is stored as unknown,
+   * so a correction can't claim more.
+   */
+  async setDuration(
+    workoutLogId: string,
+    userId: string,
+    durationSeconds: number,
+  ): Promise<{ id: string; durationSeconds: number }> {
+    const log = await this._loadOwnedLog(workoutLogId, userId);
+    if (log.status !== WorkoutLogStatus.Completed) {
+      throw new BadRequestException(apiError('workout.durationNotFinished'));
+    }
+    if (
+      !Number.isInteger(durationSeconds) ||
+      durationSeconds < MIN_WORKOUT_SECONDS ||
+      durationSeconds > MAX_ACTIVE_SECONDS
+    ) {
+      throw new BadRequestException(apiError('workout.durationOutOfRange'));
+    }
+    if (log.durationSeconds !== durationSeconds) {
+      await log.update({ durationSeconds });
+    }
+    return { id: log.id, durationSeconds };
   }
 
   /** The level a new workout starts at: the person's own default, else private. */

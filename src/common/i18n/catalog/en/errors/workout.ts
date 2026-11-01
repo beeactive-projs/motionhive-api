@@ -74,6 +74,8 @@ export const workout = {
   photoNotFinished: 'Add a photo once the workout is finished.',
   photoJpegOnly: 'Send the photo as a JPEG.',
   photoNotFound: 'This workout has no photo.',
+  durationNotFinished: 'Only a finished workout can have its length corrected.',
+  durationOutOfRange: 'A workout lasts between 1 minute and 6 hours.',
 
   // ─── Reports and takedowns ───────────────────────────────────────
   takenDownNoShare:

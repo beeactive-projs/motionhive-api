@@ -306,6 +306,87 @@ describe('ProgressService — streaks', () => {
     });
   });
 
+  // ─── the Progress list: every exercise trained ───────────────────
+  describe('trained exercises', () => {
+    const row = {
+      exerciseId: 'ex-1',
+      exerciseName: 'Împins la piept',
+      kind: 'STRENGTH',
+      sessionCount: '7',
+      lastPerformedAt: new Date('2026-10-28T16:20:00Z'),
+      recent: [
+        {
+          workoutLogId: 'log-2',
+          performedAt: '2026-10-28T16:20:00Z',
+          topWeightKg: '62.50',
+          topReps: 7,
+          bestDurationSeconds: null,
+          bestDistanceMeters: null,
+        },
+      ],
+    };
+
+    it("reads the caller's completed sets, one row per exercise, in their language", async () => {
+      query.mockResolvedValue([row]);
+      const [item] = await service.trainedExercises('user-1', 'ro');
+      const [sql, options] = query.mock.calls[0] as [
+        string,
+        { replacements: Record<string, unknown> },
+      ];
+      expect(sql).toContain("wl.status = 'COMPLETED'");
+      expect(sql).toContain('ls.is_completed = TRUE');
+      expect(sql).toContain('r.rn <= :recentSessions');
+      expect(sql).not.toContain('visibility');
+      expect(options.replacements).toMatchObject({
+        userId: 'user-1',
+        locale: 'ro',
+        recentSessions: 6,
+      });
+      expect(item).toEqual({
+        exerciseId: 'ex-1',
+        exerciseName: 'Împins la piept',
+        kind: 'STRENGTH',
+        sessionCount: 7,
+        lastPerformedAt: row.lastPerformedAt,
+        recent: [
+          {
+            workoutLogId: 'log-2',
+            performedAt: new Date('2026-10-28T16:20:00Z'),
+            topWeightKg: 62.5,
+            topReps: 7,
+            bestDurationSeconds: null,
+            bestDistanceMeters: null,
+          },
+        ],
+      });
+    });
+
+    it('gives a coach only the workouts they may read', async () => {
+      const access = (
+        service as unknown as {
+          coachAccess: { readableAssignmentIds: jest.Mock };
+        }
+      ).coachAccess;
+      access.readableAssignmentIds.mockResolvedValue(['pa-1']);
+      query.mockResolvedValue([]);
+      await service.trainedExercisesForCoach('coach-1', 'client-1', 'en');
+      const [sql, options] = query.mock.calls[0] as [
+        string,
+        { replacements: Record<string, unknown> },
+      ];
+      expect(access.readableAssignmentIds).toHaveBeenCalledWith(
+        'coach-1',
+        'client-1',
+      );
+      expect(sql).toContain('wl.program_assignment_id IN (:assignmentIds)');
+      expect(sql).toContain("wl.visibility IN ('COACHES_ONLY', 'PUBLIC')");
+      expect(options.replacements).toMatchObject({
+        userId: 'client-1',
+        assignmentIds: ['pa-1'],
+      });
+    });
+  });
+
   it('reports nothing for someone who has never trained', () => {
     expect(streak([])).toEqual({ currentWeeks: 0, bestWeeks: 0 });
   });

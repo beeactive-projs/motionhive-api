@@ -51,6 +51,19 @@ export class CoachClientProgressController {
     );
   }
 
+  @Get('exercises')
+  @ApiEndpoint(ProgressDocs.clientTrainedExercises)
+  async trainedExercises(
+    @Request() req: AuthenticatedRequest,
+    @Param('clientId', ParseUUIDPipe) clientId: string,
+  ) {
+    return this.progressService.trainedExercisesForCoach(
+      req.user.id,
+      clientId,
+      requestLocale(req),
+    );
+  }
+
   @Get('exercises/:exerciseId')
   @ApiEndpoint(ProgressDocs.clientExerciseHistory)
   async exerciseHistory(

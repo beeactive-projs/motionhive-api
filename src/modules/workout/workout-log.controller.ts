@@ -29,6 +29,8 @@ import { WorkoutPhotoService } from './workout-photo.service';
 import { sendPrivateImage } from './workout-photo.http';
 import { WorkoutPhotoQueryDto } from './dto/workout-photo-query.dto';
 
+import { ApiEndpoint } from '../../common/decorators/api-response.decorator';
+import { WorkoutLogDocs } from '../../common/docs/workout-log.docs';
 import { PaginationDto } from '../../common/dto/pagination.dto';
 import { requestLocale } from '../../common/i18n';
 import { ListWorkoutLogsQueryDto } from './dto/list-workout-logs.query.dto';
@@ -40,6 +42,7 @@ import { AddLogSetDto } from './dto/add-log-set.dto';
 import { CompleteWorkoutDto } from './dto/complete-workout.dto';
 import { LogSetDto } from './dto/log-set.dto';
 import { RecordOneRepMaxDto } from './dto/record-one-rep-max.dto';
+import { SetWorkoutDurationDto } from './dto/set-workout-duration.dto';
 import { SetWorkoutVisibilityDto } from './dto/set-workout-visibility.dto';
 import { SkipLogExerciseDto } from './dto/skip-log-exercise.dto';
 import { SaveLogAsRoutineDto } from './dto/save-log-as-routine.dto';
@@ -300,6 +303,24 @@ export class WorkoutLogController {
       id,
       req.user.id,
       dto.visibility,
+    );
+  }
+
+  /**
+   * How long a finished workout really took, set by its owner (the share
+   * sheet's Adjust duration). History, Progress and the card follow it.
+   */
+  @Patch('workout-logs/:id/duration')
+  @ApiEndpoint({ ...WorkoutLogDocs.setDuration, body: SetWorkoutDurationDto })
+  async setDuration(
+    @Request() req: AuthenticatedRequest,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: SetWorkoutDurationDto,
+  ) {
+    return this.workoutLogService.setDuration(
+      id,
+      req.user.id,
+      dto.durationSeconds,
     );
   }
 

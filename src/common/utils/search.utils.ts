@@ -75,9 +75,22 @@ export function foldedContains(
   rawTerm: string,
   escape: (value: string) => string,
 ): ReturnType<typeof literal> {
+  return literal(foldedContainsSql(sql, rawTerm, escape));
+}
+
+/**
+ * `foldedContains` as plain SQL, for a condition built from several of
+ * them (one column OR an `EXISTS` over another table). Same rules: `sql` is
+ * code, the term is quoted by `escape`, folded, then LIKE-escaped in SQL.
+ */
+export function foldedContainsSql(
+  sql: string,
+  rawTerm: string,
+  escape: (value: string) => string,
+): string {
   const folded = `fold_for_search(${escape(normalizeSearchTerm(rawTerm))})`;
   const literalTerm = `replace(replace(replace(${folded}, '\\', '\\\\'), '%', '\\%'), '_', '\\_')`;
-  return literal(`fold_for_search(${sql}) LIKE ('%' || ${literalTerm} || '%')`);
+  return `fold_for_search(${sql}) LIKE ('%' || ${literalTerm} || '%')`;
 }
 
 /**

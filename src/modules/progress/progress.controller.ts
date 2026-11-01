@@ -48,6 +48,15 @@ export class ProgressController {
     );
   }
 
+  @Get('exercises')
+  @ApiEndpoint(ProgressDocs.trainedExercises)
+  async trainedExercises(@Request() req: AuthenticatedRequest) {
+    return this.progressService.trainedExercises(
+      req.user.id,
+      requestLocale(req),
+    );
+  }
+
   @Get('exercises/:exerciseId')
   @ApiEndpoint(ProgressDocs.exerciseHistory)
   async exerciseHistory(

@@ -81,6 +81,9 @@ export const workout: Catalog['errors']['workout'] = {
   photoNotFinished: 'Poți adăuga o fotografie după ce termini antrenamentul.',
   photoJpegOnly: 'Trimite fotografia în format JPEG.',
   photoNotFound: 'Antrenamentul nu are nicio fotografie.',
+  durationNotFinished:
+    'Poți corecta durata doar după ce termini antrenamentul.',
+  durationOutOfRange: 'Un antrenament durează între 1 minut și 6 ore.',
 
   // ─── Reports and takedowns ───────────────────────────────────────
   takenDownNoShare:
