@@ -11,10 +11,13 @@ import {
   Put,
   Query,
   Request,
+  UploadedFile,
   UseGuards,
+  UseInterceptors,
 } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
-import { ApiTags } from '@nestjs/swagger';
+import { FileInterceptor } from '@nestjs/platform-express';
+import { ApiConsumes, ApiTags } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
 
 import { ApiEndpoint } from '../../common/decorators/api-response.decorator';
@@ -25,6 +28,10 @@ import {
   type PrincipalContext,
 } from '../../common/decorators/principal.decorator';
 import { RolesGuard } from '../../common/guards/roles.guard';
+import {
+  IMAGE_UPLOAD_OPTIONS,
+  assertImageFile,
+} from '../../common/utils/image.utils';
 import type { AuthenticatedRequest } from '../../common/types/authenticated-request';
 
 import { ExerciseService } from './exercise.service';
@@ -142,6 +149,32 @@ export class ExerciseController {
     @Param('id', ParseUUIDPipe) id: string,
   ): Promise<void> {
     await this.exerciseService.softDelete(id, principal);
+  }
+
+  @Put(':id/image')
+  @Roles('INSTRUCTOR', 'USER')
+  @UseInterceptors(FileInterceptor('file', IMAGE_UPLOAD_OPTIONS))
+  @ApiConsumes('multipart/form-data')
+  @Throttle({ default: { limit: 30, ttl: 3_600_000 } })
+  @ApiEndpoint(ExerciseDocs.setImage)
+  async setImage(
+    @Principal() principal: PrincipalContext,
+    @Param('id', ParseUUIDPipe) id: string,
+    @UploadedFile() file: Express.Multer.File | undefined,
+  ) {
+    assertImageFile(file);
+    return this.exerciseService.setImage(id, file, principal);
+  }
+
+  @Delete(':id/image')
+  @Roles('INSTRUCTOR', 'USER')
+  @Throttle({ default: { limit: 30, ttl: 3_600_000 } })
+  @ApiEndpoint(ExerciseDocs.removeImage)
+  async removeImage(
+    @Principal() principal: PrincipalContext,
+    @Param('id', ParseUUIDPipe) id: string,
+  ) {
+    return this.exerciseService.removeImage(id, principal);
   }
 
   @Post(':id/fork')

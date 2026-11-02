@@ -23,6 +23,7 @@ import {
   normalizeSearchTerm,
 } from '../../common/utils/search.utils';
 import { assertOwned } from '../../common/utils/ownership.utils';
+import { CloudinaryService } from '../../common/services/cloudinary.service';
 import {
   buildPaginatedResponse,
   getOffset,
@@ -78,6 +79,9 @@ const EXERCISE_OWNER_ATTRIBUTES = [
   'handle',
 ] as const;
 
+/** The Cloudinary folder for exercise pictures, per owner; account erasure deletes it. */
+export const EXERCISE_IMAGE_RESOURCE = 'exercises';
+
 @Injectable()
 export class ExerciseService {
   constructor(
@@ -94,6 +98,7 @@ export class ExerciseService {
     private readonly sequelize: Sequelize,
     private readonly searchIndex: SearchIndexService,
     private readonly notificationService: NotificationService,
+    private readonly cloudinaryService: CloudinaryService,
     @Inject(WINSTON_MODULE_NEST_PROVIDER)
     private readonly logger: LoggerService,
   ) {}
@@ -365,6 +370,59 @@ export class ExerciseService {
 
     await this.indexExercise(exercise.id, 'update');
     return this.reloadDetail(exercise.id);
+  }
+
+  // ────────────────────────────────────────────────────────────────────
+  // Picture (own and coaches' exercises)
+  // ────────────────────────────────────────────────────────────────────
+
+  /**
+   * Sets the exercise's picture: a public Cloudinary image in the owner's
+   * folder, shown wherever the exercise is (list, picker, logger). Public on
+   * purpose: a coach's exercise is seen by their clients, and the link is
+   * not guessable. Account erasure deletes the folder.
+   *
+   * The picture it replaces stays stored: workouts logged with it keep its
+   * link (`exercise_thumbnail_url_snapshot`) and still show it.
+   */
+  async setImage(
+    id: string,
+    file: Express.Multer.File,
+    principal: PrincipalContext,
+  ): Promise<Exercise> {
+    const exercise = await this.ownedCustom(id, principal);
+    const { url } = await this.cloudinaryService.uploadImage(file, {
+      resource: EXERCISE_IMAGE_RESOURCE,
+      userId: principal.userId,
+    });
+    await exercise.update({ thumbnailUrl: url });
+    return this.reloadDetail(exercise.id);
+  }
+
+  /** Takes the picture off; the exercise shows its kind's tile again. */
+  async removeImage(
+    id: string,
+    principal: PrincipalContext,
+  ): Promise<Exercise> {
+    const exercise = await this.ownedCustom(id, principal);
+    await exercise.update({ thumbnailUrl: null });
+    return this.reloadDetail(exercise.id);
+  }
+
+  /** The caller's own (USER or coach-made) exercise; ours and others' read as not found. */
+  private async ownedCustom(
+    id: string,
+    principal: PrincipalContext,
+  ): Promise<Exercise> {
+    const exercise = await this.exerciseModel.findByPk(id);
+    assertOwned(exercise, principal.userId, (e) => e.ownerId, {
+      notFoundMessage: apiError('exercise.notFound'),
+      onMismatch: 'hide',
+    });
+    if (exercise.source === ExerciseSource.System) {
+      throw new NotFoundException(apiError('exercise.notFound'));
+    }
+    return exercise;
   }
 
   // ────────────────────────────────────────────────────────────────────

@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { SequelizeModule } from '@nestjs/sequelize';
 
+import { CloudinaryService } from '../../common/services/cloudinary.service';
 import { RoleModule } from '../role/role.module';
 import { SearchModule } from '../search/search.module';
 import { User } from '../user/entities/user.entity';
@@ -58,7 +59,12 @@ import { EquipmentController } from './equipment.controller';
     SearchModule,
   ],
   controllers: [ExerciseController, MuscleController, EquipmentController],
-  providers: [ExerciseService, ExerciseNoteService],
+  providers: [
+    ExerciseService,
+    ExerciseNoteService,
+    // Exercise pictures (ExerciseService.setImage).
+    CloudinaryService,
+  ],
   // ExerciseNoteService: the owner's workout reads carry their notes.
   exports: [ExerciseService, ExerciseNoteService, SequelizeModule],
 })

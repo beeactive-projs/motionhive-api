@@ -186,6 +186,38 @@ export const ExerciseDocs = {
     ],
   } as ApiEndpointOptions,
 
+  setImage: {
+    summary: "Set a custom exercise's picture",
+    description:
+      'INSTRUCTOR or USER, owner only (not catalog rows). One image under the ' +
+      '`file` form field, at most 5 MB, image types only. Stored as a public ' +
+      "Cloudinary image in the owner's folder and returned as `thumbnailUrl` " +
+      'on the exercise. A picture it replaces stays stored, since workouts ' +
+      'logged with it keep its link.',
+    auth: true,
+    responses: [
+      { status: 200, description: 'The exercise, with its new picture' },
+      { status: 400, description: 'No file, wrong type, or too large' },
+      ApiStandardResponses.NotFound,
+      ApiStandardResponses.Unauthorized,
+      ApiStandardResponses.Forbidden,
+    ],
+  } as ApiEndpointOptions,
+
+  removeImage: {
+    summary: "Remove a custom exercise's picture",
+    description:
+      'INSTRUCTOR or USER, owner only. Sets `thumbnailUrl` to null; the apps ' +
+      "show the exercise's kind tile instead.",
+    auth: true,
+    responses: [
+      { status: 200, description: 'The exercise, without a picture' },
+      ApiStandardResponses.NotFound,
+      ApiStandardResponses.Unauthorized,
+      ApiStandardResponses.Forbidden,
+    ],
+  } as ApiEndpointOptions,
+
   getNote: {
     summary: 'My private note on an exercise',
     description:

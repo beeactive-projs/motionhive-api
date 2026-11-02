@@ -25,6 +25,7 @@ import {
 } from './entities/exercise.enums';
 import { SearchIndexService } from '../search/search-index.service';
 import { NotificationService } from '../notification/notification.service';
+import { CloudinaryService } from '../../common/services/cloudinary.service';
 import {
   fakeTx,
   makeSilentLogger,
@@ -73,6 +74,12 @@ describe('ExerciseService (smoke — not exhaustive)', () => {
   const notificationService = {
     notify: jest.fn().mockResolvedValue(undefined),
   };
+  const cloudinaryService = {
+    uploadImage: jest.fn().mockResolvedValue({
+      url: 'https://res.cloudinary.com/demo/image/upload/v1/motionhive/test/exercises/me/pic.jpg',
+      publicId: 'motionhive/test/exercises/me/pic',
+    }),
+  };
 
   const meInstructor = {
     userId: 'me',
@@ -105,6 +112,7 @@ describe('ExerciseService (smoke — not exhaustive)', () => {
         { provide: Sequelize, useValue: sequelize },
         { provide: SearchIndexService, useValue: searchIndex },
         { provide: NotificationService, useValue: notificationService },
+        { provide: CloudinaryService, useValue: cloudinaryService },
         { provide: WINSTON_MODULE_NEST_PROVIDER, useValue: makeSilentLogger() },
       ],
     }).compile();
@@ -671,6 +679,62 @@ describe('ExerciseService (smoke — not exhaustive)', () => {
           ],
         });
       });
+    });
+  });
+  describe('the picture', () => {
+    const file = {
+      buffer: Buffer.from('x'),
+      mimetype: 'image/jpeg',
+    } as Express.Multer.File;
+    const own = {
+      id: 'own-1',
+      ownerId: 'me',
+      source: ExerciseSource.User,
+    };
+
+    it("puts it in the owner's folder and on the exercise", async () => {
+      const update = jest.fn().mockResolvedValue(undefined);
+      exerciseModel.findByPk
+        .mockResolvedValueOnce({ ...own, update })
+        .mockResolvedValueOnce(own); // reloadDetail
+
+      await service.setImage('own-1', file, meInstructor);
+
+      expect(cloudinaryService.uploadImage).toHaveBeenCalledWith(file, {
+        resource: 'exercises',
+        userId: 'me',
+      });
+      expect(update).toHaveBeenCalledWith({
+        thumbnailUrl:
+          'https://res.cloudinary.com/demo/image/upload/v1/motionhive/test/exercises/me/pic.jpg',
+      });
+    });
+
+    it('takes it off', async () => {
+      const update = jest.fn().mockResolvedValue(undefined);
+      exerciseModel.findByPk
+        .mockResolvedValueOnce({ ...own, update })
+        .mockResolvedValueOnce(own);
+
+      await service.removeImage('own-1', meInstructor);
+
+      expect(update).toHaveBeenCalledWith({ thumbnailUrl: null });
+    });
+
+    it("never touches ours or someone else's, and uploads nothing then", async () => {
+      exerciseModel.findByPk.mockResolvedValueOnce({ ...own, ownerId: 'u-2' });
+      await expect(
+        service.setImage('own-1', file, meInstructor),
+      ).rejects.toThrow(NotFoundException);
+      exerciseModel.findByPk.mockResolvedValueOnce({
+        ...own,
+        ownerId: 'me',
+        source: ExerciseSource.System,
+      });
+      await expect(service.removeImage('own-1', meInstructor)).rejects.toThrow(
+        NotFoundException,
+      );
+      expect(cloudinaryService.uploadImage).not.toHaveBeenCalled();
     });
   });
 });

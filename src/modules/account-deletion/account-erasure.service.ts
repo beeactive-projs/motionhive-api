@@ -8,6 +8,7 @@ import { Sequelize } from 'sequelize-typescript';
 import { toLocale } from '../../common/i18n';
 import { CloudinaryService } from '../../common/services/cloudinary.service';
 import { WORKOUT_PHOTO_RESOURCE } from '../workout/workout-photo.service';
+import { EXERCISE_IMAGE_RESOURCE } from '../exercise/exercise.service';
 import { escapeLikeWildcards } from '../../common/utils/search.utils';
 import { EmailService } from '../../common/services/email.service';
 import { MessagingService } from '../messaging/messaging.service';
@@ -49,7 +50,8 @@ export function erasedEmail(userId: string): string {
  * logs keep RESTRICT / NO ACTION keys to it. It stays as an empty, inactive
  * husk with no name, address, photo or sign-in.
  *
- * Replacements: :id, :email (their real address), :erasedEmail, :now.
+ * Replacements: :id, :email (their real address), :erasedEmail, :now,
+ * :exerciseImages (a LIKE pattern for their exercise pictures' folder).
  */
 const ERASURE_STATEMENTS: ReadonlyArray<readonly [string, string]> = [
   // ── What they did and planned ──
@@ -69,6 +71,19 @@ const ERASURE_STATEMENTS: ReadonlyArray<readonly [string, string]> = [
   [
     'own programs',
     `DELETE FROM program WHERE owner_id = :id AND source <> 'SYSTEM'`,
+  ],
+  // Their exercises stay (a coach's sit in clients' plans), but the pictures
+  // in their folder are deleted after the commit, so every link to one goes
+  // first: on the exercise, and the copies in workouts others logged with it.
+  [
+    'exercise pictures',
+    `UPDATE exercise SET thumbnail_url = NULL
+      WHERE owner_id = :id AND thumbnail_url LIKE :exerciseImages`,
+  ],
+  [
+    'exercise picture copies',
+    `UPDATE logged_exercise SET exercise_thumbnail_url_snapshot = NULL
+      WHERE exercise_thumbnail_url_snapshot LIKE :exerciseImages`,
   ],
 
   // ── People they trained with ──
@@ -307,6 +322,7 @@ export class AccountErasureService {
         email: user.email,
         erasedEmail: erasedEmail(user.id),
         now,
+        exerciseImages: `%/${escapeLikeWildcards(this.cloudinaryService.buildUserFolder(EXERCISE_IMAGE_RESOURCE, user.id))}/%`,
       };
       for (const [, sql] of ERASURE_STATEMENTS) {
         await this.sequelize.query(sql, {
@@ -343,6 +359,9 @@ export class AccountErasureService {
     // the rows above are gone.
     await this.cloudinaryService.deleteFolder(
       this.cloudinaryService.buildUserFolder('avatars', user.id),
+    );
+    await this.cloudinaryService.deleteFolder(
+      this.cloudinaryService.buildUserFolder(EXERCISE_IMAGE_RESOURCE, user.id),
     );
     // Workout photos are private assets, which a prefix delete only
     // reaches when told their type.

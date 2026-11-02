@@ -2246,13 +2246,13 @@ export class WorkoutLogService {
         attributes: ['id', 'name', 'isSingleWorkout'],
         required: false,
       },
-      // Bring back logged_exercise → logged_set for the count ("18 sets")
-      // and the week's volume (weight × reps, warm-ups left out), both
-      // summed on the phone.
+      // Bring back logged_exercise → logged_set for the count ("18 sets"),
+      // the volume (weight × reps, warm-ups left out) and the supersets,
+      // all worked out on the phone.
       {
         model: LoggedExercise,
         as: 'exercises',
-        attributes: ['id'],
+        attributes: ['id', 'orderIndex', 'supersetGroupId'],
         include: [
           {
             model: LoggedSet,
