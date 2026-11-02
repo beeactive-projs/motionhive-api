@@ -12,6 +12,7 @@ import {
 import { Role } from '../../role/entities/role.entity';
 import { UserRole } from '../../role/entities/user-role.entity';
 import { SocialAccount } from './social-account.entity';
+import type { StoredWorkoutSettings } from '../workout-settings';
 
 /**
  * Visibility level a user can pick for an individual profile field.
@@ -233,6 +234,19 @@ export class User extends Model {
     defaultValue: {},
   })
   declare privacySettings: UserPrivacySettings;
+
+  /**
+   * The workout logger settings the person changed (migration 079). See
+   * `WorkoutSettings`: missing keys resolve to defaults at read time
+   * (`resolveWorkoutSettings`). Read and patched through
+   * `/users/me/workout-settings`.
+   */
+  @Column({
+    type: DataType.JSONB,
+    allowNull: false,
+    defaultValue: {},
+  })
+  declare workoutSettings: StoredWorkoutSettings;
 
   @CreatedAt
   declare createdAt: Date;

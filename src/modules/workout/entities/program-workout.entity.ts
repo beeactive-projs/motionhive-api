@@ -61,6 +61,13 @@ export class ProgramWorkout extends Model {
   declare estimatedDurationMinutes: number | null;
 
   /**
+   * A coach's rest for this day, in seconds (0 to 600, migration 079).
+   * Between a set's own rest and the program's default.
+   */
+  @Column({ type: DataType.INTEGER, allowNull: true })
+  declare defaultRestSeconds: number | null;
+
+  /**
    * Other languages of name, notes, on MotionHive's own rows only
    * (migration 063). Swapped in per reader by ContentLocaleInterceptor;
    * never accepted from a request.

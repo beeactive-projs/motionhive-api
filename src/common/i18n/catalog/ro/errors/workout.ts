@@ -74,8 +74,6 @@ export const workout: Catalog['errors']['workout'] = {
   cannotAddSetsNotInProgress:
     'Nu poți adăuga serii într-un antrenament care nu mai e în desfășurare.',
   sameExerciseSwap: 'Acesta e deja exercițiul pe care îl înregistrezi.',
-  cannotDiscardFinished:
-    'Poți anula doar un antrenament în desfășurare. Antrenamentele terminate rămân în istoricul tău.',
   cannotCompleteNotInProgress:
     'Poți termina doar un antrenament în desfășurare.',
   photoNotFinished: 'Poți adăuga o fotografie după ce termini antrenamentul.',
@@ -84,6 +82,8 @@ export const workout: Catalog['errors']['workout'] = {
   durationNotFinished:
     'Poți corecta durata doar după ce termini antrenamentul.',
   durationOutOfRange: 'Un antrenament durează între 1 minut și 6 ore.',
+  pauseGapTooLong:
+    'Antrenamentul nu rulează de atât timp, așa că nu poate fi pus pe pauză atât de mult.',
 
   // ─── Reports and takedowns ───────────────────────────────────────
   takenDownNoShare:

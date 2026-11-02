@@ -11,6 +11,19 @@ import { ExerciseLevel } from '../../exercise/entities/exercise.enums';
 import { PaginationDto } from '../../../common/dto/pagination.dto';
 import { ProgramStatus } from '../entities/workout.enums';
 
+/**
+ * What to do with ARCHIVED programs. Omitted keeps today's answer (all
+ * statuses, unless `status` names one), which is what the web expects.
+ */
+export enum ProgramArchivedFilter {
+  /** Archived ones too (the same as omitting it). */
+  Include = 'include',
+  /** Leave archived ones out: where a routine is picked to start. */
+  Exclude = 'exclude',
+  /** Archived ones alone: the "Archived" filter, to restore one. */
+  Only = 'only',
+}
+
 /** Whose library to read. */
 export enum ProgramLibrary {
   /** Only what you authored. */
@@ -38,6 +51,21 @@ export class ListProgramsQueryDto extends PaginationDto {
   @IsOptional()
   @IsEnum(ProgramStatus)
   status?: ProgramStatus;
+
+  /**
+   * `exclude` leaves ARCHIVED out, `only` lists nothing else; omitted
+   * (or `include`) keeps every status. `status`, when sent, narrows on top.
+   */
+  @ApiPropertyOptional({
+    enum: ProgramArchivedFilter,
+    description:
+      'exclude: leave ARCHIVED programs out (the list a routine is ' +
+      'started from). only: ARCHIVED alone (to restore one). Omitted or ' +
+      'include: every status, as before.',
+  })
+  @IsOptional()
+  @IsEnum(ProgramArchivedFilter)
+  archived?: ProgramArchivedFilter;
 
   /**
    * True lists routines (single-workout programs), false lists

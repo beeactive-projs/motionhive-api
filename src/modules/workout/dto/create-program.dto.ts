@@ -238,6 +238,25 @@ export class CreateProgramDto {
   folder?: string;
 
   /**
+   * A routine's "Rest between sets", or a program's default rest. A set's
+   * own rest wins, then the day's. Null clears it.
+   */
+  @ApiPropertyOptional({
+    example: 90,
+    minimum: 0,
+    maximum: 600,
+    nullable: true,
+    description:
+      "Rest between sets in seconds: a routine's, or a program's default. " +
+      "A set's own rest wins, then the day's. Null clears it.",
+  })
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  @Max(600)
+  defaultRestSeconds?: number | null;
+
+  /**
    * Optional nested tree, only valid with `isSingleWorkout: true`. Lets
    * the simple routine editor save a whole workout in one call instead
    * of chaining four requests. Multi-week programs still build up

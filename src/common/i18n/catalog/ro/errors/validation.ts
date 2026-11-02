@@ -20,4 +20,5 @@ export const validation: Catalog['errors']['validation'] = {
   noteTooLong: 'Mesajul poate avea cel mult 500 de caractere.',
   personalMessageTooLong:
     'Mesajul personal poate avea cel mult 500 de caractere.',
+  exerciseNoteTooLong: 'Notița poate avea cel mult 280 de caractere.',
 };

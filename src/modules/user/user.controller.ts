@@ -17,6 +17,7 @@ import { FileInterceptor } from '@nestjs/platform-express';
 import type { AuthenticatedRequest } from '../../common/types/authenticated-request';
 import { UserService } from './user.service';
 import { UpdateUserDto } from './dto/update-user.dto';
+import { UpdateWorkoutSettingsDto } from './dto/update-workout-settings.dto';
 import { SearchUsersQueryDto } from './dto/search-users.query.dto';
 import { ApiEndpoint } from '../../common/decorators/api-response.decorator';
 import { UserDocs } from '../../common/docs/user.docs';
@@ -97,6 +98,27 @@ export class UserController {
   ) {
     const user = await this.userService.updateUser(req.user.id, dto);
     return UserService.toProfileDto(user, { slim: true });
+  }
+
+  /** The workout logger settings, every key resolved to a value. */
+  @Get('me/workout-settings')
+  @ApiEndpoint(UserDocs.getWorkoutSettings)
+  getWorkoutSettings(@Request() req: AuthenticatedRequest) {
+    return this.userService.getWorkoutSettings(req.user.id);
+  }
+
+  /** Change any of the workout logger settings; answers with all of them. */
+  @Patch('me/workout-settings')
+  @Throttle({ default: { limit: 120, ttl: 3_600_000 } })
+  @ApiEndpoint({
+    ...UserDocs.updateWorkoutSettings,
+    body: UpdateWorkoutSettingsDto,
+  })
+  updateWorkoutSettings(
+    @Request() req: AuthenticatedRequest,
+    @Body() dto: UpdateWorkoutSettingsDto,
+  ) {
+    return this.userService.updateWorkoutSettings(req.user.id, dto);
   }
 
   /**

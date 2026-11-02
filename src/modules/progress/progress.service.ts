@@ -11,6 +11,17 @@ import { CoachAccessService } from '../workout/coach-access.service';
 import { OneRepMaxSource } from '../workout/entities/workout.enums';
 import { estimateOneRepMaxEpley } from '../workout/one-rep-max.estimate';
 import { streakFromWeeks } from '../workout/training-streak';
+import {
+  COUNTED_SET_SQL,
+  NO_VOLUME,
+  VOLUME_SUMS_SQL,
+  type VolumeSumsRow,
+  type VolumeUnit,
+  addVolume,
+  volumeIn,
+  volumeTotalsFromRow,
+  volumeUnitFor,
+} from '../workout/volume';
 import { ProgressRange } from './dto/progress-range.enum';
 import { RosterWindow } from './dto/roster.query.dto';
 
@@ -32,11 +43,16 @@ export interface ProgressOverview {
   /** Same metrics for the preceding window, so the UI can show movement. */
   previous: { workouts: number; volumeKg: number };
   streak: { currentWeeks: number; bestWeeks: number };
-  /** Oldest first. One entry per ISO week in the window. */
+  /**
+   * Oldest first. One entry per ISO week of the window that has a
+   * workout (weeks without one are left out). Volume excludes warm-ups;
+   * minutes are the workouts' recorded durations.
+   */
   weeklyVolume: Array<{
     weekStart: string;
     volumeKg: number;
     workouts: number;
+    minutes: number;
   }>;
   /** Oldest first, one per day, for the consistency grid. */
   dailyActivity: Array<{ date: string; workouts: number }>;
@@ -71,6 +87,15 @@ export interface ExerciseHistory {
     topReps: number | null;
     bestDurationSeconds: number | null;
     bestDistanceMeters: number | null;
+    /**
+     * The session's volume over its completed sets, warm-ups excluded,
+     * in `volumeUnit`: kg × reps for a loaded exercise, total reps for a
+     * bodyweight one, total seconds for a hold, total metres for a
+     * distance. The unit is chosen once for the exercise (its kind, then
+     * what its sessions filled), so every session is in the same one.
+     */
+    volume: number;
+    volumeUnit: VolumeUnit;
   }>;
 }
 
@@ -271,10 +296,13 @@ export interface CoachActivityItem {
  * `one_rep_max`, which the completion flow already writes.
  *
  * **Volume rule.** Volume is Σ(reps × weight) over completed sets that
- * carry a load. Bodyweight and cardio sets have no weight, so they
- * contribute nothing rather than zero-inflating the number. That keeps
- * the figure comparable week to week, which is the only thing it is for.
- * Sets are counted separately so a bodyweight-only week still shows work.
+ * carry a load and are not warm-ups (`workout/volume.ts`, the one
+ * definition). Bodyweight and cardio sets have no weight, so they
+ * contribute nothing to the kilograms rather than zero-inflating the
+ * number. That keeps the figure comparable week to week, which is the
+ * only thing it is for. Sets are counted separately so a bodyweight-only
+ * week still shows work. One exercise's history is the exception: there
+ * its volume is in the exercise's own unit (reps, seconds, metres).
  */
 @Injectable()
 export class ProgressService {
@@ -411,6 +439,10 @@ export class ProgressService {
     scope: LogScope,
     exerciseId: string,
   ): Promise<ExerciseHistory> {
+    // No visibility check here on purpose: the sessions below are the
+    // scoped person's own logs, so a client's PRIVATE own exercise opens
+    // for the coach the scope lets in. A deleted exercise (paranoid) still
+    // has its history: deleting a used exercise keeps what was logged.
     const exercise = await this.exerciseModel.findByPk(exerciseId, {
       attributes: [
         'id',
@@ -420,20 +452,23 @@ export class ProgressService {
         'thumbnailUrl',
         'translations',
       ],
+      paranoid: false,
     });
     if (!exercise) throw new NotFoundException(apiError('exercise.notFound'));
 
     const scoped = this._scopeFilter(scope, 'wl.program_assignment_id');
-    const sessions = await this.sequelize.query<{
-      workoutLogId: string;
-      performedAt: Date;
-      workoutName: string;
-      setCount: string;
-      topWeightKg: string | null;
-      topReps: number | null;
-      bestDurationSeconds: number | null;
-      bestDistanceMeters: number | null;
-    }>(
+    const sessions = await this.sequelize.query<
+      {
+        workoutLogId: string;
+        performedAt: Date;
+        workoutName: string;
+        setCount: string;
+        topWeightKg: string | null;
+        topReps: number | null;
+        bestDurationSeconds: number | null;
+        bestDistanceMeters: number | null;
+      } & VolumeSumsRow
+    >(
       `
       SELECT
         wl.id                                    AS "workoutLogId",
@@ -445,7 +480,9 @@ export class ProgressService {
         (ARRAY_AGG(ls.reps ORDER BY ls.weight_kg DESC NULLS LAST, ls.reps DESC))[1]
                                                  AS "topReps",
         MAX(ls.duration_seconds)                 AS "bestDurationSeconds",
-        MAX(ls.distance_meters)                  AS "bestDistanceMeters"
+        MAX(ls.distance_meters)                  AS "bestDistanceMeters",
+        -- The volume's four sums, warm-ups out; the unit is picked below.
+        ${VOLUME_SUMS_SQL}
       FROM logged_set ls
       JOIN logged_exercise le ON le.id = ls.logged_exercise_id
       JOIN workout_log wl     ON wl.id = le.workout_log_id
@@ -464,10 +501,18 @@ export class ProgressService {
       },
     );
 
+    // One unit for the whole history, so the chart compares like with
+    // like: the exercise's kind, then what its sessions actually filled.
+    const totals = sessions.map((s) => volumeTotalsFromRow(s));
+    const volumeUnit = volumeUnitFor(
+      exercise.kind,
+      totals.reduce(addVolume, NO_VOLUME),
+    );
+
     return {
       exercise,
       oneRepMaxSeries: await this._oneRepMaxSeries(scope, exerciseId),
-      sessions: sessions.map((s) => ({
+      sessions: sessions.map((s, i) => ({
         workoutLogId: s.workoutLogId,
         performedAt: s.performedAt,
         workoutName: s.workoutName,
@@ -476,6 +521,8 @@ export class ProgressService {
         topReps: s.topReps,
         bestDurationSeconds: s.bestDurationSeconds,
         bestDistanceMeters: s.bestDistanceMeters,
+        volume: volumeIn(volumeUnit, totals[i]),
+        volumeUnit,
       })),
     };
   }
@@ -1020,9 +1067,10 @@ export class ProgressService {
       ),
       sets AS (
         SELECT
-          -- Load-bearing sets only; see the volume rule on this class.
+          -- Load-bearing working sets only; see the volume rule on this class.
           COALESCE(SUM(ls.reps * ls.weight_kg)
-                   FILTER (WHERE ls.weight_kg IS NOT NULL), 0) AS volume_kg,
+                   FILTER (WHERE ls.weight_kg IS NOT NULL
+                             AND ls.set_type <> 'WARMUP'), 0) AS volume_kg,
           COUNT(ls.id)                                         AS sets_completed
         FROM windowed w
         JOIN logged_exercise le ON le.workout_log_id = w.id AND le.is_skipped = FALSE
@@ -1053,28 +1101,49 @@ export class ProgressService {
     };
   }
 
+  /**
+   * Per ISO week: the workouts, their volume (working sets, see the
+   * volume rule) and their recorded time. The volume is summed per log
+   * first, so joining the sets cannot multiply a workout's duration.
+   */
   private async _weeklyVolume(scope: LogScope, days: number) {
     const scoped = this._scopeFilter(scope, 'wl.program_assignment_id');
     const rows = await this.sequelize.query<{
       weekStart: Date;
       volumeKg: string | null;
       workouts: string;
+      weekSeconds: string | null;
     }>(
       `
+      WITH logs AS (
+        SELECT
+          wl.id,
+          wl.duration_seconds,
+          DATE_TRUNC('week', COALESCE(wl.completed_at, wl.started_at))::DATE AS week_start
+        FROM workout_log wl
+        WHERE wl.user_id = :userId
+          AND wl.status = 'COMPLETED'
+          AND COALESCE(wl.completed_at, wl.started_at) >= NOW() - (:days || ' days')::INTERVAL
+          ${scoped.sql}
+      ),
+      log_volume AS (
+        SELECT le.workout_log_id, SUM(ls.reps * ls.weight_kg) AS volume_kg
+        FROM logs l
+        JOIN logged_exercise le ON le.workout_log_id = l.id AND le.is_skipped = FALSE
+        JOIN logged_set ls      ON ls.logged_exercise_id = le.id
+        WHERE ${COUNTED_SET_SQL}
+          AND ls.weight_kg IS NOT NULL
+        GROUP BY le.workout_log_id
+      )
       SELECT
-        DATE_TRUNC('week', COALESCE(wl.completed_at, wl.started_at))::DATE AS "weekStart",
-        COALESCE(SUM(ls.reps * ls.weight_kg)
-                 FILTER (WHERE ls.weight_kg IS NOT NULL), 0)              AS "volumeKg",
-        COUNT(DISTINCT wl.id)                                             AS "workouts"
-      FROM workout_log wl
-      LEFT JOIN logged_exercise le ON le.workout_log_id = wl.id AND le.is_skipped = FALSE
-      LEFT JOIN logged_set ls      ON ls.logged_exercise_id = le.id AND ls.is_completed = TRUE
-      WHERE wl.user_id = :userId
-        AND wl.status = 'COMPLETED'
-        AND COALESCE(wl.completed_at, wl.started_at) >= NOW() - (:days || ' days')::INTERVAL
-        ${scoped.sql}
-      GROUP BY 1
-      ORDER BY 1 ASC
+        l.week_start                              AS "weekStart",
+        COALESCE(SUM(v.volume_kg), 0)             AS "volumeKg",
+        COUNT(*)                                  AS "workouts",
+        COALESCE(SUM(l.duration_seconds), 0)      AS "weekSeconds"
+      FROM logs l
+      LEFT JOIN log_volume v ON v.workout_log_id = l.id
+      GROUP BY l.week_start
+      ORDER BY l.week_start ASC
       `,
       {
         replacements: { userId: scope.userId, days, ...scoped.params },
@@ -1086,6 +1155,7 @@ export class ProgressService {
       weekStart: this._isoDate(r.weekStart),
       volumeKg: Math.round(Number(r.volumeKg ?? 0)),
       workouts: Number(r.workouts),
+      minutes: Math.round(Number(r.weekSeconds ?? 0) / 60),
     }));
   }
 

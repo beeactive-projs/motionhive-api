@@ -9,6 +9,7 @@ import {
 } from 'sequelize-typescript';
 import { Exercise } from '../../exercise/entities/exercise.entity';
 import { User } from '../../user/entities/user.entity';
+import { WorkoutLog } from './workout-log.entity';
 import { OneRepMaxSource } from './workout.enums';
 
 /**
@@ -64,6 +65,15 @@ export class OneRepMax extends Model {
 
   @Column({ type: DataType.DATE, allowNull: false, defaultValue: DataType.NOW })
   declare recordedAt: Date;
+
+  /**
+   * The finished workout an estimated record came from (migration 079),
+   * so deleting the workout deletes its records (ON DELETE CASCADE).
+   * Null for a tested or typed-in one-rep max.
+   */
+  @ForeignKey(() => WorkoutLog)
+  @Column({ type: DataType.CHAR(36), allowNull: true })
+  declare workoutLogId: string | null;
 
   @Column({ type: DataType.TEXT, allowNull: true })
   declare notes: string | null;

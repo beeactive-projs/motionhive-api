@@ -24,9 +24,15 @@ import { ProgramAssignment } from './entities/program-assignment.entity';
 import { User } from '../user/entities/user.entity';
 import { InstructorProfile } from '../profile/entities/instructor-profile.entity';
 import { NotificationService } from '../notification/notification.service';
+import { ExerciseNoteService } from '../exercise/exercise-note.service';
+import { CloudinaryService } from '../../common/services/cloudinary.service';
 import { Program } from './entities/program.entity';
 import { WorkoutLog } from './entities/workout-log.entity';
-import { ProgramSource, WorkoutLogStatus } from './entities/workout.enums';
+import {
+  ProgramSource,
+  RestSource,
+  WorkoutLogStatus,
+} from './entities/workout.enums';
 import { SaveRoutineMode } from './dto/save-log-as-routine.dto';
 import { WorkoutLogService } from './workout-log.service';
 import { CoachAccessService } from './coach-access.service';
@@ -63,6 +69,7 @@ describe('WorkoutLogService (smoke — not exhaustive)', () => {
     findByPk: jest.fn(),
     findOne: jest.fn(),
     max: jest.fn(),
+    update: jest.fn(),
   };
   const loggedSetModel = {
     findByPk: jest.fn(),
@@ -94,15 +101,21 @@ describe('WorkoutLogService (smoke — not exhaustive)', () => {
   };
   const prescribedExerciseModel = { findAll: jest.fn(), create: jest.fn() };
   const prescribedSetModel = { bulkCreate: jest.fn() };
-  const programWorkoutModel = { create: jest.fn() };
+  const programWorkoutModel = { create: jest.fn(), findAll: jest.fn() };
   const instructorClientModel = { findOne: jest.fn() };
-  const assignmentModel = { findByPk: jest.fn(), findAll: jest.fn() };
+  const assignmentModel = {
+    findByPk: jest.fn(),
+    findAll: jest.fn(),
+    update: jest.fn(),
+  };
   const userModel = { findByPk: jest.fn() };
   const instructorProfileModel = { findOne: jest.fn() };
   const notificationService = { notify: jest.fn().mockResolvedValue({}) };
   const assignments = {
     completeIfFinished: jest.fn().mockResolvedValue(false),
   };
+  const exerciseNotes = { notesFor: jest.fn().mockResolvedValue(new Map()) };
+  const cloudinary = { deletePrivateImage: jest.fn() };
   const sequelize = {
     transaction: jest.fn((cb: (tx: unknown) => unknown) =>
       Promise.resolve(cb(fakeTx)),
@@ -163,6 +176,8 @@ describe('WorkoutLogService (smoke — not exhaustive)', () => {
         },
         { provide: NotificationService, useValue: notificationService },
         { provide: ProgramAssignmentService, useValue: assignments },
+        { provide: ExerciseNoteService, useValue: exerciseNotes },
+        { provide: CloudinaryService, useValue: cloudinary },
         { provide: Sequelize, useValue: sequelize },
         { provide: WINSTON_MODULE_NEST_PROVIDER, useValue: makeSilentLogger() },
       ],
@@ -260,6 +275,21 @@ describe('WorkoutLogService (smoke — not exhaustive)', () => {
         expect.anything(),
       );
     });
+
+    // A routine copied from a starter is a DRAFT, and archiving one is
+    // only a status: neither stops it from being started.
+    it.each(['DRAFT', 'ARCHIVED'])(
+      'starts a %s routine like any other',
+      async (status) => {
+        programModel.findByPk.mockResolvedValueOnce(makeProgram({ status }));
+        prescribedExerciseModel.findAll.mockResolvedValueOnce([]);
+        logModel.create.mockResolvedValueOnce({ id: 'log-3' });
+
+        await expect(
+          service.start('me', { programId: 'p-1' }),
+        ).resolves.toEqual({ id: 'log-3' });
+      },
+    );
 
     it('lets anyone start a SYSTEM starter program', async () => {
       programModel.findByPk.mockResolvedValueOnce(
@@ -618,22 +648,7 @@ describe('WorkoutLogService (smoke — not exhaustive)', () => {
 
   // ─── complete() ──────────────────────────────────────────────────
 
-  describe('discard', () => {
-    it('refuses to delete a workout that is already finished', async () => {
-      const log = {
-        id: 'wl-1',
-        userId: 'me',
-        status: WorkoutLogStatus.Completed,
-        destroy: jest.fn(),
-      };
-      logModel.findByPk.mockResolvedValueOnce(log);
-
-      await expect(service.discard('wl-1', 'me')).rejects.toThrow(
-        BadRequestException,
-      );
-      expect(log.destroy).not.toHaveBeenCalled();
-    });
-
+  describe('remove — discarding a workout in progress', () => {
     // Starting mirrors IN_PROGRESS onto the assignment side. Deleting
     // the log without clearing that leaves the day stuck showing a
     // workout in progress that no longer exists.
@@ -650,7 +665,7 @@ describe('WorkoutLogService (smoke — not exhaustive)', () => {
       };
       logModel.findByPk.mockResolvedValueOnce(log);
 
-      await service.discard('wl-1', 'me');
+      await service.remove('wl-1', 'me');
 
       expect(assignedWorkoutModel.update).toHaveBeenCalledWith(
         { status: null },
@@ -679,7 +694,7 @@ describe('WorkoutLogService (smoke — not exhaustive)', () => {
       });
       logModel.findOne.mockResolvedValueOnce({ startedAt: previous });
 
-      await service.discard('wl-1', 'me');
+      await service.remove('wl-1', 'me');
 
       expect(programModel.update).toHaveBeenCalledWith(
         { lastPerformedAt: previous },
@@ -1010,7 +1025,15 @@ describe('WorkoutLogService (smoke — not exhaustive)', () => {
       expect(args.completedAt).toEqual(lastSetAt);
       expect(args.durationSeconds).toBe(55 * 60);
       expect(assignments.completeIfFinished).toHaveBeenCalledWith('pa-1');
-      expect(notificationService.notify).not.toHaveBeenCalled();
+      // No coach is told; only the owner hears it was saved for them.
+      expect(notificationService.notify).toHaveBeenCalledTimes(1);
+      expect(notificationService.notify).toHaveBeenCalledWith(
+        expect.objectContaining({
+          userId: 'me',
+          type: 'WORKOUT_AUTO_SAVED',
+          message: expect.objectContaining({ key: 'workout.workoutAutoSaved' }),
+        }),
+      );
     });
 
     it('discards one with nothing ticked', async () => {
@@ -1468,22 +1491,33 @@ describe('WorkoutLogService (smoke — not exhaustive)', () => {
           );
           return new Date(t).toISOString().slice(0, 10);
         };
+        // In call order: the weeks, the previous time this routine was
+        // done, then each exercise's last session.
         sequelize.query
           .mockResolvedValueOnce([
             { weekStart: monday(0) },
             { weekStart: monday(1) },
             { weekStart: monday(2) },
           ])
-          .mockResolvedValueOnce([{ volume: '5780.40' }]);
+          .mockResolvedValueOnce([
+            {
+              workoutLogId: 'wl-0',
+              name: 'Leg day',
+              completedAt: new Date('2026-10-15T18:00:00Z'),
+              totalKg: '5780.40',
+            },
+          ])
+          .mockResolvedValueOnce([]);
 
         const out = (await service.findById('wl-1', 'me', undefined, {
           summary: true,
-        })) as unknown as { summary?: unknown };
+        })) as unknown as { summary?: Record<string, unknown> };
 
         expect(out.summary).toEqual({
           workoutNumber: 12,
           streakWeeks: 3,
           previousVolumeKg: 5780,
+          volume: expect.objectContaining({ totalKg: 1220 }),
           coachName: null,
           mentionableCoach: null,
         });
@@ -1640,7 +1674,7 @@ describe('WorkoutLogService (smoke — not exhaustive)', () => {
         });
       });
 
-      it('compares no volume for a plan workout or freestyle', async () => {
+      it('keeps previousVolumeKg to routines', async () => {
         logModel.findByPk.mockResolvedValueOnce(
           finishedLog({
             sourceProgramId: 'plan-1',
@@ -1649,15 +1683,301 @@ describe('WorkoutLogService (smoke — not exhaustive)', () => {
         );
         oneRepMaxModel.findAll.mockResolvedValueOnce([]);
         logModel.count.mockResolvedValueOnce(3);
-        sequelize.query.mockResolvedValueOnce([]);
+        sequelize.query
+          .mockResolvedValueOnce([])
+          .mockResolvedValueOnce([
+            {
+              workoutLogId: 'wl-0',
+              name: 'Week 1 day 1',
+              completedAt: new Date('2026-10-15T18:00:00Z'),
+              totalKg: '900',
+            },
+          ])
+          .mockResolvedValueOnce([]);
 
         const out = (await service.findById('wl-1', 'me', undefined, {
           summary: true,
-        })) as unknown as { summary?: { previousVolumeKg: unknown } };
+        })) as unknown as {
+          summary?: {
+            previousVolumeKg: unknown;
+            volume: { previous: unknown };
+          };
+        };
 
+        // The older field stays routine-only; the volume block compares
+        // the program's day as well.
         expect(out.summary?.previousVolumeKg).toBeNull();
-        // Only the weeks query ran.
-        expect(sequelize.query).toHaveBeenCalledTimes(1);
+        expect(out.summary?.volume.previous).toEqual(
+          expect.objectContaining({ workoutLogId: 'wl-0', totalKg: 900 }),
+        );
+      });
+
+      describe('volume against last time', () => {
+        type Volume = {
+          totalKg: number;
+          previous: Record<string, unknown> | null;
+          changeKg: number | null;
+          changePercent: number | null;
+          exercises: Array<Record<string, unknown>>;
+        };
+
+        const set = (fields: Record<string, unknown>) => ({
+          isCompleted: true,
+          setType: 'NORMAL',
+          weightKg: null,
+          reps: null,
+          durationSeconds: null,
+          distanceMeters: null,
+          ...fields,
+        });
+
+        /** A Push day: bench with a warm-up, push-ups, a plank, bench again. */
+        const pushDay = (fields: Record<string, unknown> = {}) =>
+          finishedLog({
+            exercises: [
+              {
+                id: 'le-bench',
+                exerciseId: 'bench',
+                isSkipped: false,
+                exercise: { kind: 'STRENGTH' },
+                sets: [
+                  set({ setType: 'WARMUP', weightKg: '40.00', reps: 10 }),
+                  set({ weightKg: '60.00', reps: 8 }),
+                  set({ weightKg: '60.00', reps: 8 }),
+                  set({ weightKg: '60.00', reps: 8, isCompleted: false }),
+                ],
+              },
+              {
+                id: 'le-pushup',
+                exerciseId: 'pushup',
+                isSkipped: false,
+                exercise: { kind: 'BODYWEIGHT' },
+                sets: [set({ reps: 15 }), set({ reps: 12 })],
+              },
+              {
+                id: 'le-plank',
+                exerciseId: 'plank',
+                isSkipped: false,
+                exercise: { kind: 'DURATION' },
+                sets: [
+                  set({ durationSeconds: 60 }),
+                  set({ durationSeconds: 45 }),
+                ],
+              },
+              {
+                id: 'le-fly',
+                exerciseId: 'fly',
+                isSkipped: true,
+                exercise: { kind: 'STRENGTH' },
+                sets: [],
+              },
+              {
+                id: 'le-bench-2',
+                exerciseId: 'bench',
+                isSkipped: false,
+                exercise: { kind: 'STRENGTH' },
+                sets: [set({ weightKg: '50.00', reps: 10 })],
+              },
+            ],
+            ...fields,
+          });
+
+        /**
+         * `previous` is what the "same workout" query answers, or null when
+         * the log has nothing to match on and that query never runs.
+         */
+        async function volumeOf(
+          log: ReturnType<typeof finishedLog>,
+          previous: unknown[] | null,
+          lastSessions: unknown[],
+        ): Promise<Volume> {
+          logModel.findByPk.mockResolvedValueOnce(log);
+          oneRepMaxModel.findAll.mockResolvedValueOnce([]);
+          logModel.count.mockResolvedValueOnce(5);
+          // In call order: the weeks, the same workout, the last sessions.
+          const answers = [[], ...(previous ? [previous] : []), lastSessions];
+          for (const rows of answers) {
+            sequelize.query.mockResolvedValueOnce(rows);
+          }
+          const out = (await service.findById('wl-1', 'me', undefined, {
+            summary: true,
+          })) as unknown as { summary: { volume: Volume } };
+          return out.summary.volume;
+        }
+
+        const sqlCalls = () =>
+          (
+            sequelize.query.mock.calls as Array<
+              [string, { replacements: Record<string, unknown> }]
+            >
+          ).map(([sql, opts]) => ({ sql, args: opts.replacements }));
+
+        it('compares the total with the last time this routine was done', async () => {
+          const volume = await volumeOf(
+            pushDay({
+              sourceProgramId: 'routine-1',
+              sourceProgram: { id: 'routine-1', isSingleWorkout: true },
+            }),
+            [
+              {
+                workoutLogId: 'wl-0',
+                name: 'Push day',
+                completedAt: new Date('2026-10-15T18:00:00Z'),
+                totalKg: '1240.00',
+              },
+            ],
+            [
+              {
+                exerciseId: 'bench',
+                workoutLogId: 'wl-0',
+                performedAt: new Date('2026-10-15T18:00:00Z'),
+                volumeKg: '1280.00',
+                volumeReps: '24',
+                volumeSeconds: '0',
+                volumeMeters: '0',
+              },
+              {
+                exerciseId: 'pushup',
+                workoutLogId: 'wl-x',
+                performedAt: new Date('2026-10-12T18:00:00Z'),
+                volumeKg: '0',
+                volumeReps: '30',
+                volumeSeconds: '0',
+                volumeMeters: '0',
+              },
+            ],
+          );
+
+          // 60 × 8 twice and 50 × 10: the warm-up and the unticked set
+          // are out, and the skipped fly too.
+          expect(volume.totalKg).toBe(1460);
+          expect(volume.previous).toEqual({
+            workoutLogId: 'wl-0',
+            name: 'Push day',
+            completedAt: new Date('2026-10-15T18:00:00Z'),
+            totalKg: 1240,
+          });
+          expect(volume.changeKg).toBe(220);
+          expect(volume.changePercent).toBe(18);
+          expect(volume.exercises).toEqual([
+            {
+              exerciseId: 'bench',
+              loggedExerciseId: 'le-bench',
+              unit: 'kg',
+              volume: 1460,
+              previous: {
+                workoutLogId: 'wl-0',
+                performedAt: new Date('2026-10-15T18:00:00Z'),
+                volume: 1280,
+              },
+              changePercent: 14,
+            },
+            {
+              exerciseId: 'pushup',
+              loggedExerciseId: 'le-pushup',
+              unit: 'reps',
+              volume: 27,
+              previous: {
+                workoutLogId: 'wl-x',
+                performedAt: new Date('2026-10-12T18:00:00Z'),
+                volume: 30,
+              },
+              changePercent: -10,
+            },
+            {
+              exerciseId: 'plank',
+              loggedExerciseId: 'le-plank',
+              unit: 'seconds',
+              volume: 105,
+              previous: null,
+              changePercent: null,
+            },
+          ]);
+
+          const [, same, last] = sqlCalls();
+          // The same routine, started on its own or scheduled.
+          expect(same.sql).toContain('wl.source_program_id = :sourceProgramId');
+          expect(same.sql).toContain('pw.program_id = :sourceProgramId');
+          expect(same.sql).toContain("ls.set_type <> 'WARMUP'");
+          expect(same.args).toEqual(
+            expect.objectContaining({
+              sourceProgramId: 'routine-1',
+              logId: 'wl-1',
+            }),
+          );
+          expect(last.sql).toContain("ls.set_type <> 'WARMUP'");
+          expect(last.args.exerciseIds).toEqual(['bench', 'pushup', 'plank']);
+        });
+
+        it('compares a plan day by the program day it was copied from', async () => {
+          const volume = await volumeOf(
+            pushDay({
+              assignedWorkoutId: 'aw-9',
+              programAssignmentId: 'asg-1',
+            }),
+            [],
+            [],
+          );
+
+          // First time on this day: nothing to compare yet.
+          expect(volume.previous).toBeNull();
+          expect(volume.changeKg).toBeNull();
+          const [, same] = sqlCalls();
+          expect(same.sql).toContain('aw.master_workout_id = (');
+          // A routine scheduled through the plan matches its own runs too.
+          expect(same.sql).toContain('p.is_single_workout = TRUE');
+          expect(same.sql).not.toContain(':sourceProgramId');
+          expect(same.args).toEqual(
+            expect.objectContaining({ assignedWorkoutId: 'aw-9' }),
+          );
+        });
+
+        it('has no previous workout for freestyle, but still compares exercises', async () => {
+          const volume = await volumeOf(pushDay(), null, [
+            {
+              exerciseId: 'plank',
+              workoutLogId: 'wl-x',
+              performedAt: new Date('2026-10-12T18:00:00Z'),
+              volumeKg: '0',
+              volumeReps: '0',
+              volumeSeconds: '90',
+              volumeMeters: '0',
+            },
+          ]);
+
+          expect(volume.previous).toBeNull();
+          expect(volume.changePercent).toBeNull();
+          expect(
+            volume.exercises.find((e) => e.exerciseId === 'plank'),
+          ).toEqual(
+            expect.objectContaining({ volume: 105, changePercent: 17 }),
+          );
+          // Only the weeks and the last sessions: no "same workout" query.
+          expect(sequelize.query).toHaveBeenCalledTimes(2);
+        });
+
+        it('reads a last time in another unit as no comparison', async () => {
+          const volume = await volumeOf(pushDay(), null, [
+            {
+              exerciseId: 'bench',
+              workoutLogId: 'wl-x',
+              performedAt: new Date('2026-10-12T18:00:00Z'),
+              // Bench done for time once: nothing in kilograms.
+              volumeKg: '0',
+              volumeReps: '0',
+              volumeSeconds: '120',
+              volumeMeters: '0',
+            },
+          ]);
+
+          expect(volume.exercises[0]).toEqual(
+            expect.objectContaining({
+              exerciseId: 'bench',
+              previous: null,
+              changePercent: null,
+            }),
+          );
+        });
       });
     });
   });
@@ -2737,6 +3057,580 @@ describe('WorkoutLogService (smoke — not exhaustive)', () => {
           limit: 6,
         }),
       );
+    });
+  });
+
+  // ─── Workouts round 2 ────────────────────────────────────────────
+
+  describe('remove — deleting a finished workout', () => {
+    const finished = (fields: Record<string, unknown> = {}) => ({
+      id: 'wl-1',
+      userId: 'me',
+      status: WorkoutLogStatus.Completed,
+      assignedWorkoutId: 'aw-1',
+      programAssignmentId: 'pa-1',
+      sourceProgramId: null,
+      photoPublicId: 'workout-photos/me/wl-1',
+      destroy: jest.fn().mockResolvedValue(undefined),
+      ...fields,
+    });
+
+    it('deletes it in one transaction and opens its plan day and plan again', async () => {
+      const log = finished();
+      logModel.findByPk.mockResolvedValueOnce(log);
+      // 4 days in the plan, 2 still done once this one is open again.
+      assignedWorkoutModel.count
+        .mockResolvedValueOnce(4)
+        .mockResolvedValueOnce(2);
+
+      await service.remove('wl-1', 'me');
+
+      expect(sequelize.transaction).toHaveBeenCalledTimes(1);
+      expect(assignedWorkoutModel.update).toHaveBeenCalledWith(
+        { status: null },
+        { where: { id: 'aw-1' }, transaction: fakeTx },
+      );
+      // Sets, exercises, reports and its records go with it by cascade.
+      expect(log.destroy).toHaveBeenCalledWith({ transaction: fakeTx });
+      expect(assignmentModel.update).toHaveBeenCalledWith(
+        { status: 'ACTIVE' },
+        {
+          where: { id: 'pa-1', status: 'COMPLETED' },
+          transaction: fakeTx,
+        },
+      );
+      expect(sequelize.query).toHaveBeenCalledWith(
+        expect.stringContaining('completion_percent'),
+        expect.objectContaining({
+          replacements: { p: 50, id: 'pa-1' },
+          transaction: fakeTx,
+        }),
+      );
+    });
+
+    it('deletes the photo after commit, and a failure there fails nothing', async () => {
+      logModel.findByPk.mockResolvedValueOnce(
+        finished({ assignedWorkoutId: null, programAssignmentId: null }),
+      );
+      cloudinary.deletePrivateImage.mockRejectedValueOnce(new Error('down'));
+
+      await expect(service.remove('wl-1', 'me')).resolves.toBeUndefined();
+
+      expect(cloudinary.deletePrivateImage).toHaveBeenCalledWith(
+        'workout-photos/me/wl-1',
+      );
+    });
+
+    it("works the routine's last done out again", async () => {
+      const previous = new Date('2026-10-01T10:00:00Z');
+      logModel.findByPk.mockResolvedValueOnce(
+        finished({
+          assignedWorkoutId: null,
+          programAssignmentId: null,
+          sourceProgramId: 'prog-1',
+          photoPublicId: null,
+        }),
+      );
+      programModel.findByPk.mockResolvedValueOnce({
+        id: 'prog-1',
+        source: 'USER',
+      });
+      logModel.findOne.mockResolvedValueOnce({ startedAt: previous });
+
+      await service.remove('wl-1', 'me');
+
+      expect(programModel.update).toHaveBeenCalledWith(
+        { lastPerformedAt: previous },
+        { where: { id: 'prog-1' } },
+      );
+      expect(cloudinary.deletePrivateImage).not.toHaveBeenCalled();
+    });
+
+    it('deletes an abandoned one the same way, leaving any plan alone when no day was filled', async () => {
+      const log = finished({
+        status: WorkoutLogStatus.Abandoned,
+        assignedWorkoutId: null,
+        photoPublicId: null,
+      });
+      logModel.findByPk.mockResolvedValueOnce(log);
+      assignedWorkoutModel.count.mockResolvedValue(0);
+
+      await service.remove('wl-1', 'me');
+
+      expect(log.destroy).toHaveBeenCalled();
+      expect(assignedWorkoutModel.update).not.toHaveBeenCalled();
+      expect(assignmentModel.update).not.toHaveBeenCalled();
+      assignedWorkoutModel.count.mockReset();
+    });
+
+    it('404s on a workout that is not yours, and deletes nothing', async () => {
+      const log = finished({ userId: 'someone-else' });
+      logModel.findByPk.mockResolvedValueOnce(log);
+
+      await expect(service.remove('wl-1', 'me')).rejects.toThrow(
+        NotFoundException,
+      );
+      expect(log.destroy).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('complete — records carry their workout', () => {
+    it('links each estimated record to the workout, so deleting it deletes them', async () => {
+      const log = {
+        id: 'wl-1',
+        userId: 'me',
+        status: WorkoutLogStatus.InProgress,
+        startedAt: new Date(Date.now() - 3_600_000),
+        pausedSeconds: 0,
+        pausedAt: null,
+        programAssignmentId: null,
+        assignedWorkoutId: null,
+        update: jest.fn().mockResolvedValue(undefined),
+        get() {
+          return this;
+        },
+      };
+      logModel.findByPk.mockResolvedValueOnce(log);
+      loggedSetModel.findOne.mockResolvedValueOnce(null); // no ticked time
+      loggedExerciseModel.findAll.mockResolvedValueOnce([
+        {
+          exerciseId: 'bench',
+          sets: [{ isCompleted: true, reps: 5, weightKg: 80 }],
+        },
+      ]);
+      oneRepMaxModel.findAll.mockResolvedValueOnce([]);
+
+      await service.complete('wl-1', {}, 'me');
+
+      expect(oneRepMaxModel.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          exerciseId: 'bench',
+          source: 'ESTIMATED_EPLEY',
+          workoutLogId: 'wl-1',
+        }),
+        { transaction: fakeTx },
+      );
+    });
+  });
+
+  describe('logSet — the rest actually taken', () => {
+    const live = { id: 'wl-1', userId: 'me', status: 'IN_PROGRESS' };
+    const setRow = () => ({
+      id: 'ls-1',
+      exercise: { workoutLogId: 'wl-1' },
+      update: jest.fn().mockResolvedValue(undefined),
+    });
+
+    it('stores the rest with how it was measured', async () => {
+      const set = setRow();
+      logModel.findByPk.mockResolvedValueOnce(live);
+      loggedSetModel.findByPk.mockResolvedValueOnce(set);
+
+      await service.logSet(
+        'wl-1',
+        'ls-1',
+        { restAfterSeconds: 150, restSource: RestSource.Tap },
+        'me',
+      );
+
+      expect(set.update).toHaveBeenCalledWith({
+        restAfterSeconds: 150,
+        restSource: 'TAP',
+      });
+    });
+
+    it('stores no rest for a break, whatever time is sent', async () => {
+      const set = setRow();
+      logModel.findByPk.mockResolvedValueOnce(live);
+      loggedSetModel.findByPk.mockResolvedValueOnce(set);
+
+      await service.logSet(
+        'wl-1',
+        'ls-1',
+        { restAfterSeconds: 1500, restSource: RestSource.Break },
+        'me',
+      );
+
+      expect(set.update).toHaveBeenCalledWith({
+        restAfterSeconds: null,
+        restSource: 'BREAK',
+      });
+    });
+
+    it('clears the source when sent null', async () => {
+      const set = setRow();
+      logModel.findByPk.mockResolvedValueOnce(live);
+      loggedSetModel.findByPk.mockResolvedValueOnce(set);
+
+      await service.logSet('wl-1', 'ls-1', { restSource: null }, 'me');
+
+      expect(set.update).toHaveBeenCalledWith({ restSource: null });
+    });
+  });
+
+  describe('pauseGap — pausing for time already spent away', () => {
+    const running = (fields: Record<string, unknown> = {}) => ({
+      id: 'wl-1',
+      userId: 'me',
+      status: WorkoutLogStatus.InProgress,
+      startedAt: new Date(Date.now() - 3_600_000), // an hour ago
+      pausedAt: null,
+      pausedSeconds: 300,
+      update: jest.fn().mockResolvedValue(undefined),
+      ...fields,
+    });
+
+    it('adds the time away to the paused time', async () => {
+      const log = running();
+      logModel.findByPk.mockResolvedValueOnce(log);
+
+      await service.pauseGap('wl-1', 'me', 1_500);
+
+      expect(log.update).toHaveBeenCalledWith({ pausedSeconds: 1_800 });
+    });
+
+    it('refuses more than the workout has been running', async () => {
+      // 60 min since the start, 5 paused: 55 min of active time.
+      const log = running();
+      logModel.findByPk.mockResolvedValueOnce(log);
+
+      const err = await service
+        .pauseGap('wl-1', 'me', 56 * 60)
+        .catch((e: unknown) => e);
+
+      expect(err).toBeInstanceOf(BadRequestException);
+      expect((err as BadRequestException).getResponse()).toEqual(
+        expect.objectContaining({ messageKey: 'workout.pauseGapTooLong' }),
+      );
+      expect(log.update).not.toHaveBeenCalled();
+    });
+
+    it('measures a paused workout up to the start of its pause', async () => {
+      // Paused 40 minutes in: 35 min active, whatever the clock says now.
+      const log = running({
+        pausedAt: new Date(Date.now() - 20 * 60_000),
+      });
+      logModel.findByPk.mockResolvedValueOnce(log);
+
+      await expect(service.pauseGap('wl-1', 'me', 36 * 60)).rejects.toThrow(
+        BadRequestException,
+      );
+    });
+
+    it('refuses a workout that is over', async () => {
+      logModel.findByPk.mockResolvedValueOnce(
+        running({ status: WorkoutLogStatus.Completed }),
+      );
+      await expect(service.pauseGap('wl-1', 'me', 600)).rejects.toThrow(
+        BadRequestException,
+      );
+    });
+  });
+
+  describe('supersets in a running workout', () => {
+    const live = { id: 'wl-1', userId: 'me', status: 'IN_PROGRESS' };
+
+    it('unlinks the exercise left alone when one of a pair is removed', async () => {
+      const ex = {
+        id: 'le-a1',
+        workoutLogId: 'wl-1',
+        supersetGroupId: 1,
+        destroy: jest.fn().mockResolvedValue(undefined),
+      };
+      logModel.findByPk.mockResolvedValueOnce(live);
+      loggedExerciseModel.findByPk.mockResolvedValueOnce(ex);
+      loggedExerciseModel.findAll.mockResolvedValueOnce([{ id: 'le-a2' }]);
+
+      await service.removeExerciseFromLog('wl-1', 'le-a1', 'me');
+
+      expect(ex.destroy).toHaveBeenCalledWith({ transaction: fakeTx });
+      expect(loggedExerciseModel.findAll).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { workoutLogId: 'wl-1', supersetGroupId: 1 },
+          transaction: fakeTx,
+        }),
+      );
+      expect(loggedExerciseModel.update).toHaveBeenCalledWith(
+        { supersetGroupId: null },
+        { where: { id: 'le-a2' }, transaction: fakeTx },
+      );
+    });
+
+    it('keeps a superset of three linked when one leaves', async () => {
+      logModel.findByPk.mockResolvedValueOnce(live);
+      loggedExerciseModel.findByPk.mockResolvedValueOnce({
+        id: 'le-a1',
+        workoutLogId: 'wl-1',
+        supersetGroupId: 1,
+        destroy: jest.fn().mockResolvedValue(undefined),
+      });
+      loggedExerciseModel.findAll.mockResolvedValueOnce([
+        { id: 'le-a2' },
+        { id: 'le-a3' },
+      ]);
+
+      await service.removeExerciseFromLog('wl-1', 'le-a1', 'me');
+
+      expect(loggedExerciseModel.update).not.toHaveBeenCalled();
+    });
+
+    it('keeps the link when an exercise is swapped', async () => {
+      const ex = {
+        id: 'le-a1',
+        workoutLogId: 'wl-1',
+        exerciseId: 'bench',
+        swappedFromExerciseId: null,
+        supersetGroupId: 1,
+        update: jest.fn().mockResolvedValue(undefined),
+      };
+      logModel.findByPk.mockResolvedValueOnce(live);
+      loggedExerciseModel.findByPk.mockResolvedValueOnce(ex);
+      exerciseModel.findByPk.mockResolvedValueOnce({
+        id: 'db-press',
+        name: 'Dumbbell press',
+        thumbnailUrl: null,
+        visibility: 'PUBLIC',
+        ownerId: null,
+      });
+
+      await service.swapLoggedExercise('wl-1', 'le-a1', 'me', 'db-press');
+
+      const [fields] = ex.update.mock.calls[0] as [Record<string, unknown>];
+      expect(fields).not.toHaveProperty('supersetGroupId');
+    });
+  });
+
+  describe('findById — plan notes, planned rest and the private note', () => {
+    function logWith(
+      exercises: Record<string, unknown>[],
+      fields: Record<string, unknown> = {},
+    ) {
+      const plain = {
+        id: 'wl-1',
+        userId: 'me',
+        sourceProgram: null,
+        exercises,
+        ...fields,
+      };
+      return {
+        id: 'wl-1',
+        userId: 'me',
+        status: WorkoutLogStatus.InProgress,
+        startedAt: new Date(),
+        completedAt: null,
+        get: () => plain,
+      };
+    }
+
+    type Out = {
+      exercises: {
+        personalNote?: string | null;
+        sets: { plannedRestSeconds?: number | null }[];
+      }[];
+    };
+
+    it("reads a coach plan's rest from the assigned set", async () => {
+      logModel.findByPk.mockResolvedValueOnce(
+        logWith([
+          {
+            exerciseId: 'bench',
+            assignedExercise: { id: 'ae-1', notes: 'Slow down' },
+            prescribedExercise: null,
+            sets: [
+              { assignedSet: { restAfterSeconds: 120 }, prescribedSet: null },
+              { assignedSet: { restAfterSeconds: null }, prescribedSet: null },
+            ],
+          },
+        ]),
+      );
+
+      const out = (await service.findById('wl-1', 'me')) as unknown as Out;
+
+      expect(out.exercises[0].sets.map((s) => s.plannedRestSeconds)).toEqual([
+        120,
+        null,
+      ]);
+      expect(programWorkoutModel.findAll).not.toHaveBeenCalled();
+    });
+
+    it("falls back from a routine's set to its day, then its default", async () => {
+      logModel.findByPk.mockResolvedValueOnce(
+        logWith(
+          [
+            {
+              exerciseId: 'bench',
+              prescribedExercise: { id: 'pe-1', programWorkoutId: 'pw-1' },
+              sets: [
+                { assignedSet: null, prescribedSet: { restAfterSeconds: 90 } },
+                {
+                  assignedSet: null,
+                  prescribedSet: { restAfterSeconds: null },
+                },
+              ],
+            },
+            {
+              // Added during the workout: no plan row, the routine's default.
+              exerciseId: 'curl',
+              prescribedExercise: null,
+              sets: [{ assignedSet: null, prescribedSet: null }],
+            },
+          ],
+          { sourceProgram: { id: 'r-1', defaultRestSeconds: 75 } },
+        ),
+      );
+      programWorkoutModel.findAll.mockResolvedValueOnce([
+        { id: 'pw-1', defaultRestSeconds: 150 },
+      ]);
+
+      const out = (await service.findById('wl-1', 'me')) as unknown as Out;
+
+      expect(out.exercises[0].sets.map((s) => s.plannedRestSeconds)).toEqual([
+        90, 150,
+      ]);
+      expect(out.exercises[1].sets[0].plannedRestSeconds).toBe(75);
+      // One query for every day, however many exercises.
+      expect(programWorkoutModel.findAll).toHaveBeenCalledTimes(1);
+    });
+
+    it('adds the private note on the owner read, in one query', async () => {
+      logModel.findByPk.mockResolvedValueOnce(
+        logWith([
+          { exerciseId: 'bench', sets: [] },
+          { exerciseId: 'curl', sets: [] },
+          { exerciseId: null, sets: [] },
+        ]),
+      );
+      exerciseNotes.notesFor.mockResolvedValueOnce(
+        new Map([['bench', 'Seat on 4']]),
+      );
+
+      const out = (await service.findById('wl-1', 'me', 'en', {
+        personalNotes: true,
+      })) as unknown as Out;
+
+      expect(exerciseNotes.notesFor).toHaveBeenCalledTimes(1);
+      expect(exerciseNotes.notesFor).toHaveBeenCalledWith('me', [
+        'bench',
+        'curl',
+      ]);
+      expect(out.exercises.map((e) => e.personalNote)).toEqual([
+        'Seat on 4',
+        null,
+        null,
+      ]);
+    });
+
+    it('never carries the private note unless the owner route asks', async () => {
+      logModel.findByPk.mockResolvedValueOnce(
+        logWith([{ exerciseId: 'bench', sets: [] }]),
+      );
+
+      const out = (await service.findById('wl-1', 'me')) as unknown as Out;
+
+      expect(exerciseNotes.notesFor).not.toHaveBeenCalled();
+      expect(out.exercises[0]).not.toHaveProperty('personalNote');
+    });
+
+    it("never gives a coach the client's private note", async () => {
+      logModel.findByPk.mockResolvedValueOnce({
+        userId: 'client-1',
+        programAssignmentId: 'asg-1',
+      });
+      instructorClientModel.findOne.mockResolvedValueOnce({ id: 'link-1' });
+      assignmentModel.findAll.mockResolvedValueOnce([{ id: 'asg-1' }]);
+      logModel.findByPk.mockResolvedValueOnce({
+        ...logWith([{ exerciseId: 'bench', sets: [] }]),
+        userId: 'client-1',
+      });
+
+      const out = (await service.findByIdForInstructor(
+        'wl-1',
+        'coach-1',
+      )) as unknown as Out;
+
+      expect(exerciseNotes.notesFor).not.toHaveBeenCalled();
+      expect(out.exercises[0]).not.toHaveProperty('personalNote');
+    });
+
+    it('loads the plan notes and both kinds of plan set', async () => {
+      logModel.findByPk.mockResolvedValueOnce(logWith([]));
+
+      await service.findById('wl-1', 'me');
+
+      const [, options] = logModel.findByPk.mock.calls[0] as [
+        string,
+        {
+          include: {
+            as: string;
+            include?: { as: string; include?: { as: string }[] }[];
+          }[];
+        },
+      ];
+      const exercises = options.include.find((i) => i.as === 'exercises')!;
+      const names = exercises.include!.map((i) => i.as);
+      expect(names).toEqual(
+        expect.arrayContaining(['assignedExercise', 'prescribedExercise']),
+      );
+      const sets = exercises.include!.find((i) => i.as === 'sets')!;
+      expect(sets.include!.map((i) => i.as)).toEqual([
+        'assignedSet',
+        'prescribedSet',
+      ]);
+    });
+  });
+
+  describe('saveLogAsRoutine — the planned rest, not the rest taken', () => {
+    it("keeps the plan's rest and the routine's default, not what was rested", async () => {
+      logModel.findByPk.mockResolvedValueOnce({
+        id: 'log-1',
+        userId: 'me',
+        sourceProgramId: 'r-1',
+      });
+      programModel.findByPk.mockResolvedValueOnce({
+        id: 'r-1',
+        defaultRestSeconds: 90,
+        workouts: [{ id: 'pw-1', defaultRestSeconds: null, sequenceNumber: 0 }],
+      });
+      programModel.create.mockResolvedValueOnce({ id: 'p-new' });
+      programWorkoutModel.create.mockResolvedValueOnce({ id: 'pw-new' });
+      prescribedExerciseModel.create.mockResolvedValueOnce({ id: 'pe-new' });
+      loggedExerciseModel.findAll.mockResolvedValueOnce([
+        {
+          exerciseId: 'ex-1',
+          supersetGroupId: null,
+          notes: null,
+          sets: [
+            {
+              setType: 'NORMAL',
+              reps: 8,
+              weightKg: 60,
+              // Rested 3:10, the plan said 2:00.
+              restAfterSeconds: 190,
+              restSource: 'TAP',
+              prescribedSet: { restAfterSeconds: 120 },
+            },
+            {
+              setType: 'NORMAL',
+              reps: 8,
+              weightKg: 60,
+              restAfterSeconds: 75,
+              restSource: 'ESTIMATED',
+              prescribedSet: null,
+            },
+          ],
+        },
+      ]);
+
+      await service.saveLogAsRoutine('log-1', 'me', { name: 'Push day B' });
+
+      expect(programModel.create).toHaveBeenCalledWith(
+        expect.objectContaining({ defaultRestSeconds: 90 }),
+        expect.anything(),
+      );
+      const [rows] = prescribedSetModel.bulkCreate.mock.calls[0] as [
+        Array<Record<string, unknown>>,
+      ];
+      expect(rows.map((r) => r.restAfterSeconds)).toEqual([120, null]);
     });
   });
 });

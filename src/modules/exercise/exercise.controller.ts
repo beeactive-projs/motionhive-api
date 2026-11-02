@@ -8,6 +8,7 @@ import {
   ParseUUIDPipe,
   Patch,
   Post,
+  Put,
   Query,
   Request,
   UseGuards,
@@ -27,7 +28,9 @@ import { RolesGuard } from '../../common/guards/roles.guard';
 import type { AuthenticatedRequest } from '../../common/types/authenticated-request';
 
 import { ExerciseService } from './exercise.service';
+import { ExerciseNoteService } from './exercise-note.service';
 import { CreateExerciseDto } from './dto/create-exercise.dto';
+import { UpdateExerciseNoteDto } from './dto/update-exercise-note.dto';
 import { UpdateExerciseDto } from './dto/update-exercise.dto';
 import { ListExercisesQueryDto } from './dto/list-exercises.query.dto';
 
@@ -37,14 +40,19 @@ import { ListExercisesQueryDto } from './dto/list-exercises.query.dto';
  * `GET` endpoints accept both INSTRUCTOR and USER roles; the service
  * gates clients via `assertClientCanBrowse` (locked decision §19).
  *
- * Mutating endpoints (create, update, delete, fork) are
- * INSTRUCTOR-only — clients never author or own exercises.
+ * Create, update and delete are open to everyone since workouts round 2:
+ * someone training without a coach makes their own exercises, which are
+ * always PRIVATE (source USER). Fork stays INSTRUCTOR-only. The personal
+ * note (`:id/note`) is the caller's own and never shown to a coach.
  */
 @ApiTags('Exercises')
 @Controller('exercises')
 @UseGuards(AuthGuard('jwt'), RolesGuard)
 export class ExerciseController {
-  constructor(private readonly exerciseService: ExerciseService) {}
+  constructor(
+    private readonly exerciseService: ExerciseService,
+    private readonly exerciseNoteService: ExerciseNoteService,
+  ) {}
 
   // ── Read ──────────────────────────────────────────────────────────
 
@@ -71,21 +79,49 @@ export class ExerciseController {
     return this.exerciseService.findById(id, principal);
   }
 
-  // ── Write (instructor only) ───────────────────────────────────────
+  // ── The caller's private note ─────────────────────────────────────
+
+  @Get(':id/note')
+  @Roles('INSTRUCTOR', 'USER')
+  @ApiEndpoint(ExerciseDocs.getNote)
+  async getNote(
+    @Request() req: AuthenticatedRequest,
+    @Param('id', ParseUUIDPipe) id: string,
+  ) {
+    return this.exerciseNoteService.get(id, req.user.id);
+  }
+
+  @Put(':id/note')
+  @Roles('INSTRUCTOR', 'USER')
+  @Throttle({ default: { limit: 120, ttl: 3_600_000 } })
+  @ApiEndpoint({ ...ExerciseDocs.putNote, body: UpdateExerciseNoteDto })
+  async putNote(
+    @Request() req: AuthenticatedRequest,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: UpdateExerciseNoteDto,
+  ) {
+    return this.exerciseNoteService.put(id, req.user.id, dto.note);
+  }
+
+  // ── Write (owner; fork is coaches only) ───────────────────────────
 
   @Post()
-  @Roles('INSTRUCTOR')
+  @Roles('INSTRUCTOR', 'USER')
   @Throttle({ default: { limit: 60, ttl: 3_600_000 } })
   @ApiEndpoint({ ...ExerciseDocs.create, body: CreateExerciseDto })
   async create(
-    @Request() req: AuthenticatedRequest,
+    @Principal() principal: PrincipalContext,
     @Body() dto: CreateExerciseDto,
   ) {
-    return this.exerciseService.create(dto, req.user.id);
+    return this.exerciseService.create(
+      dto,
+      principal.userId,
+      principal.isInstructor,
+    );
   }
 
   @Patch(':id')
-  @Roles('INSTRUCTOR')
+  @Roles('INSTRUCTOR', 'USER')
   @Throttle({ default: { limit: 120, ttl: 3_600_000 } })
   @ApiEndpoint({ ...ExerciseDocs.update, body: UpdateExerciseDto })
   async update(
@@ -97,7 +133,7 @@ export class ExerciseController {
   }
 
   @Delete(':id')
-  @Roles('INSTRUCTOR')
+  @Roles('INSTRUCTOR', 'USER')
   @HttpCode(204)
   @Throttle({ default: { limit: 30, ttl: 3_600_000 } })
   @ApiEndpoint(ExerciseDocs.remove)

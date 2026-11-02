@@ -41,6 +41,7 @@ import { AddLogExerciseDto } from './dto/add-log-exercise.dto';
 import { AddLogSetDto } from './dto/add-log-set.dto';
 import { CompleteWorkoutDto } from './dto/complete-workout.dto';
 import { LogSetDto } from './dto/log-set.dto';
+import { PauseGapDto } from './dto/pause-gap.dto';
 import { RecordOneRepMaxDto } from './dto/record-one-rep-max.dto';
 import { SetWorkoutDurationDto } from './dto/set-workout-duration.dto';
 import { SetWorkoutVisibilityDto } from './dto/set-workout-visibility.dto';
@@ -78,6 +79,7 @@ export class WorkoutLogController {
 
   @Patch('workout-logs/:id/sets/:setId')
   @Throttle({ default: { limit: 600, ttl: 3_600_000 } })
+  @ApiEndpoint({ ...WorkoutLogDocs.logSet, body: LogSetDto })
   async logSet(
     @Request() req: AuthenticatedRequest,
     @Param('id', ParseUUIDPipe) id: string,
@@ -214,17 +216,19 @@ export class WorkoutLogController {
   }
 
   /**
-   * Cancel a workout in progress and delete it outright. For the
-   * "changed my mind" case, where marking it SKIPPED would wrongly
-   * record a decision not to train.
+   * Delete a workout. One in progress is discarded ("changed my mind",
+   * where marking it SKIPPED would wrongly record a decision not to
+   * train); a finished one is deleted with its records and photo, and its
+   * plan day is open again.
    */
   @Delete('workout-logs/:id')
   @HttpCode(204)
-  async discard(
+  @ApiEndpoint(WorkoutLogDocs.remove)
+  async remove(
     @Request() req: AuthenticatedRequest,
     @Param('id', ParseUUIDPipe) id: string,
   ) {
-    await this.workoutLogService.discard(id, req.user.id);
+    await this.workoutLogService.remove(id, req.user.id);
   }
 
   /** Stop the clock while away; finishing or resuming ends the pause. */
@@ -244,6 +248,21 @@ export class WorkoutLogController {
     @Param('id', ParseUUIDPipe) id: string,
   ) {
     return this.workoutLogService.resume(id, req.user.id);
+  }
+
+  /**
+   * "You were away 25 min. Pause the workout for that time?" Adds the
+   * time away to the paused time after the fact.
+   */
+  @Post('workout-logs/:id/pause-gap')
+  @HttpCode(200)
+  @ApiEndpoint({ ...WorkoutLogDocs.pauseGap, body: PauseGapDto })
+  async pauseGap(
+    @Request() req: AuthenticatedRequest,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: PauseGapDto,
+  ) {
+    return this.workoutLogService.pauseGap(id, req.user.id, dto.seconds);
   }
 
   /**
@@ -358,6 +377,7 @@ export class WorkoutLogController {
   }
 
   @Get('workout-logs/:id')
+  @ApiEndpoint(WorkoutLogDocs.get)
   async get(
     @Request() req: AuthenticatedRequest,
     @Param('id', ParseUUIDPipe) id: string,
@@ -366,7 +386,7 @@ export class WorkoutLogController {
       id,
       req.user.id,
       requestLocale(req),
-      { summary: true },
+      { summary: true, personalNotes: true },
     );
   }
 

@@ -25,6 +25,12 @@ import {
 import * as bcrypt from 'bcrypt';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
+import { UpdateWorkoutSettingsDto } from './dto/update-workout-settings.dto';
+import {
+  resolveWorkoutSettings,
+  type StoredWorkoutSettings,
+  type WorkoutSettings,
+} from './workout-settings';
 import { CryptoService } from '../../common/services';
 import { apiError } from '../../common/i18n';
 import { foldedContains } from '../../common/utils/search.utils';
@@ -106,6 +112,54 @@ export class UserService {
 
   async findById(id: string): Promise<User | null> {
     return this.userModel.findByPk(id);
+  }
+
+  /** The person's workout logger settings, every key resolved. */
+  async getWorkoutSettings(userId: string): Promise<WorkoutSettings> {
+    const user = await this.userModel.findByPk(userId, {
+      attributes: ['id', 'workoutSettings'],
+    });
+    if (!user) throw new NotFoundException(apiError('user.notFound'));
+    return resolveWorkoutSettings(user.workoutSettings);
+  }
+
+  /**
+   * Merge the keys sent into `workout_settings`. Read, merge and write
+   * under a row lock, so two quick toggles cannot drop each other's key
+   * (same as the privacy settings). A key sent as null goes back to its
+   * default. Answers with every key resolved.
+   */
+  async updateWorkoutSettings(
+    userId: string,
+    dto: UpdateWorkoutSettingsDto,
+  ): Promise<WorkoutSettings> {
+    const entries = Object.entries(dto).filter(
+      ([, value]) => value !== undefined,
+    ) as [keyof WorkoutSettings, number | boolean | null][];
+    if (entries.length === 0) return this.getWorkoutSettings(userId);
+
+    return this.sequelize.transaction(async (tx) => {
+      const user = await this.userModel.findByPk(userId, {
+        attributes: ['id', 'workoutSettings'],
+        transaction: tx,
+        lock: tx.LOCK.UPDATE,
+      });
+      if (!user) throw new NotFoundException(apiError('user.notFound'));
+
+      const merged: Record<string, number | boolean> = {
+        ...(user.workoutSettings ?? {}),
+      };
+      for (const [key, value] of entries) {
+        if (value === null) delete merged[key];
+        else merged[key] = value;
+      }
+      // JSONB is not dirty-tracked on mutation: assign a fresh object.
+      await user.update(
+        { workoutSettings: merged as StoredWorkoutSettings },
+        { transaction: tx },
+      );
+      return resolveWorkoutSettings(merged as StoredWorkoutSettings);
+    });
   }
 
   /**

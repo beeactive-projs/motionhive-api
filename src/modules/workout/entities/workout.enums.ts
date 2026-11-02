@@ -82,6 +82,20 @@ export const WorkoutVisibility = {
 export type WorkoutVisibility =
   (typeof WorkoutVisibility)[keyof typeof WorkoutVisibility];
 
+/**
+ * How a logged set's `restAfterSeconds` was measured (migration 079).
+ * TAP: the person ended the rest themselves, exact. ESTIMATED: worked out
+ * from when the next set was ticked. BREAK: they were away; no rest is
+ * stored. Null on sets from the older logger, whose `restAfterSeconds`
+ * was the planned rest, not the one taken.
+ */
+export const RestSource = {
+  Tap: 'TAP',
+  Estimated: 'ESTIMATED',
+  Break: 'BREAK',
+} as const;
+export type RestSource = (typeof RestSource)[keyof typeof RestSource];
+
 export const ExerciseBlockKind = {
   None: 'NONE',
   Superset: 'SUPERSET',

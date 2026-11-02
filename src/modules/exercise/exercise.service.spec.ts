@@ -5,6 +5,7 @@ import {
 } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { getModelToken } from '@nestjs/sequelize';
+import { Op } from 'sequelize';
 import { Sequelize } from 'sequelize-typescript';
 import { WINSTON_MODULE_NEST_PROVIDER } from 'nest-winston';
 
@@ -516,6 +517,160 @@ describe('ExerciseService (smoke — not exhaustive)', () => {
         expect.objectContaining({ slug: 'tempo-squat-3' }),
         expect.anything(),
       );
+    });
+  });
+
+  // ─── Own exercises for everyone (workouts round 2) ───────────────
+
+  describe('own exercises for someone who is not a coach', () => {
+    const meClient = {
+      userId: 'me',
+      isInstructor: false,
+      locale: 'en',
+    } as const;
+
+    const created = {
+      id: 'own-1',
+      ownerId: 'me',
+      source: ExerciseSource.User,
+      visibility: ExerciseVisibility.Private,
+    };
+
+    it('creates a USER exercise, always private, with no muscles needed', async () => {
+      exerciseModel.findOne.mockResolvedValueOnce(null); // slug free
+      exerciseModel.create.mockResolvedValueOnce(created);
+      exerciseModel.findByPk.mockResolvedValueOnce(created); // reloadDetail
+
+      await service.create(
+        {
+          name: 'Cable thing at my gym',
+          kind: ExerciseKind.Strength,
+          // Sent, but someone's own exercise is private by rule.
+          visibility: ExerciseVisibility.Public,
+        },
+        'me',
+        false,
+      );
+
+      expect(exerciseModel.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          source: ExerciseSource.User,
+          ownerId: 'me',
+          visibility: ExerciseVisibility.Private,
+        }),
+        { transaction: fakeTx },
+      );
+      expect(exerciseMuscleModel.bulkCreate).not.toHaveBeenCalled();
+    });
+
+    it('takes the muscle chips when they are picked', async () => {
+      exerciseModel.findOne.mockResolvedValueOnce(null);
+      exerciseModel.create.mockResolvedValueOnce(created);
+      exerciseModel.findByPk.mockResolvedValueOnce(created);
+
+      await service.create(
+        {
+          name: 'Cable thing',
+          kind: ExerciseKind.Strength,
+          muscles: [{ muscleId: 'm-chest', role: MuscleRole.Primary }],
+        },
+        'me',
+        false,
+      );
+
+      expect(exerciseMuscleModel.bulkCreate).toHaveBeenCalledWith(
+        [
+          {
+            exerciseId: 'own-1',
+            muscleId: 'm-chest',
+            role: MuscleRole.Primary,
+          },
+        ],
+        { transaction: fakeTx },
+      );
+    });
+
+    it('still asks a coach for a primary muscle', async () => {
+      await expect(
+        service.create(
+          { name: 'Coach thing', kind: ExerciseKind.Strength },
+          'coach-1',
+          true,
+        ),
+      ).rejects.toThrow(BadRequestException);
+      expect(exerciseModel.create).not.toHaveBeenCalled();
+    });
+
+    it('keeps an own exercise private on edit, whatever is sent', async () => {
+      const update = jest.fn().mockResolvedValue(undefined);
+      exerciseModel.findByPk
+        .mockResolvedValueOnce({ ...created, name: 'Cable thing', update })
+        .mockResolvedValueOnce(created); // reloadDetail
+
+      await service.update(
+        'own-1',
+        { visibility: ExerciseVisibility.Public, isUnilateral: true },
+        meClient,
+      );
+
+      const [fields] = update.mock.calls[0] as [Record<string, unknown>];
+      expect(fields).toEqual({ isUnilateral: true });
+    });
+
+    it("lets nobody else edit or delete someone's own exercise", async () => {
+      exerciseModel.findByPk.mockResolvedValue({ ...created, ownerId: 'u-2' });
+
+      await expect(
+        service.update('own-1', { name: 'Mine now' }, meClient),
+      ).rejects.toThrow(NotFoundException);
+      await expect(service.softDelete('own-1', meClient)).rejects.toThrow(
+        NotFoundException,
+      );
+      exerciseModel.findByPk.mockReset();
+    });
+
+    it('lets the owner delete it (soft, so its history stays)', async () => {
+      const destroy = jest.fn().mockResolvedValue(undefined);
+      exerciseModel.findByPk.mockResolvedValueOnce({
+        ...created,
+        forkedFromId: null,
+        destroy,
+      });
+
+      await service.softDelete('own-1', meClient);
+
+      expect(destroy).toHaveBeenCalledWith({ transaction: fakeTx });
+    });
+
+    describe('the list', () => {
+      const conditions = (): unknown[] => {
+        const [{ where }] = exerciseModel.findAndCountAll.mock.calls[0] as [
+          { where: Record<symbol, unknown[]> },
+        ];
+        return where[Op.and];
+      };
+
+      beforeEach(() => {
+        exerciseModel.findAndCountAll.mockResolvedValue({ rows: [], count: 0 });
+      });
+
+      it('answers "mine" with what they made', async () => {
+        await service.list({ ownership: 'mine' }, meClient);
+
+        expect(conditions()).toContainEqual({ ownerId: 'me' });
+      });
+
+      it('shows their own beside ours and the public ones under "all"', async () => {
+        await service.list({}, meClient);
+
+        expect(conditions()).toContainEqual({
+          [Op.or]: [
+            { source: ExerciseSource.System },
+            { visibility: ExerciseVisibility.Public },
+            { ownerId: 'me' },
+          ],
+        });
+      });
     });
   });
 });

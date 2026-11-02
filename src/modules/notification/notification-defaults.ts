@@ -181,6 +181,8 @@ export const NOTIFICATION_DEFAULTS: Record<
   // The person is told why something they posted was removed, and an
   // email keeps that record outside the app too.
   [NotificationType.WORKOUT_TAKEN_DOWN]: IN_APP_AND_EMAIL,
+  // Said once, in the app, the morning after: nothing goes out at night.
+  [NotificationType.WORKOUT_AUTO_SAVED]: IN_APP_ONLY,
 };
 
 /**

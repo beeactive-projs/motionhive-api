@@ -49,6 +49,7 @@ import {
 import { CreateProgramWorkoutDto } from './dto/create-program-workout.dto';
 import {
   ListProgramsQueryDto,
+  ProgramArchivedFilter,
   ProgramLibrary,
 } from './dto/list-programs.query.dto';
 import { ReorderProgramWorkoutsDto } from './dto/reorder-program-workouts.dto';
@@ -131,10 +132,11 @@ export class ProgramService {
               [Op.or]: [{ ownerId }, { source: ProgramSource.System }],
             };
 
+    const statuses = this._listStatuses(filter);
     const where = {
       ...ownerScope,
       deletedAt: null,
-      ...(filter.status ? { status: filter.status } : {}),
+      ...(statuses ? { status: statuses } : {}),
       ...(filter.isSingleWorkout !== undefined
         ? { isSingleWorkout: filter.isSingleWorkout }
         : {}),
@@ -187,6 +189,28 @@ export class ProgramService {
     }));
 
     return buildPaginatedResponse(items, count, page, limit);
+  }
+
+  /**
+   * The status filter of a list: `status` as sent, narrowed by `archived`
+   * (`exclude` drops ARCHIVED, `only` keeps nothing else). Undefined when
+   * neither is sent, so the default list reads every status as before.
+   */
+  private _listStatuses(
+    filter: ListProgramsQueryDto,
+  ): ProgramStatus | { [Op.in]: ProgramStatus[] } | undefined {
+    if (!filter.archived || filter.archived === ProgramArchivedFilter.Include) {
+      return filter.status;
+    }
+    const candidates = filter.status
+      ? [filter.status]
+      : Object.values(ProgramStatus);
+    const allowed = candidates.filter((status) =>
+      filter.archived === ProgramArchivedFilter.Only
+        ? status === ProgramStatus.Archived
+        : status !== ProgramStatus.Archived,
+    );
+    return { [Op.in]: allowed };
   }
 
   /** programId -> number of prescribed exercises across all its workouts. */
@@ -353,6 +377,7 @@ export class ProgramService {
           folder: translatedText(source, 'folder', locale),
           goalTags: source.goalTags,
           durationDays: source.durationDays,
+          defaultRestSeconds: source.defaultRestSeconds ?? null,
         },
         { transaction: tx },
       );
@@ -368,6 +393,7 @@ export class ProgramService {
             sequenceNumber: w.sequenceNumber,
             phase: w.phase,
             estimatedDurationMinutes: w.estimatedDurationMinutes,
+            defaultRestSeconds: w.defaultRestSeconds ?? null,
           },
           { transaction: tx },
         );
@@ -842,6 +868,7 @@ export class ProgramService {
         sequenceNumber: source.sequenceNumber,
         phase: source.phase,
         estimatedDurationMinutes: source.estimatedDurationMinutes,
+        defaultRestSeconds: source.defaultRestSeconds ?? null,
       },
       { transaction: tx },
     );
@@ -903,6 +930,7 @@ export class ProgramService {
       goalTags: dto.goalTags ?? null,
       isSingleWorkout: dto.isSingleWorkout ?? false,
       folder: dto.folder?.trim() || null,
+      defaultRestSeconds: dto.defaultRestSeconds ?? null,
       // Authored through the API by a signed-in person. SYSTEM starter
       // programs are seeded, never created here.
       source: isInstructor ? ProgramSource.Instructor : ProgramSource.User,
@@ -947,13 +975,26 @@ export class ProgramService {
     exercises: CreateProgramExerciseDto[],
     tx: Transaction,
   ): Promise<void> {
+    // A superset is two or three exercises. A group sent with one member
+    // (its pair was removed in the editor) is no superset: written unlinked.
+    const groupSizes = new Map<number, number>();
+    for (const ex of exercises) {
+      if (ex.supersetGroupId == null) continue;
+      groupSizes.set(
+        ex.supersetGroupId,
+        (groupSizes.get(ex.supersetGroupId) ?? 0) + 1,
+      );
+    }
     for (const [index, ex] of exercises.entries()) {
+      const linked =
+        ex.supersetGroupId != null &&
+        (groupSizes.get(ex.supersetGroupId) ?? 0) > 1;
       const created = await this.prescribedExerciseModel.create(
         {
           programWorkoutId,
           exerciseId: ex.exerciseId,
           orderIndex: index,
-          supersetGroupId: ex.supersetGroupId ?? null,
+          supersetGroupId: linked ? ex.supersetGroupId : null,
           notes: ex.notes?.trim() || null,
         },
         { transaction: tx },
@@ -1093,6 +1134,9 @@ export class ProgramService {
         coverImageUrl: dto.coverImageUrl ?? null,
       }),
       ...(dto.goalTags !== undefined && { goalTags: dto.goalTags ?? null }),
+      ...(dto.defaultRestSeconds !== undefined && {
+        defaultRestSeconds: dto.defaultRestSeconds ?? null,
+      }),
     });
     return program;
   }
@@ -1200,6 +1244,7 @@ export class ProgramService {
       sequenceNumber: nextSeq,
       phase: dto.phase?.trim() || null,
       estimatedDurationMinutes: dto.estimatedDurationMinutes ?? null,
+      defaultRestSeconds: dto.defaultRestSeconds ?? null,
     });
   }
 
@@ -1334,6 +1379,9 @@ export class ProgramService {
       ...(dto.estimatedDurationMinutes !== undefined && {
         estimatedDurationMinutes: dto.estimatedDurationMinutes,
       }),
+      ...(dto.defaultRestSeconds !== undefined && {
+        defaultRestSeconds: dto.defaultRestSeconds ?? null,
+      }),
     });
     return workout;
   }
@@ -1392,6 +1440,8 @@ export class ProgramService {
             prescribedExerciseId: created.id,
             orderIndex: i,
             setType: ExerciseSetType.Normal,
+            // Exercise-level rest lives on its sets; there is no column.
+            restAfterSeconds: dto.restAfterSeconds ?? null,
           })),
           { transaction: tx },
         );
@@ -1424,17 +1474,45 @@ export class ProgramService {
       await this._assertExerciseUsable(dto.alternateExerciseId, ownerId);
     }
 
-    await row.update({
-      ...(dto.exerciseId !== undefined && { exerciseId: dto.exerciseId }),
-      ...(dto.blockId !== undefined && { blockId: dto.blockId ?? null }),
-      ...(dto.supersetGroupId !== undefined && {
-        supersetGroupId: dto.supersetGroupId ?? null,
-      }),
-      ...(dto.orderIndex !== undefined && { orderIndex: dto.orderIndex }),
-      ...(dto.notes !== undefined && { notes: dto.notes?.trim() || null }),
-      ...(dto.alternateExerciseId !== undefined && {
-        alternateExerciseId: dto.alternateExerciseId ?? null,
-      }),
+    const previousGroup = row.supersetGroupId;
+    await this.sequelize.transaction(async (tx) => {
+      await row.update(
+        {
+          ...(dto.exerciseId !== undefined && { exerciseId: dto.exerciseId }),
+          ...(dto.blockId !== undefined && { blockId: dto.blockId ?? null }),
+          // Null unlinks it from its superset.
+          ...(dto.supersetGroupId !== undefined && {
+            supersetGroupId: dto.supersetGroupId ?? null,
+          }),
+          ...(dto.orderIndex !== undefined && { orderIndex: dto.orderIndex }),
+          ...(dto.notes !== undefined && {
+            notes: dto.notes?.trim() || null,
+          }),
+          ...(dto.alternateExerciseId !== undefined && {
+            alternateExerciseId: dto.alternateExerciseId ?? null,
+          }),
+        },
+        { transaction: tx },
+      );
+
+      // Exercise-level rest has no column of its own: it is the rest of
+      // every one of its sets, set together.
+      if (dto.restAfterSeconds !== undefined) {
+        await this.prescribedSetModel.update(
+          { restAfterSeconds: dto.restAfterSeconds ?? null },
+          { where: { prescribedExerciseId: row.id }, transaction: tx },
+        );
+      }
+
+      // Unlinked or moved to another superset: the one it left may now be
+      // a single exercise, which is no superset.
+      if (
+        dto.supersetGroupId !== undefined &&
+        previousGroup != null &&
+        previousGroup !== (dto.supersetGroupId ?? null)
+      ) {
+        await this._dissolveLoneSuperset(workoutId, previousGroup, tx);
+      }
     });
     return row;
   }
@@ -1451,7 +1529,36 @@ export class ProgramService {
       exerciseId,
       ownerId,
     );
-    await row.destroy();
+    const group = row.supersetGroupId;
+    await this.sequelize.transaction(async (tx) => {
+      await row.destroy({ transaction: tx });
+      // Removing one of a pair removes the link from the other.
+      if (group != null) {
+        await this._dissolveLoneSuperset(workoutId, group, tx);
+      }
+    });
+  }
+
+  /**
+   * A superset is two or three exercises. When one leaves and a single
+   * exercise is left with the group id, that exercise goes back to
+   * standalone. Same transaction as the change that left it alone.
+   */
+  private async _dissolveLoneSuperset(
+    workoutId: string,
+    groupId: number,
+    tx: Transaction,
+  ): Promise<void> {
+    const members = await this.prescribedExerciseModel.findAll({
+      where: { programWorkoutId: workoutId, supersetGroupId: groupId },
+      attributes: ['id'],
+      transaction: tx,
+    });
+    if (members.length !== 1) return;
+    await this.prescribedExerciseModel.update(
+      { supersetGroupId: null },
+      { where: { id: members[0].id }, transaction: tx },
+    );
   }
 
   // ────────────────────────────────────────────────────────────────────

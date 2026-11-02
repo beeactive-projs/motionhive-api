@@ -158,3 +158,26 @@ export function workoutTakenDownForOwner(input: {
     },
   };
 }
+
+/**
+ * A workout left open overnight was saved by the nightly job, at its last
+ * ticked set. Told once, in the app, with the way to fix its duration.
+ */
+export function workoutAutoSavedForOwner(input: {
+  ownerId: string;
+  workoutLogId: string;
+  workoutName: string;
+}): NotifyParams {
+  return {
+    userId: input.ownerId,
+    type: NotificationType.WORKOUT_AUTO_SAVED,
+    message: {
+      key: 'workout.workoutAutoSaved',
+      params: { workout: input.workoutName },
+    },
+    data: {
+      screen: 'user/workout-log',
+      entityId: input.workoutLogId,
+    },
+  };
+}

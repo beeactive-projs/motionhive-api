@@ -89,11 +89,11 @@ export const ExerciseDocs = {
   list: {
     summary: 'List exercises (catalog browse)',
     description:
-      'Paginated catalog list. Instructors see SYSTEM + their own + ' +
-      'public-from-others by default (filter via `ownership`). Clients ' +
-      'are gated by the catalog browse rule (opt-in OR has an assigned ' +
-      'program); a 403 with a stable message is returned when they ' +
-      "haven't met the bar yet. Pass `withFacets=true` to receive " +
+      'Paginated catalog list. Everyone sees SYSTEM + their own + ' +
+      'public-from-others by default (filter via `ownership`: `all`, ' +
+      '`system`, `mine`, `public-others`). `mine` works for every role: ' +
+      'a person who is not a coach owns the exercises they created ' +
+      '(source USER, always PRIVATE). Pass `withFacets=true` to receive ' +
       'aggregate counts per (kind, primaryMuscleId, equipmentId, level).',
     auth: true,
     responses: [
@@ -128,10 +128,12 @@ export const ExerciseDocs = {
   create: {
     summary: 'Create a custom exercise',
     description:
-      'INSTRUCTOR only. Authors a new exercise with source=INSTRUCTOR, ' +
-      'owner=caller. Visibility defaults to PRIVATE; flip to PUBLIC to ' +
-      'make it forkable by other instructors. At least one PRIMARY muscle ' +
-      'is required; PRIMARY rows are capped at 3.',
+      'INSTRUCTOR or USER. A coach authors source=INSTRUCTOR, ' +
+      'owner=caller; visibility defaults to PRIVATE, PUBLIC makes it ' +
+      'forkable by other instructors, and at least one PRIMARY muscle is ' +
+      'required. Anyone else authors source=USER, owner=caller, always ' +
+      'PRIVATE (a `visibility` sent is ignored), and `muscles` is ' +
+      "optional (the form's muscle chips). PRIMARY rows are capped at 3.",
     auth: true,
     responses: [
       {
@@ -148,7 +150,8 @@ export const ExerciseDocs = {
   update: {
     summary: 'Update a custom exercise',
     description:
-      'INSTRUCTOR only, owner only. Pass any subset of the create body. ' +
+      'INSTRUCTOR or USER, owner only. Pass any subset of the create ' +
+      'body. A source=USER exercise stays PRIVATE whatever is sent. ' +
       'Flipping visibility from PUBLIC to PRIVATE does NOT break existing ' +
       'program references — soft-unpublish is the locked semantic ' +
       '(decision §16). Hard delete is blocked when references exist; ' +
@@ -170,15 +173,63 @@ export const ExerciseDocs = {
   remove: {
     summary: 'Soft-delete a custom exercise',
     description:
-      'INSTRUCTOR only, owner only. Marks the row deleted; existing ' +
-      'program references continue to resolve (paranoid mode). If this ' +
-      "was a fork, the source row's `forkCount` is decremented.",
+      'INSTRUCTOR or USER, owner only. Marks the row deleted; existing ' +
+      'program references and logged workouts keep resolving (paranoid ' +
+      "mode), so its history stays. If this was a fork, the source row's " +
+      '`forkCount` is decremented.',
     auth: true,
     responses: [
       { status: 204, description: 'Exercise deleted' },
       ApiStandardResponses.NotFound,
       ApiStandardResponses.Unauthorized,
       ApiStandardResponses.Forbidden,
+    ],
+  } as ApiEndpointOptions,
+
+  getNote: {
+    summary: 'My private note on an exercise',
+    description:
+      'The caller\'s own note on this exercise ("seat on 4"), or `note: ' +
+      'null`. Private: never shown to a coach. The exercise must be one ' +
+      'the caller can see (SYSTEM, PUBLIC, their own, or one that reached ' +
+      "them through a coach's plan or a workout they logged); else 404.",
+    auth: true,
+    responses: [
+      {
+        status: 200,
+        description: 'The note, or null',
+        example: {
+          exerciseId: 'b3e1a9f2-7d4c-4a05-9d61-2c8b5e0f1a3d',
+          note: 'Seat on 4, elbows in.',
+          updatedAt: '2026-11-02T09:30:00.000Z',
+        },
+      },
+      ApiStandardResponses.NotFound,
+      ApiStandardResponses.Unauthorized,
+    ],
+  } as ApiEndpointOptions,
+
+  putNote: {
+    summary: 'Write my private note on an exercise',
+    description:
+      'Body `{ note }`, trimmed, up to 280 characters ' +
+      '(`errors.validation.exerciseNoteTooLong`). Empty, blank or null ' +
+      'deletes the note. Answers in the same shape as the GET, with the ' +
+      'same visibility rule.',
+    auth: true,
+    responses: [
+      {
+        status: 200,
+        description: 'Saved, or deleted (`note: null`)',
+        example: {
+          exerciseId: 'b3e1a9f2-7d4c-4a05-9d61-2c8b5e0f1a3d',
+          note: 'Seat on 4, elbows in.',
+          updatedAt: '2026-11-02T09:30:00.000Z',
+        },
+      },
+      ApiStandardResponses.BadRequest,
+      ApiStandardResponses.NotFound,
+      ApiStandardResponses.Unauthorized,
     ],
   } as ApiEndpointOptions,
 

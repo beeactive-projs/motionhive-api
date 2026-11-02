@@ -35,6 +35,7 @@ import {
   translatedText,
   type Locale,
 } from '../../common/i18n';
+import { CloudinaryService } from '../../common/services/cloudinary.service';
 import { foldedContainsSql } from '../../common/utils/search.utils';
 import { stripHtml } from '../../common/utils/text.utils';
 import { resolveLevel } from '../profile/profile-privacy';
@@ -44,6 +45,7 @@ import {
 } from './dto/list-workout-logs.query.dto';
 import { Exercise } from '../exercise/entities/exercise.entity';
 import { ExerciseVisibility } from '../exercise/entities/exercise.enums';
+import { ExerciseNoteService } from '../exercise/exercise-note.service';
 import { AssignedExercise } from './entities/assigned-exercise.entity';
 import { AssignedSet } from './entities/assigned-set.entity';
 import { AssignedWorkout } from './entities/assigned-workout.entity';
@@ -60,8 +62,10 @@ import {
   ExerciseSetType,
   OneRepMaxSource,
   ProgramAssignmentKind,
+  ProgramAssignmentStatus,
   ProgramSource,
   ProgramStatus,
+  RestSource,
   WorkoutLogStatus,
   WorkoutVisibility,
 } from './entities/workout.enums';
@@ -76,15 +80,31 @@ import {
 import { NotificationService } from '../notification/notification.service';
 import { User } from '../user/entities/user.entity';
 import { InstructorProfile } from '../profile/entities/instructor-profile.entity';
-import { clientCompletedWorkoutForInstructor } from './notifications';
+import {
+  clientCompletedWorkoutForInstructor,
+  workoutAutoSavedForOwner,
+} from './notifications';
 import {
   CoachAccessService,
   isReadableByCoach,
   readableLogsWhere,
   SHARED_WITH_COACHES,
 } from './coach-access.service';
+import { plannedLoggedSetRest } from './planned-rest';
 import { profileVisibleWhere } from './profile-visibility';
 import { streakFromWeeks } from './training-streak';
+import {
+  VOLUME_SUMS_SQL,
+  type VolumeSumsRow,
+  type VolumeTotals,
+  type VolumeUnit,
+  addVolume,
+  changePercent,
+  volumeIn,
+  volumeOfSets,
+  volumeTotalsFromRow,
+  volumeUnitFor,
+} from './volume';
 
 /**
  * What the apps learn about a workout's photo: whether there is one and
@@ -155,6 +175,36 @@ export type WorkoutLogView = Omit<WorkoutLog, 'photoPublicId'> & {
   hasPhoto: boolean;
   personalRecords?: SessionRecord[];
   summary?: WorkoutSummary;
+};
+
+/**
+ * A logged set as the log reads (`GET /workout-logs/:id`, the coach's
+ * read) return it: the row, its plan set (`assignedSet` for a coach's
+ * plan, `prescribedSet` for a routine; each null otherwise) and the rest
+ * planned after it.
+ */
+export type LoggedSetView = LoggedSet & {
+  /**
+   * The set's own planned rest, else the day's, else the program's
+   * default, in seconds (`plannedLoggedSetRest`). Null when nothing is
+   * planned: the app falls back to the person's default, then 90 s.
+   * `restAfterSeconds` is the rest actually taken (with `restSource`).
+   */
+  plannedRestSeconds?: number | null;
+};
+
+/**
+ * A logged exercise as the log reads return it: the row, the plan's note
+ * (`assignedExercise.notes` for a coach's plan, `prescribedExercise.notes`
+ * for a routine), and, on the owner's read only, their private note.
+ */
+export type LoggedExerciseView = LoggedExercise & {
+  sets?: LoggedSetView[];
+  /**
+   * The owner's own note on this exercise (`exercise_note`), or null.
+   * Only on the owner's read: never present on a coach's.
+   */
+  personalNote?: string | null;
 };
 
 /**
@@ -232,8 +282,13 @@ export interface WorkoutSummary {
   workoutNumber: number;
   /** Consecutive weeks with a workout, counting this week or last. */
   streakWeeks: number;
-  /** Routines only: the volume last time, for "+8% vs last time". */
+  /**
+   * Routines only: the volume last time, for "+8% vs last time". Working
+   * sets only, like `volume`; `volume.previous` covers plan days too.
+   */
   previousVolumeKg: number | null;
+  /** This workout's volume against last time; see `WorkoutVolume`. */
+  volume: WorkoutVolume;
   /** The coach behind a plan workout, for the shared card. */
   coachName: string | null;
   /**
@@ -242,6 +297,53 @@ export interface WorkoutSummary {
    * what the Full share card's coach line may show. Null otherwise.
    */
   mentionableCoach: MentionableCoach | null;
+}
+
+/**
+ * A finished workout's volume, for "+340 kg vs last Push day". Working
+ * sets only: completed and not warm-ups (`volume.ts`).
+ */
+export interface WorkoutVolume {
+  /** kg × reps over this workout's working sets. */
+  totalKg: number;
+  /**
+   * The last time this same workout was done: the same routine (or
+   * program started directly), else the same day of a plan, matched by
+   * the day it was copied from, across repeats and re-assignments. A
+   * routine scheduled through a plan and the same routine started on its
+   * own count as one. Null for freestyle and for a first time.
+   */
+  previous: {
+    workoutLogId: string;
+    name: string;
+    completedAt: Date;
+    totalKg: number;
+  } | null;
+  /** `totalKg` minus the previous total; null without one. */
+  changeKg: number | null;
+  /** Whole percent of the previous total; null without one, or when it was 0. */
+  changePercent: number | null;
+  /**
+   * One entry per exercise done (in workout order, an exercise logged
+   * twice counted once), today against the last session of that exercise
+   * in any workout before this one, in the exercise's unit.
+   */
+  exercises: WorkoutExerciseVolume[];
+}
+
+export interface WorkoutExerciseVolume {
+  /** Null for an exercise with no catalog row, which has no last time. */
+  exerciseId: string | null;
+  /** The first logged exercise it stands for, to find its name. */
+  loggedExerciseId: string;
+  unit: VolumeUnit;
+  volume: number;
+  previous: {
+    workoutLogId: string;
+    performedAt: Date;
+    volume: number;
+  } | null;
+  changePercent: number | null;
 }
 
 /** A coach a client may name on a shared card: the public name. */
@@ -374,6 +476,8 @@ export class WorkoutLogService {
     private readonly notificationService: NotificationService,
     private readonly coachAccess: CoachAccessService,
     private readonly assignments: ProgramAssignmentService,
+    private readonly exerciseNotes: ExerciseNoteService,
+    private readonly cloudinaryService: CloudinaryService,
     private readonly sequelize: Sequelize,
     @Inject(WINSTON_MODULE_NEST_PROVIDER)
     private readonly logger: LoggerService,
@@ -714,6 +818,21 @@ export class WorkoutLogService {
           as: 'sets',
           separate: true,
           order: [['orderIndex', 'ASC']],
+          // The plan's set, for the rest that was planned after it.
+          include: [
+            {
+              model: AssignedSet,
+              as: 'assignedSet',
+              attributes: ['id', 'restAfterSeconds'],
+              required: false,
+            },
+            {
+              model: PrescribedSet,
+              as: 'prescribedSet',
+              attributes: ['id', 'restAfterSeconds'],
+              required: false,
+            },
+          ],
         },
       ],
     });
@@ -725,6 +844,10 @@ export class WorkoutLogService {
     const bakeTargets =
       (dto.mode ?? SaveRoutineMode.Targets) === SaveRoutineMode.Targets;
 
+    // A routine-started log hands its "Rest between sets" on: the day's
+    // rest, else the program's default.
+    const defaultRestSeconds = await this._routineDefaultRest(log);
+
     return this.sequelize.transaction(async (tx) => {
       const program = await this.programModel.create(
         {
@@ -735,6 +858,7 @@ export class WorkoutLogService {
           folder: dto.folder?.trim() || null,
           kind: 'WORKOUT',
           status: ProgramStatus.Published,
+          defaultRestSeconds,
         },
         { transaction: tx },
       );
@@ -784,7 +908,7 @@ export class WorkoutLogService {
           targetDistanceMeters: bakeTargets
             ? (s?.distanceMeters ?? null)
             : null,
-          restAfterSeconds: s?.restAfterSeconds ?? null,
+          restAfterSeconds: s ? this._plannedRestToKeep(s) : null,
         }));
 
         await this.prescribedSetModel.bulkCreate(rows, { transaction: tx });
@@ -792,6 +916,49 @@ export class WorkoutLogService {
 
       return program;
     });
+  }
+
+  /**
+   * The rest a new routine should plan after this set. The logged
+   * `restAfterSeconds` is the rest actually taken since workouts round 2
+   * (it has a `restSource`), so the plan's set rest is what carries over:
+   * a coach plan's assigned set, else the routine's set. A set from the
+   * older logger (no `restSource`) kept the planned rest in
+   * `restAfterSeconds`, so that one still does.
+   */
+  private _plannedRestToKeep(set: LoggedSet): number | null {
+    const planned =
+      set.assignedSet?.restAfterSeconds ??
+      set.prescribedSet?.restAfterSeconds ??
+      null;
+    if (planned != null) return planned;
+    return set.restSource == null ? (set.restAfterSeconds ?? null) : null;
+  }
+
+  /**
+   * A routine-started log's default rest (the day's, else the routine's),
+   * for a routine saved from it. Null for freestyle and coach plans: their
+   * plan rest is already on each set.
+   */
+  private async _routineDefaultRest(log: WorkoutLog): Promise<number | null> {
+    if (!log.sourceProgramId) return null;
+    const program = await this.programModel.findByPk(log.sourceProgramId, {
+      attributes: ['id', 'defaultRestSeconds'],
+      include: [
+        {
+          model: ProgramWorkout,
+          as: 'workouts',
+          attributes: ['id', 'defaultRestSeconds', 'sequenceNumber'],
+          required: false,
+        },
+      ],
+    });
+    if (!program) return null;
+    // A started routine is its first workout (see `_startFromProgram`).
+    const first = [...(program.workouts ?? [])].sort(
+      (a, b) => a.sequenceNumber - b.sequenceNumber,
+    )[0];
+    return first?.defaultRestSeconds ?? program.defaultRestSeconds ?? null;
   }
 
   // ────────────────────────────────────────────────────────────────────
@@ -833,6 +1000,11 @@ export class WorkoutLogService {
       ...(dto.restAfterSeconds !== undefined && {
         restAfterSeconds: dto.restAfterSeconds ?? null,
       }),
+      ...(dto.restSource !== undefined && {
+        restSource: dto.restSource ?? null,
+      }),
+      // A break is time away, not rest: nothing is stored as rest.
+      ...(dto.restSource === RestSource.Break && { restAfterSeconds: null }),
       ...(dto.isCompleted !== undefined && {
         isCompleted: dto.isCompleted,
         completedAt: dto.isCompleted ? new Date() : null,
@@ -942,7 +1114,25 @@ export class WorkoutLogService {
     if (!ex || ex.workoutLogId !== workoutLogId) {
       throw new NotFoundException(apiError('exercise.notFound'));
     }
-    await ex.destroy();
+    const group = ex.supersetGroupId;
+    await this.sequelize.transaction(async (tx) => {
+      await ex.destroy({ transaction: tx });
+      // Removing one of a pair removes the link from the other: a single
+      // exercise is no superset.
+      if (group != null) {
+        const left = await this.loggedExerciseModel.findAll({
+          where: { workoutLogId, supersetGroupId: group },
+          attributes: ['id'],
+          transaction: tx,
+        });
+        if (left.length === 1) {
+          await this.loggedExerciseModel.update(
+            { supersetGroupId: null },
+            { where: { id: left[0].id }, transaction: tx },
+          );
+        }
+      }
+    });
   }
 
   /**
@@ -1166,6 +1356,36 @@ export class WorkoutLogService {
     return log;
   }
 
+  /**
+   * "You were away 25 min. Pause the workout for that time?" Adds a gap
+   * found after the fact to the paused time, so it leaves the duration.
+   * Never more than the workout's active time so far: a pause cannot
+   * take the clock below zero.
+   */
+  async pauseGap(
+    workoutLogId: string,
+    userId: string,
+    seconds: number,
+  ): Promise<WorkoutLog> {
+    const log = await this._loadOwnedLog(workoutLogId, userId);
+    if (log.status !== WorkoutLogStatus.InProgress) {
+      throw new BadRequestException(
+        apiError('workout.cannotEditNotInProgress'),
+      );
+    }
+    const now = new Date();
+    // While paused, the clock stopped when the pause began.
+    const clockAt = log.pausedAt ?? now;
+    const active =
+      Math.round((clockAt.getTime() - log.startedAt.getTime()) / 1000) -
+      (log.pausedSeconds ?? 0);
+    if (seconds > active) {
+      throw new BadRequestException(apiError('workout.pauseGapTooLong'));
+    }
+    await log.update({ pausedSeconds: (log.pausedSeconds ?? 0) + seconds });
+    return log;
+  }
+
   /** Paused time up to `at`, counting a pause still open at that moment. */
   private _pausedSecondsAt(log: WorkoutLog, at: Date): number {
     const open = log.pausedAt
@@ -1175,19 +1395,80 @@ export class WorkoutLogService {
   }
 
   // ────────────────────────────────────────────────────────────────────
-  // Discard
+  // Discard and delete
   // ────────────────────────────────────────────────────────────────────
 
   /**
-   * Delete a workout in progress outright. Distinct from SKIPPED, which
-   * records that you chose not to train; this leaves no trace.
+   * `DELETE /workout-logs/:id`, owner only. A workout in progress is
+   * discarded, as it always was: "changed my mind", distinct from SKIPPED,
+   * which records that you chose not to train. A finished one (or any
+   * other that is no longer running) is deleted with everything it wrote:
+   * see `_deleteFinished`.
    */
-  async discard(workoutLogId: string, userId: string): Promise<void> {
+  async remove(workoutLogId: string, userId: string): Promise<void> {
     const log = await this._loadOwnedLog(workoutLogId, userId);
-    if (log.status !== WorkoutLogStatus.InProgress) {
-      throw new BadRequestException(apiError('workout.cannotDiscardFinished'));
+    if (log.status === WorkoutLogStatus.InProgress) {
+      await this._discard(log);
+      return;
     }
-    await this._discard(log);
+    await this._deleteFinished(log);
+  }
+
+  /**
+   * Delete a workout that is over, as if it never happened. One
+   * transaction: the log goes, and its sets and exercises, its reports
+   * and the records it set (one_rep_max.workout_log_id) go with it by
+   * cascade; a group post that shared it keeps its text and loses the
+   * card (ON DELETE SET NULL). Its plan day is put back as not started,
+   * and a plan it had finished is open again, with its percent
+   * recomputed. After commit the routine's "last done" is worked out
+   * again and the photo is deleted, best effort.
+   */
+  private async _deleteFinished(log: WorkoutLog): Promise<void> {
+    const {
+      assignedWorkoutId,
+      programAssignmentId,
+      sourceProgramId,
+      photoPublicId,
+    } = log;
+
+    await this.sequelize.transaction(async (tx) => {
+      if (assignedWorkoutId) {
+        await this.assignedWorkoutModel.update(
+          { status: null },
+          { where: { id: assignedWorkoutId }, transaction: tx },
+        );
+      }
+      await log.destroy({ transaction: tx });
+      if (programAssignmentId) {
+        // The day it filled is open again, so the plan is not finished.
+        if (assignedWorkoutId) {
+          await this.assignmentModel.update(
+            { status: ProgramAssignmentStatus.Active },
+            {
+              where: {
+                id: programAssignmentId,
+                status: ProgramAssignmentStatus.Completed,
+              },
+              transaction: tx,
+            },
+          );
+        }
+        await this.recomputeAssignmentProgress(programAssignmentId, tx);
+      }
+    });
+
+    if (sourceProgramId) await this._resyncLastPerformed(sourceProgramId);
+    if (photoPublicId) {
+      try {
+        await this.cloudinaryService.deletePrivateImage(photoPublicId);
+      } catch (err) {
+        this.logger.warn(
+          `Failed to delete the photo of deleted workout ${log.id}: ${(err as Error).message}`,
+          'WorkoutLogService',
+        );
+      }
+    }
   }
 
   /** Delete a running workout and put its plan day back as not started. */
@@ -1497,6 +1778,8 @@ export class WorkoutLogService {
         if (!finished) continue;
         await this._completePlanIfFinished(log.programAssignmentId);
         completed += 1;
+        // notify-after-commit: in the app only, read in the morning.
+        await this._notifyAutoSaved(log);
       } catch (err) {
         this.logger.warn(
           `Failed to close stale workout ${log.id}: ${(err as Error).message}`,
@@ -1532,6 +1815,24 @@ export class WorkoutLogService {
           stripHtml(dto.shareCaption.replace(/\s+/g, ' '), 80) || null,
       }),
     };
+  }
+
+  /** The owner learns their forgotten workout was saved for them. Best-effort. */
+  private async _notifyAutoSaved(log: WorkoutLog): Promise<void> {
+    try {
+      await this.notificationService.notify(
+        workoutAutoSavedForOwner({
+          ownerId: log.userId,
+          workoutLogId: log.id,
+          workoutName: log.name,
+        }),
+      );
+    } catch (err) {
+      this.logger.warn(
+        `Auto-saved notice failed for workout ${log.id}: ${(err as Error).message}`,
+        'WorkoutLogService',
+      );
+    }
   }
 
   /**
@@ -1651,6 +1952,8 @@ export class WorkoutLogService {
           weightKg: estimated,
           source: OneRepMaxSource.EstimatedEpley,
           recordedAt,
+          // Deleting the workout deletes the record (ON DELETE CASCADE).
+          workoutLogId,
           notes: null,
         },
         { transaction: tx },
@@ -1943,8 +2246,9 @@ export class WorkoutLogService {
         attributes: ['id', 'name', 'isSingleWorkout'],
         required: false,
       },
-      // Bring back logged_exercise → logged_set just for the count.
-      // FE sums them client-side to render "18 sets".
+      // Bring back logged_exercise → logged_set for the count ("18 sets")
+      // and the week's volume (weight × reps, warm-ups left out), both
+      // summed on the phone.
       {
         model: LoggedExercise,
         as: 'exercises',
@@ -1953,7 +2257,7 @@ export class WorkoutLogService {
           {
             model: LoggedSet,
             as: 'sets',
-            attributes: ['id', 'isCompleted'],
+            attributes: ['id', 'isCompleted', 'setType', 'weightKg', 'reps'],
             required: false,
           },
         ],
@@ -2064,17 +2368,22 @@ export class WorkoutLogService {
      * `summary`: add what the finish screen celebrates (see
      * `_ownerSummary`). Owner reads only: it counts every workout the
      * person did, which a coach may not be allowed to know about.
+     *
+     * `personalNotes`: add the person's own note on each exercise
+     * (`personalNote`). Owner reads only: the note is private, never a
+     * coach's to read.
      */
-    options: { summary?: boolean } = {},
+    options: { summary?: boolean; personalNotes?: boolean } = {},
   ): Promise<WorkoutLogView> {
     const log = await this.logModel.findByPk(id, {
       include: [
         // Same provenance the list carries, so the replay header can
-        // name and link the routine a session came from.
+        // name and link the routine a session came from. Its default
+        // rest is the last step of a routine set's planned rest.
         {
           model: Program,
           as: 'sourceProgram',
-          attributes: ['id', 'name', 'isSingleWorkout'],
+          attributes: ['id', 'name', 'isSingleWorkout', 'defaultRestSeconds'],
           required: false,
         },
         {
@@ -2113,6 +2422,22 @@ export class WorkoutLogService {
               attributes: ['id', 'name', 'translations'],
               required: false,
             },
+            // The plan's note on the exercise: a coach plan's copy, or
+            // the routine's row (translated for a starter, so it carries
+            // `translations` for ContentLocaleInterceptor). Its day, for
+            // the day's default rest.
+            {
+              model: AssignedExercise,
+              as: 'assignedExercise',
+              attributes: ['id', 'notes'],
+              required: false,
+            },
+            {
+              model: PrescribedExercise,
+              as: 'prescribedExercise',
+              attributes: ['id', 'notes', 'translations', 'programWorkoutId'],
+              required: false,
+            },
             {
               model: LoggedSet,
               as: 'sets',
@@ -2120,11 +2445,17 @@ export class WorkoutLogService {
               order: [['orderIndex', 'ASC']],
               include: [
                 // Eager-load the prescription so the FE can render the
-                // target column (reps range, weight, %1RM, etc.).
-                // `assignedSet` is nullable for freestyle sets.
+                // target column (reps range, weight, %1RM, etc.):
+                // `assignedSet` for a coach plan, `prescribedSet` for a
+                // routine. Both null for a freestyle set.
                 {
                   model: AssignedSet,
                   as: 'assignedSet',
+                  required: false,
+                },
+                {
+                  model: PrescribedSet,
+                  as: 'prescribedSet',
                   required: false,
                 },
               ],
@@ -2150,7 +2481,61 @@ export class WorkoutLogService {
       const summary = await this._ownerSummary(log);
       if (summary) plain.summary = summary;
     }
+    await this._decorateExercises(plain, options.personalNotes ? userId : null);
     return withPhotoFlag(plain);
+  }
+
+  /**
+   * What a log read adds to its exercises: each set's planned rest
+   * (`plannedRestSeconds`, see `plannedLoggedSetRest`) and, when
+   * `notesOf` names the owner, each exercise's private note
+   * (`personalNote`). One query for the days' default rest, one for the
+   * notes, whatever the number of exercises.
+   */
+  private async _decorateExercises(
+    plain: WorkoutLog,
+    notesOf: string | null,
+  ): Promise<void> {
+    const exercises = (plain.exercises ?? []) as LoggedExerciseView[];
+    if (exercises.length === 0) return;
+
+    const dayIds = [
+      ...new Set(
+        exercises
+          .map((ex) => ex.prescribedExercise?.programWorkoutId)
+          .filter((id): id is string => !!id),
+      ),
+    ];
+    const days = dayIds.length
+      ? await this.programWorkoutModel.findAll({
+          where: { id: { [Op.in]: dayIds } },
+          attributes: ['id', 'defaultRestSeconds'],
+        })
+      : [];
+    const dayById = new Map(days.map((day) => [day.id, day]));
+    const notes = notesOf
+      ? await this.exerciseNotes.notesFor(
+          notesOf,
+          exercises
+            .map((ex) => ex.exerciseId)
+            .filter((id): id is string => !!id),
+        )
+      : null;
+    const program = (plain as WorkoutLog & { sourceProgram?: Program | null })
+      .sourceProgram;
+
+    for (const ex of exercises) {
+      const dayId = ex.prescribedExercise?.programWorkoutId;
+      const day = dayId ? dayById.get(dayId) : null;
+      for (const set of ex.sets ?? []) {
+        set.plannedRestSeconds = plannedLoggedSetRest(set, day, program);
+      }
+      if (notes) {
+        ex.personalNote = ex.exerciseId
+          ? (notes.get(ex.exerciseId) ?? null)
+          : null;
+      }
+    }
   }
 
   /**
@@ -2163,7 +2548,7 @@ export class WorkoutLogService {
     if (log.status !== WorkoutLogStatus.Completed || !log.completedAt) {
       return null;
     }
-    const [workoutNumber, weeks, previousVolumeKg, coach] = await Promise.all([
+    const [workoutNumber, weeks, volume, coach] = await Promise.all([
       this.logModel.count({
         where: {
           userId: log.userId,
@@ -2172,13 +2557,21 @@ export class WorkoutLogService {
         },
       }),
       this._activeWeeks(log.userId),
-      this._previousRoutineVolume(log),
+      this._workoutVolume(log),
       this._planCoach(log),
     ]);
+    const source = (log as WorkoutLog & { sourceProgram?: Program | null })
+      .sourceProgram;
+    // Kept for apps that read it: routines only, as it always was.
+    const previousVolumeKg =
+      source?.isSingleWorkout && volume.previous && volume.previous.totalKg > 0
+        ? volume.previous.totalKg
+        : null;
     return {
       workoutNumber,
       streakWeeks: streakFromWeeks(weeks).currentWeeks,
       previousVolumeKg,
+      volume,
       coachName: coach?.fullName ?? null,
       mentionableCoach: coach?.mentionable ?? null,
     };
@@ -2261,47 +2654,281 @@ export class WorkoutLogService {
   }
 
   /**
-   * Volume (kg × reps over completed sets) the previous time this
-   * routine was done, or null. Routines only: a plan's sessions differ
-   * day to day, so "last time" would compare different workouts.
+   * The finished workout's volume against last time (`WorkoutVolume`).
+   * Today's numbers come from the sets already loaded; two queries read
+   * the rest: the previous time this workout was done with its total, and
+   * each exercise's last session. Owner only, like the rest of the
+   * summary: "last time" can be a workout a coach may not see.
    */
-  private async _previousRoutineVolume(
+  private async _workoutVolume(log: WorkoutLog): Promise<WorkoutVolume> {
+    const today = this._exerciseVolumes(log);
+    const totalKg = Math.round(
+      today.reduce((sum, entry) => sum + entry.totals.kg, 0),
+    );
+    const exerciseIds = today
+      .map((entry) => entry.exerciseId)
+      .filter((id): id is string => !!id);
+
+    const [previous, lastSessions] = await Promise.all([
+      this._previousSameWorkout(log),
+      this._lastExerciseSessions(log, exerciseIds),
+    ]);
+
+    return {
+      totalKg,
+      previous,
+      changeKg: previous ? totalKg - previous.totalKg : null,
+      changePercent: previous ? changePercent(totalKg, previous.totalKg) : null,
+      exercises: today
+        .map((entry) => {
+          const unit = volumeUnitFor(entry.kind, entry.totals);
+          const volume = volumeIn(unit, entry.totals);
+          const last = entry.exerciseId
+            ? lastSessions.get(entry.exerciseId)
+            : undefined;
+          const lastVolume = last ? volumeIn(unit, last.totals) : 0;
+          // A last time measured in nothing this unit reads (a set of
+          // holds against today's weights) is no comparison.
+          const prior =
+            last && lastVolume > 0
+              ? {
+                  workoutLogId: last.workoutLogId,
+                  performedAt: last.performedAt,
+                  volume: lastVolume,
+                }
+              : null;
+          return {
+            exerciseId: entry.exerciseId,
+            loggedExerciseId: entry.loggedExerciseId,
+            unit,
+            volume,
+            previous: prior,
+            changePercent: prior ? changePercent(volume, prior.volume) : null,
+          };
+        })
+        .filter((entry) => entry.volume > 0),
+    };
+  }
+
+  /**
+   * This workout's working sets per exercise, in order. An exercise
+   * logged twice is one entry (the first's id); one with no catalog row
+   * stands alone. Skipped exercises are out.
+   */
+  private _exerciseVolumes(log: WorkoutLog): Array<{
+    exerciseId: string | null;
+    loggedExerciseId: string;
+    kind: string | null;
+    totals: VolumeTotals;
+  }> {
+    const entries: Array<{
+      exerciseId: string | null;
+      loggedExerciseId: string;
+      kind: string | null;
+      totals: VolumeTotals;
+    }> = [];
+    for (const ex of log.exercises ?? []) {
+      if (ex.isSkipped) continue;
+      const totals = volumeOfSets(ex.sets ?? []);
+      const same = ex.exerciseId
+        ? entries.find((entry) => entry.exerciseId === ex.exerciseId)
+        : undefined;
+      if (same) {
+        same.totals = addVolume(same.totals, totals);
+        continue;
+      }
+      entries.push({
+        exerciseId: ex.exerciseId,
+        loggedExerciseId: ex.id,
+        kind: ex.exercise?.kind ?? null,
+        totals,
+      });
+    }
+    return entries;
+  }
+
+  /**
+   * The last finished time this same workout was done before this one,
+   * with its kg total over working sets: the same routine (or program
+   * started directly, which always opens on its first day), else the same
+   * plan day, matched by the program day it was copied from so repeats
+   * and a re-assigned plan still compare. A routine counts the same
+   * whether it was started on its own or scheduled through a plan. Null
+   * for freestyle, and the first time.
+   */
+  private async _previousSameWorkout(
     log: WorkoutLog,
-  ): Promise<number | null> {
+  ): Promise<WorkoutVolume['previous']> {
     const source = (log as WorkoutLog & { sourceProgram?: Program | null })
       .sourceProgram;
-    if (!log.sourceProgramId || !source?.isSingleWorkout) return null;
+    let same: string;
+    if (log.sourceProgramId) {
+      same = source?.isSingleWorkout
+        ? `(wl.source_program_id = :sourceProgramId
+            OR wl.assigned_workout_id IN (
+              SELECT aw.id
+              FROM assigned_workout aw
+              JOIN program_workout pw ON pw.id = aw.master_workout_id
+              WHERE pw.program_id = :sourceProgramId
+            ))`
+        : 'wl.source_program_id = :sourceProgramId';
+    } else if (log.assignedWorkoutId) {
+      // A day with no program day behind it (master null) matches
+      // nothing: NULL never equals NULL.
+      same = `(wl.assigned_workout_id IN (
+              SELECT aw.id
+              FROM assigned_workout aw
+              WHERE aw.master_workout_id = (
+                SELECT master_workout_id FROM assigned_workout
+                WHERE id = :assignedWorkoutId
+              )
+            )
+            OR wl.source_program_id = (
+              SELECT p.id
+              FROM assigned_workout aw
+              JOIN program_workout pw ON pw.id = aw.master_workout_id
+              JOIN program p          ON p.id = pw.program_id
+              WHERE aw.id = :assignedWorkoutId
+                AND p.is_single_workout = TRUE
+            ))`;
+    } else {
+      return null;
+    }
 
-    const rows = await this.sequelize.query<{ volume: string | null }>(
+    const rows = await this.sequelize.query<{
+      workoutLogId: string;
+      name: string;
+      completedAt: Date;
+      totalKg: string | number | null;
+    }>(
       `
-      SELECT SUM(ls.weight_kg * ls.reps) AS volume
-      FROM workout_log wl
-      JOIN logged_exercise le ON le.workout_log_id = wl.id
-      JOIN logged_set ls ON ls.logged_exercise_id = le.id
-      WHERE wl.id = (
-        SELECT id FROM workout_log
-        WHERE user_id = :userId
-          AND status = 'COMPLETED'
-          AND source_program_id = :programId
-          AND completed_at < :completedAt
-        ORDER BY completed_at DESC
+      WITH previous AS (
+        SELECT wl.id, wl.name, wl.completed_at
+        FROM workout_log wl
+        WHERE wl.user_id = :userId
+          AND wl.status = 'COMPLETED'
+          AND wl.id <> :logId
+          AND wl.completed_at < :completedAt
+          AND ${same}
+        ORDER BY wl.completed_at DESC
         LIMIT 1
       )
-        AND ls.is_completed
-        AND ls.weight_kg IS NOT NULL
-        AND ls.reps IS NOT NULL
+      SELECT
+        p.id           AS "workoutLogId",
+        p.name         AS "name",
+        p.completed_at AS "completedAt",
+        (
+          SELECT COALESCE(SUM(ls.reps * ls.weight_kg), 0)
+          FROM logged_exercise le
+          JOIN logged_set ls ON ls.logged_exercise_id = le.id
+          WHERE le.workout_log_id = p.id
+            AND le.is_skipped = FALSE
+            AND ls.is_completed = TRUE
+            AND ls.set_type <> 'WARMUP'
+            AND ls.weight_kg IS NOT NULL
+        )              AS "totalKg"
+      FROM previous p
       `,
       {
         replacements: {
           userId: log.userId,
-          programId: log.sourceProgramId,
+          logId: log.id,
           completedAt: log.completedAt,
+          ...(log.sourceProgramId
+            ? { sourceProgramId: log.sourceProgramId }
+            : { assignedWorkoutId: log.assignedWorkoutId }),
         },
         type: QueryTypes.SELECT,
       },
     );
-    const volume = Number(rows[0]?.volume ?? 0);
-    return volume > 0 ? Math.round(volume) : null;
+    const row = rows?.[0];
+    if (!row) return null;
+    return {
+      workoutLogId: row.workoutLogId,
+      name: row.name,
+      completedAt: row.completedAt,
+      totalKg: Math.round(Number(row.totalKg ?? 0)),
+    };
+  }
+
+  /**
+   * Each exercise's last session before this workout, in any workout: the
+   * latest finished log holding a working set of it, with that log's four
+   * volume sums for the exercise (logged twice there, both count).
+   */
+  private async _lastExerciseSessions(
+    log: WorkoutLog,
+    exerciseIds: string[],
+  ): Promise<
+    Map<
+      string,
+      { workoutLogId: string; performedAt: Date; totals: VolumeTotals }
+    >
+  > {
+    const out = new Map<
+      string,
+      { workoutLogId: string; performedAt: Date; totals: VolumeTotals }
+    >();
+    if (exerciseIds.length === 0) return out;
+
+    const rows = await this.sequelize.query<
+      {
+        exerciseId: string;
+        workoutLogId: string;
+        performedAt: Date;
+      } & VolumeSumsRow
+    >(
+      `
+      WITH last_session AS (
+        SELECT DISTINCT ON (le.exercise_id)
+          le.exercise_id,
+          wl.id           AS workout_log_id,
+          wl.completed_at AS performed_at
+        FROM workout_log wl
+        JOIN logged_exercise le ON le.workout_log_id = wl.id AND le.is_skipped = FALSE
+        WHERE wl.user_id = :userId
+          AND wl.status = 'COMPLETED'
+          AND wl.id <> :logId
+          AND wl.completed_at < :completedAt
+          AND le.exercise_id IN (:exerciseIds)
+          AND EXISTS (
+            SELECT 1 FROM logged_set ls
+            WHERE ls.logged_exercise_id = le.id
+              AND ls.is_completed = TRUE
+              AND ls.set_type <> 'WARMUP'
+          )
+        ORDER BY le.exercise_id, wl.completed_at DESC
+      )
+      SELECT
+        s.exercise_id    AS "exerciseId",
+        s.workout_log_id AS "workoutLogId",
+        s.performed_at   AS "performedAt",
+        ${VOLUME_SUMS_SQL}
+      FROM last_session s
+      JOIN logged_exercise le ON le.workout_log_id = s.workout_log_id
+                             AND le.exercise_id = s.exercise_id
+                             AND le.is_skipped = FALSE
+      JOIN logged_set ls      ON ls.logged_exercise_id = le.id
+      GROUP BY s.exercise_id, s.workout_log_id, s.performed_at
+      `,
+      {
+        replacements: {
+          userId: log.userId,
+          logId: log.id,
+          completedAt: log.completedAt,
+          exerciseIds,
+        },
+        type: QueryTypes.SELECT,
+      },
+    );
+    for (const row of rows ?? []) {
+      out.set(row.exerciseId, {
+        workoutLogId: row.workoutLogId,
+        performedAt: row.performedAt,
+        totals: volumeTotalsFromRow(row),
+      });
+    }
+    return out;
   }
 
   // ────────────────────────────────────────────────────────────────────

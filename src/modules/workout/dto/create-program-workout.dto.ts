@@ -56,4 +56,20 @@ export class CreateProgramWorkoutDto {
   @Min(5)
   @Max(480)
   estimatedDurationMinutes?: number;
+
+  /** The day's rest, between a set's own and the program's default. */
+  @ApiPropertyOptional({
+    example: 120,
+    minimum: 0,
+    maximum: 600,
+    nullable: true,
+    description:
+      "Rest between sets for this day, in seconds. A set's own rest wins; " +
+      "the program's default applies when this is null.",
+  })
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  @Max(600)
+  defaultRestSeconds?: number | null;
 }

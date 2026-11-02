@@ -10,7 +10,9 @@ import { Equipment } from './entities/equipment.entity';
 import { ExerciseMuscle } from './entities/exercise-muscle.entity';
 import { ExerciseEquipment } from './entities/exercise-equipment.entity';
 import { ExerciseMedia } from './entities/exercise-media.entity';
+import { ExerciseNote } from './entities/exercise-note.entity';
 import { ExerciseService } from './exercise.service';
+import { ExerciseNoteService } from './exercise-note.service';
 import { ExerciseController } from './exercise.controller';
 import { MuscleController } from './muscle.controller';
 import { EquipmentController } from './equipment.controller';
@@ -44,6 +46,8 @@ import { EquipmentController } from './equipment.controller';
       ExerciseMuscle,
       ExerciseEquipment,
       ExerciseMedia,
+      // A person's private note per exercise (migration 079).
+      ExerciseNote,
       // `User` is registered here as a model provider only so the
       // browse-gate (`canClientBrowseCatalog`) can read `exerciseCatalogOptIn`
       // without forcing a UserModule import (which would create a cycle).
@@ -54,7 +58,8 @@ import { EquipmentController } from './equipment.controller';
     SearchModule,
   ],
   controllers: [ExerciseController, MuscleController, EquipmentController],
-  providers: [ExerciseService],
-  exports: [ExerciseService, SequelizeModule],
+  providers: [ExerciseService, ExerciseNoteService],
+  // ExerciseNoteService: the owner's workout reads carry their notes.
+  exports: [ExerciseService, ExerciseNoteService, SequelizeModule],
 })
 export class ExerciseModule {}

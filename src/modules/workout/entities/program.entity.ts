@@ -81,6 +81,14 @@ export class Program extends Model {
   })
   declare level: ExerciseLevel | null;
 
+  /**
+   * "Rest between sets" of a routine, or a program's default rest, in
+   * seconds (0 to 600, migration 079). A set's own rest wins, then the
+   * day's (`ProgramWorkout.defaultRestSeconds`), then this.
+   */
+  @Column({ type: DataType.INTEGER, allowNull: true })
+  declare defaultRestSeconds: number | null;
+
   /** Set on every successful start; powers "last done 4 days ago". */
   @Column({ type: DataType.DATE, allowNull: true })
   declare lastPerformedAt: Date | null;

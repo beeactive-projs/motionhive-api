@@ -803,6 +803,17 @@ export const NOTIFICATION_SAMPLES: NotificationSample[] = [
       }),
   },
 
+  {
+    audience: 'client',
+    variant: 'typical',
+    build: () =>
+      workout.workoutAutoSavedForOwner({
+        ownerId: U,
+        workoutLogId: 'l-1',
+        workoutName: 'Ziua 1: Picioare',
+      }),
+  },
+
   // ── messaging ──
   {
     audience: 'client',

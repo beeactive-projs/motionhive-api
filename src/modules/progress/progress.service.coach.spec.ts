@@ -50,7 +50,13 @@ interface FakeLog {
   at: Date;
   durationSeconds: number;
   name: string;
-  sets: Array<{ exerciseId: string; reps: number; weightKg: number }>;
+  sets: Array<{
+    exerciseId: string;
+    reps: number;
+    weightKg: number;
+    /** Absent means NORMAL, the column default. */
+    setType?: 'NORMAL' | 'WARMUP';
+  }>;
   /** Absent means ONLY_ME, the column default. */
   visibility?: 'ONLY_ME' | 'COACHES_ONLY' | 'PUBLIC';
 }
@@ -193,9 +199,15 @@ function fakeQuery(logs: FakeLog[], oneRepMaxes: FakeOneRepMax[]) {
     });
     const since = (days: unknown) =>
       visible.filter((l) => l.at >= daysAgo(Number(days)));
+    // A warm-up counts only for a query that forgot to leave it out.
+    const working = (sets: FakeLog['sets']) =>
+      sql.includes("set_type <> 'WARMUP'")
+        ? sets.filter((s) => s.setType !== 'WARMUP')
+        : sets;
     const volume = (ls: FakeLog[]) =>
       ls.reduce(
-        (sum, l) => sum + l.sets.reduce((v, s) => v + s.reps * s.weightKg, 0),
+        (sum, l) =>
+          sum + working(l.sets).reduce((v, s) => v + s.reps * s.weightKg, 0),
         0,
       );
 
@@ -234,6 +246,7 @@ function fakeQuery(logs: FakeLog[], oneRepMaxes: FakeOneRepMax[]) {
           weekStart: new Date(k),
           volumeKg: String(volume(ls)),
           workouts: String(ls.length),
+          weekSeconds: String(ls.reduce((n, l) => n + l.durationSeconds, 0)),
         }));
     } else if (sql.includes('AS "day"')) {
       const byDay = new Map<number, number>();
@@ -254,6 +267,7 @@ function fakeQuery(logs: FakeLog[], oneRepMaxes: FakeOneRepMax[]) {
           const sets = l.sets
             .filter((s) => s.exerciseId === r.exerciseId)
             .sort((a, b) => b.weightKg - a.weightKg);
+          const counted = working(sets);
           return {
             workoutLogId: l.id,
             performedAt: l.at,
@@ -263,6 +277,12 @@ function fakeQuery(logs: FakeLog[], oneRepMaxes: FakeOneRepMax[]) {
             topReps: sets[0].reps,
             bestDurationSeconds: null,
             bestDistanceMeters: null,
+            volumeKg: String(
+              counted.reduce((v, s) => v + s.reps * s.weightKg, 0),
+            ),
+            volumeReps: String(counted.reduce((v, s) => v + s.reps, 0)),
+            volumeSeconds: '0',
+            volumeMeters: '0',
           };
         });
     } else if (sql.includes('AS "reps"')) {
@@ -575,6 +595,38 @@ describe('ProgressService — a coach reading a client', () => {
       expect(sqlOf().some((s) => s.includes('one_rep_max'))).toBe(false);
     });
 
+    // Workouts round 2: someone's own exercise is PRIVATE (source USER).
+    // Their coach reviewing a workout still opens its history, and one
+    // the client deleted keeps it (the row is soft deleted, so the lookup
+    // reads deleted rows too).
+    it("opens the history of the client's own private exercise, deleted or not", async () => {
+      exerciseModel.findByPk.mockResolvedValueOnce({
+        id: BENCH,
+        name: 'My cable press',
+        source: 'USER',
+        visibility: 'PRIVATE',
+        ownerId: 'client-1',
+      });
+
+      const out = await service.exerciseHistoryForCoach(
+        'coach-1',
+        'client-1',
+        BENCH,
+      );
+
+      expect(out.exercise).toEqual(
+        expect.objectContaining({ name: 'My cable press' }),
+      );
+      expect(out.sessions.map((s) => s.workoutLogId)).toEqual([
+        'log-plan',
+        'log-plan-old',
+      ]);
+      expect(exerciseModel.findByPk).toHaveBeenCalledWith(
+        BENCH,
+        expect.objectContaining({ paranoid: false }),
+      );
+    });
+
     it("scopes one exercise's sessions and 1RM series the same way", async () => {
       const out = await service.exerciseHistoryForCoach(
         'coach-1',
@@ -726,6 +778,68 @@ describe('ProgressService — a coach reading a client', () => {
         expect(sql).not.toMatch(/assignmentIds|AND FALSE/);
         expect(opts.replacements).not.toHaveProperty('assignmentIds');
       }
+    });
+
+    // Workouts round 2: volume per session, warm-ups out, in kilograms
+    // for a loaded exercise.
+    it("gives each session's volume, warm-ups left out", async () => {
+      exerciseModel.findByPk.mockResolvedValueOnce({
+        id: BENCH,
+        name: 'Bench press',
+        kind: 'STRENGTH',
+      });
+      logById('log-plan').sets = [
+        { exerciseId: BENCH, reps: 10, weightKg: 40, setType: 'WARMUP' },
+        ...logPlan.sets,
+      ];
+
+      const out = await service.exerciseHistory('client-1', BENCH);
+
+      const plan = out.sessions.find((s) => s.workoutLogId === 'log-plan');
+      // 80 × 5 + 75 × 5; the 40 × 10 warm-up is not training volume.
+      expect(plan).toEqual(
+        expect.objectContaining({ volume: 775, volumeUnit: 'kg' }),
+      );
+      expect(out.sessions.every((s) => s.volumeUnit === 'kg')).toBe(true);
+    });
+
+    it('measures a bodyweight exercise in reps', async () => {
+      exerciseModel.findByPk.mockResolvedValueOnce({
+        id: BENCH,
+        name: 'Push-up',
+        kind: 'BODYWEIGHT',
+      });
+
+      const out = await service.exerciseHistory('client-1', BENCH);
+
+      expect(out.sessions[0]).toEqual(
+        expect.objectContaining({ volume: 10, volumeUnit: 'reps' }),
+      );
+    });
+
+    it('gives each week its minutes and its volume without warm-ups', async () => {
+      logById('log-plan').sets = [
+        { exerciseId: BENCH, reps: 10, weightKg: 40, setType: 'WARMUP' },
+        ...logPlan.sets,
+      ];
+
+      const out = await service.overview(
+        'client-1',
+        ProgressRange.FourWeeks,
+        'en',
+      );
+
+      const weeks = out.weeklyVolume;
+      expect(weeks.reduce((n, w) => n + w.minutes, 0)).toBe(
+        Math.round((2000 + 3000 + 1800 + 2400) / 60),
+      );
+      expect(weeks.reduce((n, w) => n + w.volumeKg, 0)).toBe(
+        70 * 5 + (80 * 5 + 75 * 5) + (100 * 3 + 120 * 5) + 90 * 5,
+      );
+      // The totals use the same rule.
+      expect(out.totals.volumeKg).toBe(
+        weeks.reduce((n, w) => n + w.volumeKg, 0),
+      );
     });
 
     it('keeps the stored 1RM series in the exercise history', async () => {

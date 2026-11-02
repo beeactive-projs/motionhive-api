@@ -131,12 +131,13 @@ export class ExerciseService {
    * Ownership filter semantics:
    *   - `all`           → SYSTEM ∪ mine ∪ public-from-others
    *   - `system`        → SYSTEM only
-   *   - `mine`          → owner_id = me (any visibility); instructor-only
+   *   - `mine`          → owner_id = me (any visibility), for every role:
+   *                       someone who is not a coach owns the exercises
+   *                       they made (source USER, always PRIVATE)
    *   - `public-others` → visibility=PUBLIC ∧ owner_id ≠ me ∧ source ≠ SYSTEM
    *
    * For client (`USER`) callers, the catalog browse gate is enforced
-   * upstream in `assertClientCanBrowse`; here we silently drop the
-   * `mine` slice (clients never author exercises).
+   * upstream in `assertClientCanBrowse`.
    */
   async list(filter: ListExercisesQueryDto, principal: PrincipalContext) {
     const where = this.buildListWhere(filter, principal);
@@ -212,8 +213,19 @@ export class ExerciseService {
   // Create
   // ────────────────────────────────────────────────────────────────────
 
-  async create(dto: CreateExerciseDto, ownerId: string): Promise<Exercise> {
-    this.validateMuscleRoles(dto.muscles);
+  /**
+   * @param isInstructor a coach authors an INSTRUCTOR exercise, PRIVATE or
+   * PUBLIC, with at least one primary muscle. Anyone else authors a USER
+   * one for their own training: always PRIVATE, muscles optional (the
+   * form's chips). Ownership is the boundary either way.
+   */
+  async create(
+    dto: CreateExerciseDto,
+    ownerId: string,
+    isInstructor = true,
+  ): Promise<Exercise> {
+    const muscles = dto.muscles ?? [];
+    this.validateMuscleRoles(muscles, { requirePrimary: isInstructor });
     const slug = await this.allocateSlug(dto.name, ownerId);
 
     const created = await this.sequelize.transaction(async (tx) => {
@@ -230,9 +242,14 @@ export class ExerciseService {
           force: dto.force ?? null,
           metValue: dto.metValue ?? null,
           isUnilateral: dto.isUnilateral ?? false,
-          source: ExerciseSource.Instructor,
+          source: isInstructor
+            ? ExerciseSource.Instructor
+            : ExerciseSource.User,
           ownerId,
-          visibility: dto.visibility ?? ExerciseVisibility.Private,
+          // A USER exercise is private by rule (a CHECK backs it).
+          visibility: isInstructor
+            ? (dto.visibility ?? ExerciseVisibility.Private)
+            : ExerciseVisibility.Private,
           forkedFromId: null,
           mediaKind: dto.youtubeUrl
             ? ExerciseMediaKind.Youtube
@@ -244,7 +261,9 @@ export class ExerciseService {
         { transaction: tx },
       );
 
-      await this.attachMuscles(exercise.id, dto.muscles, tx);
+      if (muscles.length) {
+        await this.attachMuscles(exercise.id, muscles, tx);
+      }
       if (dto.equipmentIds?.length) {
         await this.attachEquipment(exercise.id, dto.equipmentIds, tx);
       }
@@ -278,9 +297,13 @@ export class ExerciseService {
       throw new NotFoundException(apiError('exercise.notFound'));
     }
 
+    // Someone's own (USER) exercise: muscles optional, and it stays
+    // PRIVATE whatever is sent, since a CHECK refuses anything else.
+    const isUserOwn = exercise.source === ExerciseSource.User;
     if (dto.muscles) {
-      this.validateMuscleRoles(dto.muscles);
+      this.validateMuscleRoles(dto.muscles, { requirePrimary: !isUserOwn });
     }
+    const visibility = isUserOwn ? undefined : dto.visibility;
 
     let slug = exercise.slug;
     if (dto.name && dto.name.trim() !== exercise.name) {
@@ -308,7 +331,7 @@ export class ExerciseService {
           ...(dto.isUnilateral !== undefined && {
             isUnilateral: dto.isUnilateral,
           }),
-          ...(dto.visibility !== undefined && { visibility: dto.visibility }),
+          ...(visibility !== undefined && { visibility }),
           ...(dto.youtubeUrl !== undefined && {
             youtubeUrl: dto.youtubeUrl || null,
             mediaKind: dto.youtubeUrl
@@ -324,7 +347,9 @@ export class ExerciseService {
           where: { exerciseId: exercise.id },
           transaction: tx,
         });
-        await this.attachMuscles(exercise.id, dto.muscles, tx);
+        if (dto.muscles.length) {
+          await this.attachMuscles(exercise.id, dto.muscles, tx);
+        }
       }
 
       if (dto.equipmentIds) {
@@ -539,12 +564,9 @@ export class ExerciseService {
         conds.push({ source: ExerciseSource.System });
         break;
       case ExerciseOwnershipFilter.Mine:
-        if (!principal.isInstructor) {
-          // Clients can't have "mine" exercises — return nothing.
-          conds.push(literal('1 = 0') as unknown as WhereOptions<Exercise>);
-        } else {
-          conds.push({ ownerId: principal.userId });
-        }
+        // Everyone can own exercises: a coach's, or the USER ones someone
+        // made for their own training.
+        conds.push({ ownerId: principal.userId });
         break;
       case ExerciseOwnershipFilter.PublicOthers:
         conds.push({
@@ -568,11 +590,13 @@ export class ExerciseService {
             ],
           });
         } else {
-          // Clients: SYSTEM OR PUBLIC custom — never PRIVATE.
+          // Clients: SYSTEM, PUBLIC custom, and their own (always
+          // PRIVATE). Never someone else's PRIVATE row.
           conds.push({
             [Op.or]: [
               { source: ExerciseSource.System },
               { visibility: ExerciseVisibility.Public },
+              { ownerId: principal.userId },
             ],
           });
         }
@@ -811,11 +835,17 @@ export class ExerciseService {
     return exercise.ownerId === principal.userId;
   }
 
+  /**
+   * `requirePrimary`: a coach's exercise names at least one primary
+   * muscle; someone's own (USER) one may have none, since the form's
+   * muscle chips are optional.
+   */
   private validateMuscleRoles(
     muscles: { muscleId: string; role: MuscleRole }[],
+    { requirePrimary = true }: { requirePrimary?: boolean } = {},
   ): void {
     const primaries = muscles.filter((m) => m.role === MuscleRole.Primary);
-    if (primaries.length === 0) {
+    if (requirePrimary && primaries.length === 0) {
       throw new BadRequestException(apiError('exercise.primaryMuscleRequired'));
     }
     if (primaries.length > MAX_PRIMARY_MUSCLES) {

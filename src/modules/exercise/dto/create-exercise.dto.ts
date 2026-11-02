@@ -2,7 +2,6 @@ import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
 import {
   ArrayMaxSize,
-  ArrayMinSize,
   ArrayUnique,
   IsArray,
   IsBoolean,
@@ -32,12 +31,14 @@ import { MuscleRoleInputDto } from './muscle-role-input.dto';
 /**
  * Create Exercise DTO
  *
- * Used by instructors to author a custom (INSTRUCTOR-source) exercise.
+ * Used by instructors to author a custom (INSTRUCTOR-source) exercise,
+ * and by anyone else for their own (USER-source, always PRIVATE) one.
  * SYSTEM exercises are seeded via `scripts/seed-exercises.ts` and never
  * created through this endpoint.
  *
  * Cross-field rules enforced in `ExerciseService.create`:
- *   - at least one muscle with role=PRIMARY (max 3)
+ *   - a coach's: at least one muscle with role=PRIMARY (max 3)
+ *   - someone's own: muscles optional, `visibility` ignored (PRIVATE)
  *   - if PUBLIC visibility, owner_id must be set (auto from JWT)
  *
  * DTO-level validation only checks per-field shape and bounds —
@@ -157,22 +158,24 @@ export class CreateExerciseDto {
   @IsEnum(ExerciseVisibility)
   visibility?: ExerciseVisibility;
 
-  @ApiProperty({
+  @ApiPropertyOptional({
     type: [MuscleRoleInputDto],
     description:
-      'Muscles worked by this exercise, with their role. At least one ' +
-      'PRIMARY required; PRIMARY capped at 3. Service-layer validation.',
+      'Muscles worked by this exercise, with their role. For a coach at ' +
+      'least one PRIMARY is required; for anyone else (an own USER ' +
+      'exercise) it is optional. PRIMARY capped at 3. Service-layer ' +
+      'validation.',
     example: [
       { muscleId: '8a4b0fda-2c5e-4e60-94d6-3d2a8b5e0c5f', role: 'PRIMARY' },
       { muscleId: '5b1c9aef-3d6f-4a71-a5e8-2c1b9d3a0e7b', role: 'SECONDARY' },
     ],
   })
+  @IsOptional()
   @IsArray()
-  @ArrayMinSize(1)
   @ArrayMaxSize(20)
   @ValidateNested({ each: true })
   @Type(() => MuscleRoleInputDto)
-  muscles: MuscleRoleInputDto[];
+  muscles?: MuscleRoleInputDto[];
 
   @ApiPropertyOptional({
     type: [String],

@@ -54,6 +54,7 @@ import {
   clientCompletedPlanForInstructor,
   programAssignedForClient,
 } from './notifications';
+import { plannedSetRest } from './planned-rest';
 
 /**
  * A plan that can still finish. A waiting one too: if its workouts were
@@ -606,7 +607,9 @@ export class ProgramAssignmentService {
               targetDistanceMeters: ps.targetDistanceMeters,
               targetRpe: ps.targetRpe,
               targetRir: ps.targetRir,
-              restAfterSeconds: ps.restAfterSeconds,
+              // The copy carries the planned rest whole: the routine's
+              // "Rest between sets" fills a set that has none.
+              restAfterSeconds: plannedSetRest(ps, source, program),
               tempo: ps.tempo,
               notes: ps.notes,
             })),
@@ -1121,7 +1124,9 @@ export class ProgramAssignmentService {
             targetDistanceMeters: ps.targetDistanceMeters,
             targetRpe: ps.targetRpe,
             targetRir: ps.targetRir,
-            restAfterSeconds: ps.restAfterSeconds,
+            // The client's copy carries the planned rest whole: the day's
+            // rest, else the program's default, fills a set that has none.
+            restAfterSeconds: plannedSetRest(ps, pw, program),
             tempo: ps.tempo,
             notes: ps.notes,
           })),

@@ -23,4 +23,5 @@ export const validation = {
   importTooManyRows: 'You can import up to 200 people at a time.',
   noteTooLong: 'Note must be 500 characters or fewer.',
   personalMessageTooLong: 'Personal message must be 500 characters or fewer.',
+  exerciseNoteTooLong: 'Your note can be up to 280 characters.',
 };

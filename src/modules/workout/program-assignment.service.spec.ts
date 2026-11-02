@@ -782,6 +782,20 @@ describe('ProgramAssignmentService (smoke — not exhaustive)', () => {
       );
     });
 
+    it('schedules a DRAFT routine like any other', async () => {
+      programModel.findByPk.mockResolvedValueOnce(routine({ status: 'DRAFT' }));
+      assignmentModel.create.mockResolvedValueOnce({ id: 'pa-1' });
+      assignedWorkoutModel.create.mockResolvedValue({ id: 'aw-x' });
+
+      await expect(
+        service.scheduleRoutine(
+          'me',
+          { programId: 'p-1', daysOfWeek: [3] },
+          '2026-08-06',
+        ),
+      ).resolves.toEqual({ id: 'pa-1' });
+    });
+
     it('refuses to schedule an empty routine', async () => {
       programModel.findByPk.mockResolvedValueOnce(routine({ workouts: [] }));
 
@@ -940,6 +954,109 @@ describe('ProgramAssignmentService (smoke — not exhaustive)', () => {
       await expect(service.findById('a-1', 'me')).rejects.toThrow(
         NotFoundException,
       );
+    });
+  });
+
+  // ─── Planned rest travels with the copy (workouts round 2) ───────
+
+  describe('planned rest on the copy', () => {
+    const restsWritten = () =>
+      (
+        (assignedSetModel.bulkCreate.mock.calls as unknown[][])[0][0] as {
+          restAfterSeconds: number | null;
+        }[]
+      ).map((row) => row.restAfterSeconds);
+
+    it("fills a set with no rest from the day's, else the program's default", async () => {
+      const program = buildTinyProgram();
+      const day = program.workouts[0];
+      day.exercises[0].sets[0].restAfterSeconds = null as unknown as number;
+      setupHappyPath();
+      programModel.findByPk.mockReset();
+      programModel.findByPk.mockResolvedValueOnce({
+        ...program,
+        defaultRestSeconds: 60,
+        workouts: [{ ...day, defaultRestSeconds: 150 }],
+      });
+
+      await service.assignProgramToClient(me, 'Coach Co.', {
+        programId: 'prog-1',
+        clientId: 'c-1',
+        startDate: '2026-06-09',
+      });
+
+      // The set's own 90 wins; the empty one takes the day's 150.
+      expect(restsWritten()).toEqual([150, 90]);
+    });
+
+    it("falls back to the program's default when the day has none", async () => {
+      const program = buildTinyProgram();
+      const day = program.workouts[0];
+      for (const set of day.exercises[0].sets) {
+        set.restAfterSeconds = null as unknown as number;
+      }
+      setupHappyPath();
+      programModel.findByPk.mockReset();
+      programModel.findByPk.mockResolvedValueOnce({
+        ...program,
+        defaultRestSeconds: 60,
+        workouts: [{ ...day, defaultRestSeconds: null }],
+      });
+
+      await service.assignProgramToClient(me, 'Coach Co.', {
+        programId: 'prog-1',
+        clientId: 'c-1',
+        startDate: '2026-06-09',
+      });
+
+      expect(restsWritten()).toEqual([60, 60]);
+    });
+
+    it("gives a scheduled routine's sets its rest between sets", async () => {
+      programModel.findByPk.mockResolvedValueOnce({
+        id: 'p-1',
+        ownerId: 'me',
+        name: 'Push day A',
+        defaultRestSeconds: 75,
+        workouts: [
+          {
+            id: 'pw-1',
+            notes: null,
+            estimatedDurationMinutes: 45,
+            defaultRestSeconds: null,
+            exercises: [
+              {
+                id: 'pe-1',
+                exerciseId: 'ex-1',
+                supersetGroupId: null,
+                orderIndex: 0,
+                notes: null,
+                alternateExerciseId: null,
+                sets: [
+                  { id: 'ps-1', orderIndex: 0, restAfterSeconds: null },
+                  { id: 'ps-2', orderIndex: 1, restAfterSeconds: 120 },
+                ],
+              },
+            ],
+          },
+        ],
+      });
+      assignmentModel.create.mockResolvedValueOnce({ id: 'pa-1' });
+      assignedWorkoutModel.create.mockResolvedValue({ id: 'aw-x' });
+      assignedExerciseModel.create.mockResolvedValue({ id: 'ae-x' });
+
+      await service.scheduleRoutine(
+        'me',
+        {
+          programId: 'p-1',
+          daysOfWeek: [5],
+          repeatMode: 'BLOCK' as never,
+          repeatWeeks: 1,
+        },
+        '2026-08-06',
+      );
+
+      expect(restsWritten()).toEqual([75, 120]);
     });
   });
 });
