@@ -7,13 +7,22 @@ import {
 import type { LoggerService } from '@nestjs/common';
 import { InjectModel } from '@nestjs/sequelize';
 import { Sequelize } from 'sequelize-typescript';
-import { Op, Transaction, UniqueConstraintError, literal } from 'sequelize';
+import {
+  Op,
+  QueryTypes,
+  Transaction,
+  UniqueConstraintError,
+  literal,
+} from 'sequelize';
+import type { Order, OrderItem } from 'sequelize';
 import { WINSTON_MODULE_NEST_PROVIDER } from 'nest-winston';
 import { InstructorProfile } from './entities/instructor-profile.entity';
 import { CreateInstructorProfileDto } from './dto/create-instructor-profile.dto';
 import { UpdateInstructorProfileDto } from './dto/update-instructor-profile.dto';
 import { UpdateFullProfileDto } from './dto/update-full-profile.dto';
 import { DiscoverInstructorsDto } from './dto/discover-instructors.dto';
+import { CoachDirectoryDto } from './dto/coach-directory.dto';
+import { CoachDirectorySort } from './entities/coach-directory.enums';
 import { SuggestedInstructorsDto } from './dto/suggested-instructors.dto';
 import { CoachSuggestionReason } from './entities/coach-suggestion.enums';
 import { UpdatePrivacySettingsDto } from './dto/update-privacy-settings.dto';
@@ -40,7 +49,16 @@ import {
   InstructorClient,
   InstructorClientStatus,
 } from '../client/entities/instructor-client.entity';
-import { foldedContains } from '../../common/utils/search.utils';
+import {
+  ClientRequest,
+  ClientRequestStatus,
+  ClientRequestType,
+} from '../client/entities/client-request.entity';
+import {
+  foldedContains,
+  normalizeSearchTerm,
+} from '../../common/utils/search.utils';
+import { buildPaginatedResponse } from '../../common/dto/pagination.dto';
 import { apiError } from '../../common/i18n';
 import { SearchIndexService } from '../search/search-index.service';
 import { ReviewService } from '../review/review.service';
@@ -64,6 +82,40 @@ export type { PublicProfileAudience } from './profile-privacy';
  * filter the API applies before returning `displayRoles`.
  */
 const HIDDEN_DISPLAY_ROLES = new Set(['USER']);
+
+/**
+ * Whether a coach coaches online: an active online venue (a meeting link)
+ * on their profile. The apps' "Online" filter and badge both read it, so
+ * it is the venue that decides, never a word in the specializations.
+ * Written over the `InstructorProfile` alias the discovery queries use.
+ */
+const ONLINE_VENUE_SQL = `EXISTS (
+  SELECT 1 FROM venue v
+  WHERE v.instructor_id = "InstructorProfile"."id"
+    AND v.is_online = true
+    AND v.is_active = true
+    AND v.deleted_at IS NULL
+)`;
+
+/** A profile's specializations as rows; `[]` when the column holds no array. */
+const SPECIALIZATIONS_SQL = `json_array_elements_text(
+  CASE WHEN json_typeof("InstructorProfile"."specializations") = 'array'
+    THEN "InstructorProfile"."specializations" ELSE '[]'::json END
+)`;
+
+/** The name a directory row shows, for sorting by it. */
+const DIRECTORY_NAME_SQL = `lower(COALESCE(
+  NULLIF(btrim("InstructorProfile"."display_name"), ''),
+  concat_ws(' ', "user"."first_name", "user"."last_name")
+))`;
+
+/** How many cities and specializations the directory's filter sheet offers. */
+const DIRECTORY_FACET_LIMIT = 40;
+
+export interface CoachDirectoryFacet {
+  label: string;
+  count: number;
+}
 
 /**
  * Manages the instructor profile. Identity (name, email, country,
@@ -310,10 +362,12 @@ export class ProfileService {
   // =====================================================
 
   /**
-   * Discover public instructor profiles.
+   * Discover instructor profiles: up to 30, the most experienced first, as
+   * one plain array. `page` and `limit` are accepted but not applied; the
+   * paged list is `coachDirectory`.
    *
-   * Returns paginated list of instructors who have set isPublic=true.
-   * City/country filters target `user` (the person's location) now,
+   * `isPublic` is not checked: every active coach is listed, whatever they
+   * picked. City/country filters target `user` (the person's location),
    * not a duplicate on instructor_profile.
    */
   async discoverInstructors(dto: DiscoverInstructorsDto) {
@@ -374,12 +428,248 @@ export class ProfileService {
         'isAcceptingClients',
         'socialLinks',
         'showSocialLinks',
+        [literal(ONLINE_VENUE_SQL), 'isOnline'],
       ],
       order: [['yearsOfExperience', 'DESC']],
       limit: 30,
     });
 
-    return profiles.map((profile) => ({
+    return profiles.map((profile) => this.toDirectoryRow(profile));
+  }
+
+  /**
+   * The coach directory: the mobile Coaches screen's list, paged, with the
+   * filters it offers. Open to guests; a signed-in viewer is left out of it,
+   * along with anyone on either side of a block with them, so a page is
+   * never short of the rows the app would have to drop.
+   *
+   * Coaches only (an admin can revoke the role and leave the profile
+   * behind), and only active accounts. Like `discoverInstructors`,
+   * `isPublic` is not checked yet.
+   */
+  async coachDirectory(viewerId: string | null, dto: CoachDirectoryDto) {
+    const page = dto.page ?? 1;
+    const limit = dto.limit ?? 20;
+    const esc = (value: string) => this.sequelize.escape(value);
+
+    const userWhere: Record<string | symbol, unknown> = { isActive: true };
+    if (dto.city) {
+      userWhere[Op.and] = [foldedContains('"user"."city"', dto.city, esc)];
+    }
+    if (dto.country) {
+      userWhere.countryCode = dto.country.toUpperCase();
+    }
+
+    const and = this.directoryScopeSql(viewerId).map((sql) => literal(sql));
+    if (dto.online) {
+      and.push(literal(ONLINE_VENUE_SQL));
+    }
+    if (dto.requested) {
+      // A guest has asked nobody.
+      and.push(literal(viewerId ? this.requestSentSql(viewerId) : 'false'));
+    }
+    if (dto.specializations?.length) {
+      // Whole entries, folded on both sides: "forta" picks "Forță".
+      const wanted = dto.specializations
+        .map((value) => `fold_for_search(${esc(normalizeSearchTerm(value))})`)
+        .join(', ');
+      and.push(
+        literal(`EXISTS (
+          SELECT 1 FROM ${SPECIALIZATIONS_SQL} AS spec(value)
+          WHERE fold_for_search(btrim(spec.value)) IN (${wanted})
+        )`),
+      );
+    }
+
+    const where: Record<string | symbol, unknown> = { [Op.and]: and };
+    if (dto.accepting) {
+      where.isAcceptingClients = true;
+    }
+    if (dto.minYears) {
+      where.yearsOfExperience = { [Op.gte]: dto.minYears };
+    }
+    if (dto.search) {
+      const term = dto.search;
+      where[Op.or] = [
+        foldedContains('"InstructorProfile"."display_name"', term, esc),
+        foldedContains('"InstructorProfile"."bio"', term, esc),
+        foldedContains(
+          `concat_ws(' ', "user"."first_name", "user"."last_name")`,
+          term,
+          esc,
+        ),
+        foldedContains('"user"."city"', term, esc),
+        foldedContains(
+          'CAST("InstructorProfile"."specializations" AS TEXT)',
+          term,
+          esc,
+        ),
+      ];
+    }
+
+    const { rows, count } = await this.instructorProfileModel.findAndCountAll({
+      where,
+      include: [
+        {
+          model: User,
+          attributes: USER_SAFE_ATTRIBUTES,
+          where: userWhere,
+          required: true,
+        },
+      ],
+      subQuery: false,
+      distinct: true,
+      attributes: [
+        'id',
+        'userId',
+        'displayName',
+        'bio',
+        'specializations',
+        'yearsOfExperience',
+        'isAcceptingClients',
+        'socialLinks',
+        'showSocialLinks',
+        [literal(ONLINE_VENUE_SQL), 'isOnline'],
+        [
+          literal(viewerId ? this.requestSentSql(viewerId) : 'false'),
+          'requestSent',
+        ],
+      ],
+      order: this.directoryOrder(dto.sort ?? CoachDirectorySort.RECOMMENDED),
+      limit,
+      offset: (page - 1) * limit,
+    });
+
+    return buildPaginatedResponse(
+      rows.map((profile) => ({
+        ...this.toDirectoryRow(profile),
+        /** The viewer asked this coach and is still waiting on an answer. */
+        requestSent: profile.getDataValue('requestSent' as never) === true,
+      })),
+      count,
+      page,
+      limit,
+    );
+  }
+
+  /**
+   * What the directory's filter sheet offers: the cities its coaches are in
+   * and the specializations they list, each with how many coaches, the most
+   * common first. Over the whole directory (the same coaches
+   * `coachDirectory` lists before any filter), so a pick never depends on
+   * which page happened to be loaded.
+   *
+   * Entries are grouped folded ("Forță" and "forta" are one), labelled with
+   * the spelling most coaches use.
+   */
+  async coachDirectoryFacets(viewerId: string | null): Promise<{
+    cities: CoachDirectoryFacet[];
+    specializations: CoachDirectoryFacet[];
+  }> {
+    const scope = [
+      '"InstructorProfile"."deleted_at" IS NULL',
+      '"user"."deleted_at" IS NULL',
+      '"user"."is_active" = true',
+      ...this.directoryScopeSql(viewerId),
+    ].join(' AND ');
+    const from = `FROM instructor_profile AS "InstructorProfile"
+      JOIN "user" AS "user" ON "user"."id" = "InstructorProfile"."user_id"`;
+
+    const [cities, specializations] = await Promise.all([
+      this.sequelize.query<CoachDirectoryFacet>(
+        `SELECT mode() WITHIN GROUP (ORDER BY btrim("user"."city")) AS label,
+                COUNT(*)::int AS count
+         ${from}
+         WHERE ${scope} AND btrim(COALESCE("user"."city", '')) <> ''
+         GROUP BY fold_for_search(btrim("user"."city"))
+         ORDER BY count DESC, label ASC
+         LIMIT ${DIRECTORY_FACET_LIMIT}`,
+        { type: QueryTypes.SELECT },
+      ),
+      this.sequelize.query<CoachDirectoryFacet>(
+        `SELECT mode() WITHIN GROUP (ORDER BY btrim(spec.value)) AS label,
+                COUNT(DISTINCT "InstructorProfile"."id")::int AS count
+         ${from}
+         CROSS JOIN LATERAL ${SPECIALIZATIONS_SQL} AS spec(value)
+         WHERE ${scope} AND btrim(spec.value) <> ''
+         GROUP BY fold_for_search(btrim(spec.value))
+         ORDER BY count DESC, label ASC
+         LIMIT ${DIRECTORY_FACET_LIMIT}`,
+        { type: QueryTypes.SELECT },
+      ),
+    ]);
+
+    return { cities, specializations };
+  }
+
+  /**
+   * Who the directory and its facets count, as SQL over the
+   * `InstructorProfile` alias: coaches only, and with a viewer, neither the
+   * viewer nor anyone on either side of a block with them.
+   */
+  private directoryScopeSql(viewerId: string | null): string[] {
+    const scope = [
+      `EXISTS (
+        SELECT 1 FROM user_role ur
+        JOIN role r ON r.id = ur.role_id
+        WHERE ur.user_id = "InstructorProfile"."user_id"
+          AND r.name = 'INSTRUCTOR'
+      )`,
+    ];
+    if (!viewerId) return scope;
+
+    const viewer = this.sequelize.escape(viewerId);
+    return [
+      ...scope,
+      `"InstructorProfile"."user_id" <> ${viewer}`,
+      `NOT EXISTS (
+        SELECT 1 FROM user_block ub
+        WHERE (ub.blocker_id = ${viewer} AND ub.blocked_id = "InstructorProfile"."user_id")
+           OR (ub.blocker_id = "InstructorProfile"."user_id" AND ub.blocked_id = ${viewer})
+      )`,
+    ];
+  }
+
+  /**
+   * Whether the viewer asked this coach and the request is still waiting
+   * (pending, not expired), as SQL over the `InstructorProfile` alias. The
+   * same request the profile's `pendingRequest` reports with `sentByYou`, so
+   * a directory row and the page it opens agree.
+   */
+  private requestSentSql(viewerId: string): string {
+    const viewer = this.sequelize.escape(viewerId);
+    return `EXISTS (
+      SELECT 1 FROM client_request cr
+      WHERE cr.from_user_id = ${viewer}
+        AND cr.to_user_id = "InstructorProfile"."user_id"
+        AND cr.status = '${ClientRequestStatus.PENDING}'
+        AND cr.expires_at > now()
+    )`;
+  }
+
+  /** Each order ends on the id, so paging never splits or repeats a tie. */
+  private directoryOrder(sort: CoachDirectorySort): Order {
+    const byName: OrderItem = [literal(DIRECTORY_NAME_SQL), 'ASC'];
+    const byId: OrderItem = ['id', 'ASC'];
+    switch (sort) {
+      case CoachDirectorySort.EXPERIENCE:
+        return [['yearsOfExperience', 'DESC NULLS LAST'], byName, byId];
+      case CoachDirectorySort.NAME:
+        return [byName, byId];
+      case CoachDirectorySort.RECOMMENDED:
+      default:
+        return [
+          ['isAcceptingClients', 'DESC'],
+          ['yearsOfExperience', 'DESC NULLS LAST'],
+          byName,
+          byId,
+        ];
+    }
+  }
+
+  /** One coach as the discover list and the directory both send it. */
+  private toDirectoryRow(profile: InstructorProfile) {
+    return {
       id: profile.id,
       userId: profile.userId,
       handle: profile.user?.handle ?? null,
@@ -392,10 +682,12 @@ export class ProfileService {
       specializations: profile.specializations,
       yearsOfExperience: profile.yearsOfExperience,
       isAcceptingClients: profile.isAcceptingClients,
+      // A `literal` alias, so it is not a model attribute.
+      isOnline: profile.getDataValue('isOnline' as never) === true,
       city: profile.user?.city ?? null,
       countryCode: profile.user?.countryCode ?? null,
       socialLinks: profile.showSocialLinks ? profile.socialLinks : null,
-    }));
+    };
   }
 
   /**
@@ -807,23 +1099,31 @@ export class ProfileService {
 
     // Cheap parallel check — we want both the instructor flag (for the
     // FE branch) and the role list (for the public role badges).
-    const [instructorProfile, roles, sharedGroups, workoutCount] =
-      await Promise.all([
-        this.instructorProfileModel.findOne({
-          where: { userId: user.id },
-          attributes: ['id'],
-        }),
-        this.roleService.getUserRoles(user.id),
-        // Groups in common: only for a signed-in viewer looking at someone
-        // else. A guest has none, and your own profile has nothing "in common".
-        viewerId && audience !== 'OWNER'
-          ? this.groupService.sharedGroups(viewerId, user.id)
-          : Promise.resolve([]),
-        this.workoutLogService.countForProfile(
-          user.id,
-          this._workoutLevels(seenAs),
-        ),
-      ]);
+    const [
+      instructorProfile,
+      roles,
+      sharedGroups,
+      workoutCount,
+      pendingRequest,
+    ] = await Promise.all([
+      this.instructorProfileModel.findOne({
+        where: { userId: user.id },
+        attributes: ['id'],
+      }),
+      this.roleService.getUserRoles(user.id),
+      // Groups in common: only for a signed-in viewer looking at someone
+      // else. A guest has none, and your own profile has nothing "in common".
+      viewerId && audience !== 'OWNER'
+        ? this.groupService.sharedGroups(viewerId, user.id)
+        : Promise.resolve([]),
+      this.workoutLogService.countForProfile(
+        user.id,
+        this._workoutLevels(seenAs),
+      ),
+      viewerId && audience !== 'OWNER'
+        ? this._pendingRequest(viewerId, user.id)
+        : Promise.resolve(null),
+    ]);
 
     const settings = user.privacySettings ?? {};
     // This endpoint serves the *public* profile page. Owners viewing their
@@ -856,6 +1156,8 @@ export class ProfileService {
       workoutCount,
       /** When they became the viewer's coach; null unless they are now. */
       yourCoachSince,
+      /** A coaching request between the two still waiting; null when none. */
+      pendingRequest,
     };
   }
 
@@ -987,6 +1289,46 @@ export class ProfileService {
       throw new NotFoundException(apiError('profile.notFound'));
     }
     return user;
+  }
+
+  /**
+   * A coaching request between the viewer and the owner that is still
+   * waiting (pending, not expired), in either direction, newest first. A
+   * profile reads it to offer the right verb: a trainee who asked a coach
+   * sees "Request sent", one the coach invited sees "Accept". Any pending
+   * request blocks a new one (`ClientService.assertNoPendingRequest`), so the
+   * page must know about it to avoid offering a request that would fail.
+   */
+  private async _pendingRequest(
+    viewerId: string,
+    ownerId: string,
+  ): Promise<{
+    id: string;
+    type: ClientRequestType;
+    sentByYou: boolean;
+    createdAt: Date;
+    expiresAt: Date;
+  } | null> {
+    const request = await ClientRequest.findOne({
+      where: {
+        status: ClientRequestStatus.PENDING,
+        expiresAt: { [Op.gt]: new Date() },
+        [Op.or]: [
+          { fromUserId: viewerId, toUserId: ownerId },
+          { fromUserId: ownerId, toUserId: viewerId },
+        ],
+      },
+      attributes: ['id', 'type', 'fromUserId', 'createdAt', 'expiresAt'],
+      order: [['createdAt', 'DESC']],
+    });
+    if (!request) return null;
+    return {
+      id: request.id,
+      type: request.type,
+      sentByYou: request.fromUserId === viewerId,
+      createdAt: request.createdAt,
+      expiresAt: request.expiresAt,
+    };
   }
 
   /**

@@ -33,14 +33,90 @@ export const ProfileDocs = {
             specializations: ['hiit', 'strength', 'weight_loss'],
             yearsOfExperience: 8,
             isAcceptingClients: true,
+            isOnline: false,
             city: 'Bucharest',
-            country: 'RO',
+            countryCode: 'RO',
             socialLinks: {
               instagram: 'https://instagram.com/coachjohn',
               website: 'https://coachjohn.com',
             },
           },
         ],
+      },
+    ],
+  } as ApiEndpointOptions,
+
+  coachDirectory: {
+    summary: 'Coach directory',
+    description:
+      'Every active coach, paged, for the mobile Coaches screen. Authentication optional: a signed-in ' +
+      'caller is left out of the list, along with anyone on either side of a block with them. ' +
+      'Filters combine with AND: search (name, display name, bio, city, specializations; blind to ' +
+      'accents and case), city (contains), country (ISO 3166-1 alpha-2), accepting (taking new clients), ' +
+      'online (has an active online venue), requested (coaches the caller asked and is still waiting ' +
+      'on; nobody for a guest), specializations (repeat the param; any of them, matched ' +
+      'whole), minYears. sort: recommended (default: taking clients first, then experience, then name), ' +
+      'experience, name. page (default 1), limit (1 to 50, default 20). `isOnline` on each row is the ' +
+      'same online-venue test. `requestSent` is true when the caller asked that coach and the request ' +
+      'is still waiting (pending, not expired); always false for a guest. `isPublic` is not applied yet.',
+    auth: false,
+    responses: [
+      {
+        status: 200,
+        description: 'One page of coaches',
+        example: {
+          items: [
+            {
+              id: 'profile-uuid',
+              userId: 'user-uuid',
+              handle: 'coach-john',
+              firstName: 'John',
+              lastName: 'Doe',
+              avatarId: 'cloudinary-asset-id-or-null',
+              avatarUrl: null,
+              displayName: 'Coach John',
+              bio: 'Certified HIIT and strength trainer with 8 years experience',
+              specializations: ['HIIT', 'Strength'],
+              yearsOfExperience: 8,
+              isAcceptingClients: true,
+              isOnline: true,
+              city: 'Bucharest',
+              countryCode: 'RO',
+              socialLinks: null,
+              requestSent: false,
+            },
+          ],
+          total: 42,
+          page: 1,
+          pageSize: 20,
+        },
+      },
+      ApiStandardResponses.BadRequest,
+    ],
+  } as ApiEndpointOptions,
+
+  coachDirectoryFacets: {
+    summary: 'Coach directory facets',
+    description:
+      "The cities the directory's coaches are in and the specializations they list, each with how " +
+      'many coaches, the most common first (up to 40 of each). Counted over the whole directory before ' +
+      'any filter, with the same coaches left out as there. Entries are grouped blind to accents and ' +
+      'case and labelled with the spelling most coaches use. Authentication optional.',
+    auth: false,
+    responses: [
+      {
+        status: 200,
+        description: 'Cities and specializations with counts',
+        example: {
+          cities: [
+            { label: 'București', count: 12 },
+            { label: 'Cluj-Napoca', count: 7 },
+          ],
+          specializations: [
+            { label: 'Yoga', count: 9 },
+            { label: 'Forță', count: 6 },
+          ],
+        },
       },
     ],
   } as ApiEndpointOptions,
@@ -424,7 +500,12 @@ export const ProfileDocs = {
       'both active members of (empty for a guest or the owner). ' +
       '`workoutCount` counts the workouts this viewer may see. ' +
       "`yourCoachSince` is when the owner became the viewer's coach, and " +
-      'null unless that relationship is active now.',
+      'null unless that relationship is active now. ' +
+      '`pendingRequest` is a coaching request between the viewer and the ' +
+      'owner still waiting (pending, not expired) in either direction, with ' +
+      '`sentByYou` saying which: a viewer who asked a coach, or one a coach ' +
+      'invited. Null for a guest, the owner, or when there is none; any ' +
+      'pending request blocks a new one.',
     auth: false,
     responses: [
       {
@@ -451,6 +532,13 @@ export const ProfileDocs = {
           ],
           workoutCount: 12,
           yourCoachSince: null,
+          pendingRequest: {
+            id: 'request-uuid',
+            type: 'CLIENT_TO_INSTRUCTOR',
+            sentByYou: true,
+            createdAt: '2026-11-01T10:00:00.000Z',
+            expiresAt: '2026-12-01T10:00:00.000Z',
+          },
         },
       },
       ApiStandardResponses.NotFound,

@@ -6,6 +6,7 @@ import { Op } from 'sequelize';
 import { WINSTON_MODULE_NEST_PROVIDER } from 'nest-winston';
 
 import { InstructorProfile } from './entities/instructor-profile.entity';
+import { CoachDirectorySort } from './entities/coach-directory.enums';
 import { ProfileService, isFieldVisible } from './profile.service';
 import { RoleService } from '../role/role.service';
 import { UserService } from '../user/user.service';
@@ -19,6 +20,11 @@ import { WorkoutPhotoService } from '../workout/workout-photo.service';
 import { MessageReportCategory } from '../messaging/entities/message-report.entity';
 import { User } from '../user/entities/user.entity';
 import { InstructorClient } from '../client/entities/instructor-client.entity';
+import {
+  ClientRequest,
+  ClientRequestStatus,
+  ClientRequestType,
+} from '../client/entities/client-request.entity';
 import {
   fakeTx,
   makeSilentLogger,
@@ -48,6 +54,7 @@ describe('ProfileService (smoke — not exhaustive)', () => {
     create: jest.fn(),
     findOne: jest.fn(),
     findAll: jest.fn(),
+    findAndCountAll: jest.fn(),
   };
 
   const sequelize = {
@@ -58,7 +65,20 @@ describe('ProfileService (smoke — not exhaustive)', () => {
     fn: jest.fn(),
     col: jest.fn(),
     escape: jest.fn((v: string) => `'${v}'`),
+    query: jest.fn(),
   };
+
+  /**
+   * A discovery row as Sequelize hands it back: model fields, plus the
+   * computed `isOnline` read through `getDataValue`.
+   */
+  const directoryRow = (
+    fields: Record<string, unknown>,
+    computed: Record<string, unknown> = {},
+  ) => ({
+    ...fields,
+    getDataValue: (key: string) => computed[key],
+  });
 
   const workoutReportService = {
     submit: jest.fn().mockResolvedValue({ id: 'r-1', status: 'OPEN' }),
@@ -107,6 +127,8 @@ describe('ProfileService (smoke — not exhaustive)', () => {
     jest.restoreAllMocks();
     // Most tests don't care about venues; opt in per-test with mockResolvedValueOnce.
     venueService.listPublicForProfile.mockResolvedValue([]);
+    // Nor about a pending coaching request between viewer and owner.
+    jest.spyOn(ClientRequest, 'findOne').mockResolvedValue(null);
     const module = await Test.createTestingModule({
       providers: [
         ProfileService,
@@ -424,26 +446,29 @@ describe('ProfileService (smoke — not exhaustive)', () => {
   describe('discoverInstructors', () => {
     it('returns the FE-shaped projection for each row', async () => {
       instructorProfileModel.findAll.mockResolvedValueOnce([
-        {
-          id: 'ip-a',
-          userId: 'u-a',
-          displayName: 'Coach A',
-          bio: 'A bio',
-          specializations: ['hiit'],
-          yearsOfExperience: 7,
-          isAcceptingClients: true,
-          socialLinks: { instagram: 'https://insta/a' },
-          showSocialLinks: true,
-          user: {
-            handle: 'coach-a',
-            firstName: 'A',
-            lastName: 'Last',
-            avatarId: 1,
-            avatarUrl: null,
-            city: 'Cluj',
-            countryCode: 'RO',
+        directoryRow(
+          {
+            id: 'ip-a',
+            userId: 'u-a',
+            displayName: 'Coach A',
+            bio: 'A bio',
+            specializations: ['hiit'],
+            yearsOfExperience: 7,
+            isAcceptingClients: true,
+            socialLinks: { instagram: 'https://insta/a' },
+            showSocialLinks: true,
+            user: {
+              handle: 'coach-a',
+              firstName: 'A',
+              lastName: 'Last',
+              avatarId: 1,
+              avatarUrl: null,
+              city: 'Cluj',
+              countryCode: 'RO',
+            },
           },
-        },
+          { isOnline: true },
+        ),
       ]);
 
       const out = await service.discoverInstructors({ page: 1, limit: 20 });
@@ -456,6 +481,7 @@ describe('ProfileService (smoke — not exhaustive)', () => {
         firstName: 'A',
         lastName: 'Last',
         displayName: 'Coach A',
+        isOnline: true,
         city: 'Cluj',
         countryCode: 'RO',
         socialLinks: { instagram: 'https://insta/a' },
@@ -464,7 +490,7 @@ describe('ProfileService (smoke — not exhaustive)', () => {
 
     it('hides socialLinks when the instructor toggled them off', async () => {
       instructorProfileModel.findAll.mockResolvedValueOnce([
-        {
+        directoryRow({
           id: 'ip-b',
           userId: 'u-b',
           displayName: 'Coach B',
@@ -483,11 +509,12 @@ describe('ProfileService (smoke — not exhaustive)', () => {
             city: null,
             countryCode: null,
           },
-        },
+        }),
       ]);
 
       const out = await service.discoverInstructors({});
       expect(out[0].socialLinks).toBeNull();
+      expect(out[0].isOnline).toBe(false);
     });
 
     // "brasov" finds "Brașov" and "stefan" finds "Ștefan": both sides fold.
@@ -512,6 +539,213 @@ describe('ProfileService (smoke — not exhaustive)', () => {
           ),
         ]),
       );
+    });
+  });
+
+  // ───── coachDirectory ─────────────────────────────────────────────
+
+  describe('coachDirectory', () => {
+    type DirectoryQuery = {
+      where: Record<string | symbol, unknown>;
+      include: Array<{ where: Record<string | symbol, unknown> }>;
+      order: unknown[];
+      limit: number;
+      offset: number;
+      distinct: boolean;
+      attributes: unknown[];
+    };
+    const lastQuery = () =>
+      instructorProfileModel.findAndCountAll.mock.calls.at(
+        -1,
+      )?.[0] as DirectoryQuery;
+    const andSql = (query: DirectoryQuery) =>
+      (query.where[Op.and] as Array<{ val: string }>).map((c) => c.val);
+    /** The SQL behind the `requestSent` column of the last query. */
+    const requestSentSql = () => {
+      const column = lastQuery().attributes.find(
+        (attr) => Array.isArray(attr) && attr[1] === 'requestSent',
+      ) as [{ val: string }, string];
+      return column[0].val;
+    };
+
+    beforeEach(() => {
+      instructorProfileModel.findAndCountAll.mockResolvedValue({
+        rows: [],
+        count: 0,
+      });
+    });
+
+    it('pages with an offset and returns the shared envelope', async () => {
+      instructorProfileModel.findAndCountAll.mockResolvedValueOnce({
+        rows: [
+          directoryRow(
+            {
+              id: 'ip-a',
+              userId: 'u-a',
+              displayName: 'Coach A',
+              isAcceptingClients: true,
+              showSocialLinks: false,
+              user: { handle: 'coach-a', city: 'Cluj', countryCode: 'RO' },
+            },
+            { isOnline: true },
+          ),
+        ],
+        count: 41,
+      });
+
+      const out = await service.coachDirectory(null, { page: 3, limit: 20 });
+
+      expect(lastQuery()).toMatchObject({
+        limit: 20,
+        offset: 40,
+        distinct: true,
+      });
+      expect(out).toMatchObject({ total: 41, page: 3, pageSize: 20 });
+      expect(out.items[0]).toMatchObject({
+        id: 'ip-a',
+        handle: 'coach-a',
+        isOnline: true,
+        countryCode: 'RO',
+        socialLinks: null,
+      });
+    });
+
+    it('marks the coaches the viewer asked and is still waiting on', async () => {
+      instructorProfileModel.findAndCountAll.mockResolvedValueOnce({
+        rows: [
+          directoryRow(
+            { id: 'ip-a', userId: 'u-a', user: {} },
+            { requestSent: true },
+          ),
+          directoryRow({ id: 'ip-b', userId: 'u-b', user: {} }),
+        ],
+        count: 2,
+      });
+
+      const out = await service.coachDirectory(me, {});
+
+      const sql = requestSentSql();
+      expect(sql).toContain(`cr.from_user_id = '${me}'`);
+      expect(sql).toContain(`cr.status = 'PENDING'`);
+      expect(sql).toContain('cr.expires_at > now()');
+      expect(out.items.map((row) => row.requestSent)).toEqual([true, false]);
+    });
+
+    it('marks nothing for a guest, who has asked nobody', async () => {
+      await service.coachDirectory(null, {});
+
+      expect(requestSentSql()).toBe('false');
+    });
+
+    it('narrows to the coaches the viewer asked, with the same test', async () => {
+      await service.coachDirectory(me, { requested: true });
+
+      expect(andSql(lastQuery())).toContain(requestSentSql());
+    });
+
+    it('lists nobody as requested by a guest', async () => {
+      await service.coachDirectory(null, { requested: true });
+
+      expect(andSql(lastQuery())).toContain('false');
+    });
+
+    it('lists coaches only, and leaves a guest nobody to exclude', async () => {
+      await service.coachDirectory(null, {});
+
+      const sql = andSql(lastQuery());
+      expect(sql).toHaveLength(1);
+      expect(sql[0]).toContain(`r.name = 'INSTRUCTOR'`);
+    });
+
+    it('leaves out the viewer and anyone on either side of a block', async () => {
+      await service.coachDirectory(me, {});
+
+      const sql = andSql(lastQuery()).join('\n');
+      expect(sql).toContain(`"InstructorProfile"."user_id" <> '${me}'`);
+      expect(sql).toContain(`ub.blocker_id = '${me}'`);
+      expect(sql).toContain(`ub.blocked_id = '${me}'`);
+    });
+
+    it('narrows to coaches taking clients, with the years asked for', async () => {
+      await service.coachDirectory(null, { accepting: true, minYears: 5 });
+
+      expect(lastQuery().where).toMatchObject({
+        isAcceptingClients: true,
+        yearsOfExperience: { [Op.gte]: 5 },
+      });
+    });
+
+    it('treats online as an active online venue', async () => {
+      await service.coachDirectory(null, { online: true });
+
+      const online = andSql(lastQuery()).find((sql) =>
+        sql.includes('FROM venue'),
+      );
+      expect(online).toContain('v.is_online = true');
+      expect(online).toContain('v.is_active = true');
+      expect(online).toContain('v.deleted_at IS NULL');
+    });
+
+    it('matches specializations whole and folded', async () => {
+      await service.coachDirectory(null, {
+        specializations: ['Forță', 'Yoga'],
+      });
+
+      const spec = andSql(lastQuery()).find((sql) =>
+        sql.includes('spec(value)'),
+      );
+      expect(spec).toContain(
+        `IN (fold_for_search('Forta'), fold_for_search('Yoga'))`,
+      );
+    });
+
+    it('filters by city blind to accents, and by country upper-cased', async () => {
+      await service.coachDirectory(null, { city: 'Brașov', country: 'ro' });
+
+      const userWhere = lastQuery().include[0].where;
+      expect(userWhere.countryCode).toBe('RO');
+      expect(
+        (userWhere[Op.and] as Array<{ val: string }>).map((c) => c.val),
+      ).toEqual([foldedLike('"user"."city"', 'Brasov')]);
+    });
+
+    it('ends every order on the id, so pages never overlap', async () => {
+      await service.coachDirectory(null, {});
+      expect(lastQuery().order.at(-1)).toEqual(['id', 'ASC']);
+      expect(lastQuery().order[0]).toEqual(['isAcceptingClients', 'DESC']);
+
+      await service.coachDirectory(null, {
+        sort: CoachDirectorySort.EXPERIENCE,
+      });
+      expect(lastQuery().order[0]).toEqual([
+        'yearsOfExperience',
+        'DESC NULLS LAST',
+      ]);
+      expect(lastQuery().order.at(-1)).toEqual(['id', 'ASC']);
+    });
+  });
+
+  describe('coachDirectoryFacets', () => {
+    it('counts cities and specializations over the same coaches', async () => {
+      sequelize.query
+        .mockResolvedValueOnce([{ label: 'Cluj-Napoca', count: 3 }])
+        .mockResolvedValueOnce([{ label: 'Yoga', count: 2 }]);
+
+      const out = await service.coachDirectoryFacets(me);
+
+      expect(out).toEqual({
+        cities: [{ label: 'Cluj-Napoca', count: 3 }],
+        specializations: [{ label: 'Yoga', count: 2 }],
+      });
+      const [citySql, specSql] = sequelize.query.mock.calls.map(
+        ([sql]) => sql as string,
+      );
+      for (const sql of [citySql, specSql]) {
+        expect(sql).toContain('"user"."is_active" = true');
+        expect(sql).toContain('"InstructorProfile"."deleted_at" IS NULL');
+        expect(sql).toContain(`"InstructorProfile"."user_id" <> '${me}'`);
+        expect(sql).toContain('GROUP BY fold_for_search');
+      }
     });
   });
 
@@ -1034,6 +1268,75 @@ describe('ProfileService (smoke — not exhaustive)', () => {
       expect(own.yourCoachSince).toBeNull();
       // Only the stranger needed a lookup.
       expect(findAll).toHaveBeenCalledTimes(1);
+    });
+
+    // The profile offers "Request sent" or "Accept" off this, so it must say
+    // who sent it, and only ever a live one.
+    it('carries a pending coaching request, with who sent it', async () => {
+      instructorProfileModel.findOne.mockResolvedValue({ id: 'ip-1' });
+      roleService.getUserRoles.mockResolvedValue([]);
+      groupService.sharedGroups.mockResolvedValue([]);
+      jest
+        .spyOn(InstructorClient, 'findAll')
+        .mockResolvedValue([] as unknown as InstructorClient[]);
+      const createdAt = new Date('2026-11-01');
+      const expiresAt = new Date('2026-12-01');
+      const findRequest = jest
+        .spyOn(ClientRequest, 'findOne')
+        .mockResolvedValueOnce({
+          id: 'req-1',
+          type: ClientRequestType.CLIENT_TO_INSTRUCTOR,
+          fromUserId: 'me',
+          createdAt,
+          expiresAt,
+        } as unknown as ClientRequest)
+        .mockResolvedValueOnce({
+          id: 'req-2',
+          type: ClientRequestType.INSTRUCTOR_TO_CLIENT,
+          fromUserId: 'coach-1',
+          createdAt,
+          expiresAt,
+        } as unknown as ClientRequest);
+
+      jest.spyOn(User, 'findOne').mockResolvedValueOnce(person());
+      const asked = await service.getPublicUserProfileByHandle('alex', 'me');
+      jest.spyOn(User, 'findOne').mockResolvedValueOnce(person());
+      const invited = await service.getPublicUserProfileByHandle('alex', 'me');
+
+      expect(asked.pendingRequest).toEqual({
+        id: 'req-1',
+        type: ClientRequestType.CLIENT_TO_INSTRUCTOR,
+        sentByYou: true,
+        createdAt,
+        expiresAt,
+      });
+      expect(invited.pendingRequest).toMatchObject({
+        id: 'req-2',
+        sentByYou: false,
+      });
+      expect(findRequest).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            status: ClientRequestStatus.PENDING,
+            expiresAt: { [Op.gt]: expect.any(Date) },
+          }),
+        }),
+      );
+    });
+
+    it('looks for no request for a guest or the owner', async () => {
+      instructorProfileModel.findOne.mockResolvedValue(null);
+      roleService.getUserRoles.mockResolvedValue([]);
+      const findRequest = jest.spyOn(ClientRequest, 'findOne');
+
+      jest.spyOn(User, 'findOne').mockResolvedValueOnce(person());
+      const guest = await service.getPublicUserProfileByHandle('alex', null);
+      jest.spyOn(User, 'findOne').mockResolvedValueOnce(person());
+      const own = await service.getPublicUserProfileByHandle('alex', 'coach-1');
+
+      expect(guest.pendingRequest).toBeNull();
+      expect(own.pendingRequest).toBeNull();
+      expect(findRequest).not.toHaveBeenCalled();
     });
 
     it('shows the owner the coach slice when previewing as their coaches', async () => {

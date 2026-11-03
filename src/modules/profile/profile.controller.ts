@@ -22,6 +22,7 @@ import { CreateInstructorProfileDto } from './dto/create-instructor-profile.dto'
 import { UpdateInstructorProfileDto } from './dto/update-instructor-profile.dto';
 import { UpdateFullProfileDto } from './dto/update-full-profile.dto';
 import { DiscoverInstructorsDto } from './dto/discover-instructors.dto';
+import { CoachDirectoryDto } from './dto/coach-directory.dto';
 import { SuggestedInstructorsDto } from './dto/suggested-instructors.dto';
 import { UpdatePrivacySettingsDto } from './dto/update-privacy-settings.dto';
 import { UpdateHandleDto } from './dto/update-handle.dto';
@@ -42,6 +43,8 @@ import { ProfileDocs } from '../../common/docs/profile.docs';
  *
  * Public (no auth):
  * - GET    /profile/instructors/discover → Browse/search public instructors
+ * - GET    /profile/instructors/directory → The paged coach directory (viewer left out when signed in)
+ * - GET    /profile/instructors/directory/facets → Its cities and specializations, with counts
  *
  * Authenticated:
  * - GET    /profile/instructors/suggested → Coaches suggested to the caller
@@ -64,6 +67,24 @@ export class ProfileController {
   @ApiEndpoint(ProfileDocs.discoverTrainers)
   async discoverInstructors(@Query() dto: DiscoverInstructorsDto) {
     return this.profileService.discoverInstructors(dto);
+  }
+
+  /** Before `instructors/:id`, or its UUID pipe would reject "directory". */
+  @Get('instructors/directory')
+  @UseGuards(OptionalJwtAuthGuard)
+  @ApiEndpoint(ProfileDocs.coachDirectory)
+  async coachDirectory(
+    @Query() dto: CoachDirectoryDto,
+    @Request() req: AuthenticatedRequest,
+  ) {
+    return this.profileService.coachDirectory(req.user?.id ?? null, dto);
+  }
+
+  @Get('instructors/directory/facets')
+  @UseGuards(OptionalJwtAuthGuard)
+  @ApiEndpoint(ProfileDocs.coachDirectoryFacets)
+  async coachDirectoryFacets(@Request() req: AuthenticatedRequest) {
+    return this.profileService.coachDirectoryFacets(req.user?.id ?? null);
   }
 
   /** Before `instructors/:id`, or its UUID pipe would reject "suggested". */
