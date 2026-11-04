@@ -14,6 +14,8 @@ import { ExerciseMedia } from './entities/exercise-media.entity';
 import { ExerciseNote } from './entities/exercise-note.entity';
 import { ExerciseService } from './exercise.service';
 import { ExerciseNoteService } from './exercise-note.service';
+import { ExerciseSearchService } from './exercise-search.service';
+import { ExercisePopularityService } from './exercise-popularity.service';
 import { ExerciseController } from './exercise.controller';
 import { MuscleController } from './muscle.controller';
 import { EquipmentController } from './equipment.controller';
@@ -62,10 +64,20 @@ import { EquipmentController } from './equipment.controller';
   providers: [
     ExerciseService,
     ExerciseNoteService,
+    // Search: the query plan's taxonomy and the searcher's own history.
+    ExerciseSearchService,
+    // `exercise.popularity_score`, for search ranking.
+    ExercisePopularityService,
     // Exercise pictures (ExerciseService.setImage).
     CloudinaryService,
   ],
   // ExerciseNoteService: the owner's workout reads carry their notes.
-  exports: [ExerciseService, ExerciseNoteService, SequelizeModule],
+  // ExercisePopularityService: the nightly recompute job.
+  exports: [
+    ExerciseService,
+    ExerciseNoteService,
+    ExercisePopularityService,
+    SequelizeModule,
+  ],
 })
 export class ExerciseModule {}

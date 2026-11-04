@@ -5,6 +5,7 @@ import { MessagingModule } from '../messaging/messaging.module';
 import { ClientModule } from '../client/client.module';
 import { SessionModule } from '../session/session.module';
 import { WorkoutModule } from '../workout/workout.module';
+import { ExerciseModule } from '../exercise/exercise.module';
 import { PaymentModule } from '../payment/payment.module';
 import { AccountDeletionModule } from '../account-deletion/account-deletion.module';
 import { MaintenanceModule } from '../maintenance/maintenance.module';
@@ -130,6 +131,8 @@ export class JobsModule {
         ClientModule,
         SessionModule,
         WorkoutModule,
+        // ExercisePopularityService for the nightly popularity recompute.
+        ExerciseModule,
         PaymentModule,
         MaintenanceModule,
         AccountDeletionModule,

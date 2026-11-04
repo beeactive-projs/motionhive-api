@@ -2,6 +2,7 @@ import { Inject } from '@nestjs/common';
 import type { LoggerService } from '@nestjs/common';
 import { Processor } from '@nestjs/bullmq';
 import { WINSTON_MODULE_NEST_PROVIDER } from 'nest-winston';
+import { ExercisePopularityService } from '../../../exercise/exercise-popularity.service';
 import { ProgramAssignmentService } from '../../../workout/program-assignment.service';
 import { WorkoutLogService } from '../../../workout/workout-log.service';
 import { JobContext } from '../../common/job-context';
@@ -9,10 +10,10 @@ import { JobHandler, MultiJobWorker } from '../../common/multi-job.worker';
 import { QueueName } from '../../job-registry';
 
 /**
- * Processor for the `workouts` queue. Three daily jobs, routed by name.
- * Thin handlers delegate to `ProgramAssignmentService` and
+ * Processor for the `workouts` queue. Four daily jobs, routed by name.
+ * Thin handlers delegate to `ProgramAssignmentService`,
  * `WorkoutLogService` (where the transactional logic + progress
- * recompute live).
+ * recompute live) and `ExercisePopularityService`.
  */
 @Processor(QueueName.Workouts)
 export class WorkoutsWorker extends MultiJobWorker {
@@ -21,6 +22,7 @@ export class WorkoutsWorker extends MultiJobWorker {
     logger: LoggerService,
     private readonly assignments: ProgramAssignmentService,
     private readonly workoutLogs: WorkoutLogService,
+    private readonly exercisePopularity: ExercisePopularityService,
   ) {
     super(logger);
   }
@@ -29,6 +31,8 @@ export class WorkoutsWorker extends MultiJobWorker {
     auto_skip_past_workouts: (_p, ctx) => this.autoSkipHandler(ctx),
     close_stale_workouts: (_p, ctx) => this.closeStaleHandler(ctx),
     auto_complete_assignments: (_p, ctx) => this.autoCompleteHandler(ctx),
+    recompute_exercise_popularity: (_p, ctx) =>
+      this.exercisePopularityHandler(ctx),
   };
 
   private async autoSkipHandler(ctx: JobContext): Promise<void> {
@@ -50,5 +54,10 @@ export class WorkoutsWorker extends MultiJobWorker {
   private async autoCompleteHandler(ctx: JobContext): Promise<void> {
     const r = await this.assignments.autoCompleteAssignments();
     ctx.log.log(`auto-complete completed=${r.completed}`);
+  }
+
+  private async exercisePopularityHandler(ctx: JobContext): Promise<void> {
+    const r = await this.exercisePopularity.recompute();
+    ctx.log.log(`exercise-popularity updated=${r.updated}`);
   }
 }

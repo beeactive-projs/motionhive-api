@@ -53,4 +53,15 @@ export class WorkoutsScheduler {
       { jobId: `workouts.auto_complete_assignments-${runKey}` },
     );
   }
+
+  // 02:45 — after tonight's closes, so their workouts count.
+  @Cron('0 45 2 * * *')
+  async recomputeExercisePopularity(): Promise<void> {
+    const runKey = bucketKey(24 * 60 * 60_000);
+    await this.jobs.enqueue(
+      'workouts.recompute_exercise_popularity',
+      { runKey },
+      { jobId: `workouts.recompute_exercise_popularity-${runKey}` },
+    );
+  }
 }

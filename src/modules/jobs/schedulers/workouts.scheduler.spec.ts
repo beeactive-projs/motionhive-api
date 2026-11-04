@@ -50,4 +50,17 @@ describe('WorkoutsScheduler', () => {
       }),
     );
   });
+
+  it('recomputeExercisePopularity enqueues workouts.recompute_exercise_popularity', async () => {
+    await scheduler.recomputeExercisePopularity();
+    expect(enqueue).toHaveBeenCalledWith(
+      'workouts.recompute_exercise_popularity',
+      expect.any(Object),
+      expect.objectContaining({
+        jobId: expect.stringMatching(
+          /^workouts.recompute_exercise_popularity-/,
+        ) as string,
+      }),
+    );
+  });
 });

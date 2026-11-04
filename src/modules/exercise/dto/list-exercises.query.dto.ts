@@ -38,7 +38,16 @@ export const ExerciseOwnershipFilter = {
 export type ExerciseOwnershipFilter =
   (typeof ExerciseOwnershipFilter)[keyof typeof ExerciseOwnershipFilter];
 
+/**
+ * - `relevance`   — the best match for what was typed, then what the person
+ *                   and everyone use most. With no search: what the person
+ *                   and everyone use most, then A to Z. Default.
+ * - `name`        — A to Z. While searching, still the best match first
+ *                   (older apps send `name` and expect that).
+ * - `newest`, `most-forked` — as named, also while searching.
+ */
 export const ExerciseSortKey = {
+  Relevance: 'relevance',
   Name: 'name',
   Newest: 'newest',
   MostForked: 'most-forked',
@@ -67,8 +76,11 @@ export class ListExercisesQueryDto extends PaginationDto {
   @ApiPropertyOptional({
     example: 'squat',
     description:
-      'Free-text search across exercise name (V1: name only; aliases ' +
-      'and description-search are deferred).',
+      'Words to look for, in any order and any of our languages. Each word ' +
+      'matches the start of a word of the name (plurals and stems too), ' +
+      'shorthand and synonyms ("db", "rdl", "pec deck"), a muscle or ' +
+      'muscle group the exercise works ("chest", "legs", "spate"), ' +
+      'equipment it uses ("gantere"), or a close spelling of the name.',
   })
   @IsOptional()
   @IsString()
@@ -162,8 +174,8 @@ export class ListExercisesQueryDto extends PaginationDto {
 
   @ApiPropertyOptional({
     enum: ExerciseSortKey,
-    example: ExerciseSortKey.Name,
-    default: ExerciseSortKey.Name,
+    example: ExerciseSortKey.Relevance,
+    default: ExerciseSortKey.Relevance,
   })
   @IsOptional()
   @IsEnum(ExerciseSortKey)

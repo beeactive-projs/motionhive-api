@@ -4,6 +4,7 @@ import { UnrecoverableError } from 'bullmq';
 import { WorkoutsWorker } from './workouts.worker';
 import { ProgramAssignmentService } from '../../../workout/program-assignment.service';
 import { WorkoutLogService } from '../../../workout/workout-log.service';
+import { ExercisePopularityService } from '../../../exercise/exercise-popularity.service';
 import { makeSilentLogger } from '../../../../../test/helpers/sequelize-mocks';
 
 const fakeJob = (name: string) =>
@@ -22,6 +23,7 @@ describe('WorkoutsWorker', () => {
     autoCompleteAssignments: jest.Mock;
   };
   let workoutLogs: { closeStaleWorkouts: jest.Mock };
+  let exercisePopularity: { recompute: jest.Mock };
 
   beforeEach(async () => {
     assignments = {
@@ -36,11 +38,16 @@ describe('WorkoutsWorker', () => {
         .mockResolvedValue({ completed: 1, discarded: 0 }),
     };
 
+    exercisePopularity = {
+      recompute: jest.fn().mockResolvedValue({ updated: 3 }),
+    };
+
     const ref = await Test.createTestingModule({
       providers: [
         WorkoutsWorker,
         { provide: ProgramAssignmentService, useValue: assignments },
         { provide: WorkoutLogService, useValue: workoutLogs },
+        { provide: ExercisePopularityService, useValue: exercisePopularity },
         { provide: WINSTON_MODULE_NEST_PROVIDER, useValue: makeSilentLogger() },
       ],
     }).compile();
@@ -63,6 +70,11 @@ describe('WorkoutsWorker', () => {
   it('routes close_stale_workouts → WorkoutLogService.closeStaleWorkouts', async () => {
     await worker.process(fakeJob('close_stale_workouts'));
     expect(workoutLogs.closeStaleWorkouts).toHaveBeenCalledTimes(1);
+  });
+
+  it('routes recompute_exercise_popularity → ExercisePopularityService.recompute', async () => {
+    await worker.process(fakeJob('recompute_exercise_popularity'));
+    expect(exercisePopularity.recompute).toHaveBeenCalledTimes(1);
   });
 
   it('unknown job name → UnrecoverableError', async () => {

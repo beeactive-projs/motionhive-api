@@ -24,6 +24,9 @@ import {
   MuscleRole,
 } from './entities/exercise.enums';
 import { SearchIndexService } from '../search/search-index.service';
+import { ExerciseSearchService } from './exercise-search.service';
+import { ExerciseSortKey } from './dto/list-exercises.query.dto';
+import { buildSearchPlan } from './search/exercise-search';
 import { NotificationService } from '../notification/notification.service';
 import { CloudinaryService } from '../../common/services/cloudinary.service';
 import {
@@ -71,6 +74,10 @@ describe('ExerciseService (smoke — not exhaustive)', () => {
     upsertExercise: jest.fn().mockResolvedValue(undefined),
     removeIfExists: jest.fn().mockResolvedValue(undefined),
   };
+  const exerciseSearch = {
+    plan: jest.fn().mockResolvedValue(null),
+    personalScores: jest.fn().mockResolvedValue(new Map()),
+  };
   const notificationService = {
     notify: jest.fn().mockResolvedValue(undefined),
   };
@@ -111,6 +118,7 @@ describe('ExerciseService (smoke — not exhaustive)', () => {
         { provide: getModelToken(User), useValue: userModel },
         { provide: Sequelize, useValue: sequelize },
         { provide: SearchIndexService, useValue: searchIndex },
+        { provide: ExerciseSearchService, useValue: exerciseSearch },
         { provide: NotificationService, useValue: notificationService },
         { provide: CloudinaryService, useValue: cloudinaryService },
         { provide: WINSTON_MODULE_NEST_PROVIDER, useValue: makeSilentLogger() },
@@ -679,6 +687,96 @@ describe('ExerciseService (smoke — not exhaustive)', () => {
           ],
         });
       });
+    });
+  });
+
+  describe('list order', () => {
+    const taxonomy = { muscles: [], equipment: [] };
+    const orderSql = (): string =>
+      JSON.stringify(
+        (exerciseModel.findAndCountAll.mock.calls[0] as [{ order: unknown }])[0]
+          .order,
+      );
+    const candidate = (id: string, name: string, popularity: number) => ({
+      id,
+      name,
+      localeName: name,
+      searchName: name.toLowerCase(),
+      popularity,
+      primaryMuscleIds: [],
+      secondaryMuscleIds: [],
+      equipmentIds: [],
+    });
+
+    beforeEach(() => {
+      exerciseModel.findAndCountAll.mockResolvedValue({ rows: [], count: 0 });
+      exerciseSearch.plan.mockResolvedValue(null);
+      exerciseSearch.personalScores.mockResolvedValue(new Map());
+    });
+
+    it('browses by what people use most when nothing is typed', async () => {
+      exerciseSearch.personalScores.mockResolvedValueOnce(
+        new Map([['e-1', 0.8]]),
+      );
+
+      await service.list({}, meInstructor);
+
+      expect(exerciseSearch.personalScores).toHaveBeenCalledWith('me');
+      expect(orderSql()).toContain('popularity_score');
+      expect(orderSql()).toContain('{\\"e-1\\":0.8}');
+    });
+
+    it('keeps A to Z for sort=name with nothing typed', async () => {
+      await service.list({ sort: ExerciseSortKey.Name }, meInstructor);
+
+      expect(exerciseSearch.personalScores).not.toHaveBeenCalled();
+      expect(orderSql()).not.toContain('popularity_score');
+    });
+
+    it.each([ExerciseSortKey.Relevance, ExerciseSortKey.Name])(
+      'ranks a search best match first (sort=%s), then pages the ranking',
+      async (sort) => {
+        exerciseSearch.plan.mockResolvedValueOnce(
+          buildSearchPlan('deadlift', taxonomy),
+        );
+        exerciseModel.findAll.mockImplementation((options: { raw?: boolean }) =>
+          Promise.resolve(
+            options.raw
+              ? [
+                  candidate('axle', 'Axle Deadlift', 0),
+                  candidate('plain', 'Deadlift', 0.5),
+                  candidate('barbell', 'Barbell Deadlift', 0.5),
+                ]
+              : [{ id: 'plain' }, { id: 'barbell' }],
+          ),
+        );
+
+        const result = await service.list(
+          { search: 'deadlift', sort, page: 1, limit: 2 },
+          meInstructor,
+        );
+
+        expect(exerciseModel.findAndCountAll).not.toHaveBeenCalled();
+        expect(result.items.map((row: { id: string }) => row.id)).toEqual([
+          'plain',
+          'barbell',
+        ]);
+        expect(result.total).toBe(3);
+      },
+    );
+
+    it('keeps the asked-for order while searching with sort=newest', async () => {
+      exerciseSearch.plan.mockResolvedValueOnce(
+        buildSearchPlan('deadlift', taxonomy),
+      );
+
+      await service.list(
+        { search: 'deadlift', sort: ExerciseSortKey.Newest },
+        meInstructor,
+      );
+
+      expect(exerciseModel.findAndCountAll).toHaveBeenCalled();
+      expect(orderSql()).toContain('createdAt');
     });
   });
   describe('the picture', () => {

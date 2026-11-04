@@ -140,6 +140,8 @@ export interface JobPayloads {
   'workouts.close_stale_workouts': { runKey?: string };
   /** Complete assignments whose workouts are all COMPLETED or SKIPPED. */
   'workouts.auto_complete_assignments': { runKey?: string };
+  /** Recompute `exercise.popularity_score` from logs and plans (search ranking). */
+  'workouts.recompute_exercise_popularity': { runKey?: string };
 
   // ── Payments ────────────────────────────────────────────────────────
   // System-wide reminder/maintenance sweeps; idempotent via notification
@@ -216,6 +218,7 @@ export const ALL_JOB_NAMES: ReadonlyArray<keyof JobPayloads> = [
   'workouts.auto_skip_past_workouts',
   'workouts.close_stale_workouts',
   'workouts.auto_complete_assignments',
+  'workouts.recompute_exercise_popularity',
   'payments.invoice_due_soon',
   'payments.invoice_overdue',
   'payments.card_expiring',
@@ -294,6 +297,11 @@ export const TRIGGERABLE_JOBS: ReadonlyArray<{
     key: 'workouts.auto_complete_assignments',
     queue: QueueName.Workouts,
     schedule: 'daily 02:30',
+  },
+  {
+    key: 'workouts.recompute_exercise_popularity',
+    queue: QueueName.Workouts,
+    schedule: 'daily 02:45',
   },
   {
     key: 'payments.invoice_due_soon',
