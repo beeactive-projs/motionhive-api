@@ -28,7 +28,7 @@ import { ExerciseSearchService } from './exercise-search.service';
 import { ExerciseSortKey } from './dto/list-exercises.query.dto';
 import { buildSearchPlan } from './search/exercise-search';
 import { NotificationService } from '../notification/notification.service';
-import { CloudinaryService } from '../../common/services/cloudinary.service';
+import { MediaStorageService } from '../../common/services/media-storage.service';
 import {
   fakeTx,
   makeSilentLogger,
@@ -81,9 +81,9 @@ describe('ExerciseService (smoke — not exhaustive)', () => {
   const notificationService = {
     notify: jest.fn().mockResolvedValue(undefined),
   };
-  const cloudinaryService = {
+  const mediaStorage = {
     uploadImage: jest.fn().mockResolvedValue({
-      url: 'https://res.cloudinary.com/demo/image/upload/v1/motionhive/test/exercises/me/pic.jpg',
+      url: 'https://img.motionhive.fit/motionhive/test/exercises/me/pic.jpg',
       publicId: 'motionhive/test/exercises/me/pic',
     }),
   };
@@ -120,7 +120,7 @@ describe('ExerciseService (smoke — not exhaustive)', () => {
         { provide: SearchIndexService, useValue: searchIndex },
         { provide: ExerciseSearchService, useValue: exerciseSearch },
         { provide: NotificationService, useValue: notificationService },
-        { provide: CloudinaryService, useValue: cloudinaryService },
+        { provide: MediaStorageService, useValue: mediaStorage },
         { provide: WINSTON_MODULE_NEST_PROVIDER, useValue: makeSilentLogger() },
       ],
     }).compile();
@@ -798,13 +798,13 @@ describe('ExerciseService (smoke — not exhaustive)', () => {
 
       await service.setImage('own-1', file, meInstructor);
 
-      expect(cloudinaryService.uploadImage).toHaveBeenCalledWith(file, {
+      expect(mediaStorage.uploadImage).toHaveBeenCalledWith(file, {
         resource: 'exercises',
         userId: 'me',
       });
       expect(update).toHaveBeenCalledWith({
         thumbnailUrl:
-          'https://res.cloudinary.com/demo/image/upload/v1/motionhive/test/exercises/me/pic.jpg',
+          'https://img.motionhive.fit/motionhive/test/exercises/me/pic.jpg',
       });
     });
 
@@ -832,7 +832,7 @@ describe('ExerciseService (smoke — not exhaustive)', () => {
       await expect(service.removeImage('own-1', meInstructor)).rejects.toThrow(
         NotFoundException,
       );
-      expect(cloudinaryService.uploadImage).not.toHaveBeenCalled();
+      expect(mediaStorage.uploadImage).not.toHaveBeenCalled();
     });
   });
 });

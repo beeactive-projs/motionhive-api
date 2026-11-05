@@ -78,7 +78,7 @@ export class Post extends Model {
   @Column({
     type: DataType.JSON,
     allowNull: true,
-    comment: 'Array of Cloudinary secure_url strings owned by THIS post',
+    comment: 'Array of public image URLs owned by THIS post',
   })
   declare mediaUrls: string[] | null;
 

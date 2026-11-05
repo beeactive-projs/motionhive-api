@@ -35,7 +35,7 @@ import {
   translatedText,
   type Locale,
 } from '../../common/i18n';
-import { CloudinaryService } from '../../common/services/cloudinary.service';
+import { MediaStorageService } from '../../common/services/media-storage.service';
 import { foldedContainsSql } from '../../common/utils/search.utils';
 import { stripHtml } from '../../common/utils/text.utils';
 import { resolveLevel } from '../profile/profile-privacy';
@@ -108,7 +108,7 @@ import {
 
 /**
  * What the apps learn about a workout's photo: whether there is one and
- * which version. The Cloudinary id stays on the server; the bytes only
+ * which version. The storage id stays on the server; the bytes only
  * come through `WorkoutPhotoService`.
  */
 export function withPhotoFlag<T extends { photoPublicId?: string | null }>(
@@ -477,7 +477,7 @@ export class WorkoutLogService {
     private readonly coachAccess: CoachAccessService,
     private readonly assignments: ProgramAssignmentService,
     private readonly exerciseNotes: ExerciseNoteService,
-    private readonly cloudinaryService: CloudinaryService,
+    private readonly mediaStorage: MediaStorageService,
     private readonly sequelize: Sequelize,
     @Inject(WINSTON_MODULE_NEST_PROVIDER)
     private readonly logger: LoggerService,
@@ -1461,7 +1461,7 @@ export class WorkoutLogService {
     if (sourceProgramId) await this._resyncLastPerformed(sourceProgramId);
     if (photoPublicId) {
       try {
-        await this.cloudinaryService.deletePrivateImage(photoPublicId);
+        await this.mediaStorage.deletePrivateImage(photoPublicId);
       } catch (err) {
         this.logger.warn(
           `Failed to delete the photo of deleted workout ${log.id}: ${(err as Error).message}`,
@@ -1588,7 +1588,7 @@ export class WorkoutLogService {
 
   /**
    * A log as the owner's own reads return it: the photo as a flag, never
-   * its Cloudinary id. The feedback call comes after the photo upload, so
+   * its storage id. The feedback call comes after the photo upload, so
    * without this it carried the id.
    */
   private _view(log: WorkoutLog): WorkoutLogView {
@@ -2271,7 +2271,7 @@ export class WorkoutLogService {
    * view shows a "PR" trophy chip when this is > 0. Sequelize instances
    * drop arbitrary attached props on JSON serialization, so rows are
    * projected to plain objects first, with the photo as a flag, never
-   * its Cloudinary id, as on every other read.
+   * its storage id, as on every other read.
    */
   private async _historyRows(rows: WorkoutLog[]) {
     const prCounts =

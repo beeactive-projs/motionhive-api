@@ -217,7 +217,7 @@ export const ClientDocs = {
               firstName: 'John',
               lastName: 'Doe',
               email: 'john@example.com',
-              avatarId: 'cloudinary-asset-id-or-null',
+              avatarId: 'storage-key-or-null',
             },
             instructorProfile: {
               userId: 'user-uuid',
@@ -256,7 +256,7 @@ export const ClientDocs = {
               firstName: 'John',
               lastName: 'Doe',
               email: 'john@example.com',
-              avatarId: 'cloudinary-asset-id-or-null',
+              avatarId: 'storage-key-or-null',
             },
           },
         ],

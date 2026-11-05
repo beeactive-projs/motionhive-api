@@ -34,7 +34,7 @@ import {
 import { CryptoService } from '../../common/services';
 import { apiError } from '../../common/i18n';
 import { foldedContains } from '../../common/utils/search.utils';
-import { CloudinaryService } from '../../common/services/cloudinary.service';
+import { MediaStorageService } from '../../common/services/media-storage.service';
 import { InstructorProfile } from '../profile/entities/instructor-profile.entity';
 import { GroupMember } from '../group/entities/group-member.entity';
 import { SessionParticipant } from '../session/entities/session-participant.entity';
@@ -96,7 +96,7 @@ export class UserService {
     private readonly sequelize: Sequelize,
     private readonly configService: ConfigService,
     private readonly cryptoService: CryptoService,
-    private readonly cloudinaryService: CloudinaryService,
+    private readonly mediaStorage: MediaStorageService,
     @Inject(WINSTON_MODULE_NEST_PROVIDER)
     private readonly logger: LoggerService,
     private readonly searchIndexService: SearchIndexService,
@@ -673,12 +673,11 @@ export class UserService {
   /**
    * Upload a new profile picture for the given user.
    *
-   * Stores the image in Cloudinary under the `avatars/` folder, saves
-   * the secure URL + public_id on the user row, and DELETES the
-   * previous Cloudinary asset (if any) so we don't leak storage on
-   * every re-upload. Cleanup runs after the DB write — if Cloudinary
-   * fails to delete the old asset we log and move on rather than
-   * undoing the user-visible change.
+   * Stores the image in the person's `avatars/` folder, saves the
+   * public URL + storage key on the user row, and DELETES the previous
+   * file (if any) so we don't leak storage on every re-upload. Cleanup
+   * runs after the DB write: if storage fails to delete the old file we
+   * log and move on rather than undoing the user-visible change.
    */
   async uploadAvatar(userId: string, file: Express.Multer.File): Promise<User> {
     const user = await this.findById(userId);
@@ -687,7 +686,7 @@ export class UserService {
     }
 
     const previousPublicId = user.avatarPublicId;
-    const { url, publicId } = await this.cloudinaryService.uploadImage(file, {
+    const { url, publicId } = await this.mediaStorage.uploadImage(file, {
       resource: 'avatars',
       userId,
     });
@@ -697,7 +696,7 @@ export class UserService {
 
     if (previousPublicId && previousPublicId !== publicId) {
       try {
-        await this.cloudinaryService.deleteImage(previousPublicId);
+        await this.mediaStorage.deleteImage(previousPublicId);
       } catch (err) {
         // Non-fatal — the new avatar is already live; the old asset
         // just lingers. A periodic sweeper can clean orphans later.

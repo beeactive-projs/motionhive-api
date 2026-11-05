@@ -87,8 +87,8 @@ export class WorkoutLog extends Model {
   declare shareCaption: string | null;
 
   /**
-   * The workout's one photo (migration 074): a private Cloudinary asset,
-   * only ever served through the API (`WorkoutPhotoService`). Not sent to
+   * The workout's one photo (migration 074): a file in the private bucket
+   * (its key, without `.jpg`), only ever served through the API (`WorkoutPhotoService`). Not sent to
    * the apps; they get `hasPhoto` and `photoVersion`.
    */
   @Column({ type: DataType.STRING(255), allowNull: true })

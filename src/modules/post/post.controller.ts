@@ -21,7 +21,7 @@ import type { AuthenticatedRequest } from '../../common/types/authenticated-requ
 import { ApiEndpoint } from '../../common/decorators/api-response.decorator';
 import { PostDocs } from '../../common/docs/post.docs';
 import { PaginationDto } from '../../common/dto/pagination.dto';
-import { CloudinaryService } from '../../common/services/cloudinary.service';
+import { MediaStorageService } from '../../common/services/media-storage.service';
 import {
   assertImageFile,
   IMAGE_UPLOAD_OPTIONS,
@@ -39,7 +39,7 @@ import { ToggleReactionDto } from './dto/toggle-reaction.dto';
 export class PostController {
   constructor(
     private readonly postService: PostService,
-    private readonly cloudinaryService: CloudinaryService,
+    private readonly mediaStorage: MediaStorageService,
   ) {}
 
   // =====================================================
@@ -56,7 +56,7 @@ export class PostController {
     @UploadedFile() file: Express.Multer.File | undefined,
   ): Promise<{ url: string; publicId: string }> {
     assertImageFile(file);
-    return this.cloudinaryService.uploadImage(file, {
+    return this.mediaStorage.uploadImage(file, {
       resource: 'posts',
       userId: req.user.id,
     });

@@ -49,7 +49,7 @@ import type { AuthenticatedRequest } from '../../common/types/authenticated-requ
  * - POST   /blog                → Create post (author = current user)
  * - PATCH  /blog/:id            → Update post (owner-or-admin)
  * - DELETE /blog/:id            → Soft delete (owner-or-admin)
- * - POST   /blog/upload-image   → Upload image to Cloudinary
+ * - POST   /blog/upload-image   → Upload an image
  */
 @ApiTags('Blog')
 @Controller('blog')

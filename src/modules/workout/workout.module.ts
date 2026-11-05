@@ -25,7 +25,7 @@ import { Post } from '../post/entities/post.entity';
 import { PostComment } from '../post/entities/post-comment.entity';
 import { PostReaction } from '../post/entities/post-reaction.entity';
 import { WorkoutPhotoService } from './workout-photo.service';
-import { CloudinaryService } from '../../common/services/cloudinary.service';
+import { MediaStorageService } from '../../common/services/media-storage.service';
 import { CoachAccessService } from './coach-access.service';
 import { ProgramAssignmentController } from './program-assignment.controller';
 import { ProgramAssignmentService } from './program-assignment.service';
@@ -86,7 +86,7 @@ import { WorkoutReportService } from './workout-report.service';
     WorkoutPhotoService,
     WorkoutReportService,
     CoachAccessService,
-    CloudinaryService,
+    MediaStorageService,
   ],
   exports: [
     ProgramService,

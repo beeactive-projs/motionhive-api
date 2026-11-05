@@ -21,7 +21,7 @@ Fitness platform REST API built with NestJS. Manages instructors, clients, group
 - **Auth**: Passport JWT (@nestjs/jwt 11), bcrypt, Google/Facebook OAuth
 - **Queue**: BullMQ + @nestjs/bullmq + @nestjs/schedule (5 queues live: notifications, sessions, workouts, payments, maintenance — see "Jobs module" under Known Issues)
 - **Email**: Resend
-- **Images**: Cloudinary
+- **Images**: Cloudflare R2 (S3 API, `@aws-sdk/client-s3`) + Cloudflare image transformations; uploads re-encoded with `sharp` (see Key Patterns, Pictures)
 - **Payments**: Stripe Connect Express (`stripe` 22.x)
 - **Docs**: Swagger/OpenAPI at `/api/docs`
 - **Logging**: Winston
@@ -60,7 +60,7 @@ src/
 │   ├── email/                 # One file per email template (auth/, group/, session/, …) + _layouts/base-layout
 │   ├── interceptors/          # CamelCaseInterceptor, ContentLocaleInterceptor (APP_INTERCEPTOR)
 │   ├── middleware/            # RequestIdMiddleware (applied to all routes)
-│   ├── services/              # CloudinaryService, CryptoService, EmailService, EmailVerifierService
+│   ├── services/              # MediaStorageService, CryptoService, EmailService, EmailVerifierService
 │   ├── utils/                 # Pure helpers (html.utils:escapeHtml, search.utils:escapeLikeWildcards)
 │   └── validators/            # StrongPasswordValidator
 └── modules/
@@ -72,7 +72,7 @@ src/
     ├── session/      # Two-table model (template + instance + participant + reminder) — see "Session Module Shape" below. Migration 046 rewrote the legacy single-table design.
     ├── invitation/   # Group invitations
     ├── client/       # Instructor-client relationships & requests
-    ├── blog/         # Blog posts, Cloudinary image upload, sitemap
+    ├── blog/         # Blog posts, image upload, sitemap
     ├── analytics/    # Instructor summary, user activity, platform stats
     ├── notification/ # Phase 1 stub (@Global, logs only) — see NOTIFICATION_SYSTEM_PLAN.md
     ├── payment/      # Stripe Connect (9 entities, 13 services, 3 controllers, multi-country)
@@ -123,6 +123,7 @@ src/
 - **OAuth idempotency**: `social_account` has UNIQUE on `(provider, provider_user_id)`. `userService.findOrCreateFromOAuth` swallows a `UniqueConstraintError` on insert (concurrent-callback race) and returns the existing row.
 - **i18n (backend text in the reader's language)**: catalogs live in `src/common/i18n/catalog/{en,ro}/` as TypeScript; English defines the `Catalog` type, so a key missing in `ro` fails the build. Render with `translate(locale, key, params)` (ICU via `@messageformat/core`, same engine as the FE); narrow stored/untrusted values with `toLocale()`. Money and dates go in as raw tagged values (`money()`, `day()`, `dayTime()`), never pre-formatted strings. Notification builders return `message: { key: '<module>.<name>', params }`, never finished `title`/`body` text (that shape is for the debug endpoint only); a missing value is passed as `null` and worded by the message. The row stores key + params (migration 062) and the API renders per reader on list, email and push. Every builder has a sample in `test/fixtures/notification-samples.ts`, checked in both languages by `notification-builders.spec.ts`. Emails: copy in `catalog/{en,ro}/email/<domain>.ts`; templates read it through `emailCopy(locale, prefix)` (`common/email/_layouts/copy.ts`), whose `html()` escapes the whole sentence, so pass raw values and never put HTML in the catalog (`**bold**` only). Every `EmailService.sendXxx` takes a `locale`: the recipient's, or the sender's when the recipient has no account. New emails get samples in `test/fixtures/email-samples.ts`. Status + how-to: `docs/research/i18n/BACKEND_I18N_PLAN.md`.
 - **Content translations (our own DB rows in the reader's language)**: `exercise`, `muscle`, `equipment`, `program`, `program_workout`, `prescribed_exercise` have a nullable `translations` JSONB (`{"ro": {"name": ...}}`, keys are API field names; migration 063). English base columns stay and are the fallback per field. Only MotionHive's rows carry translations (CHECK on exercise/program: SYSTEM only); text a person wrote is shown as written. `ContentLocaleInterceptor` swaps the request's language (`requestLocale`: Accept-Language, then account) into the same fields on the way out, adds `originalName` when `name` changed, strips `translations`, and points a logged exercise's `exerciseNameSnapshot` at its translated live exercise. So: **a query with an explicit `attributes` list must include `'translations'`**, or that row silently stays English. Admin controllers opt out with `@RawContent()`. Text copied into a person's own rows (starter copy, assignment, workout log) is written once in their language via `translatedText(row, field, locale)`. Search goes through `exercise.search_name` (every language, folded, `fold_for_search()`). Content is authored in `docs/content/translations/` and shipped by `node scripts/build-content-translations.mjs` (generates the migration, refuses dashes, cedillas and step-count mismatches). Design: `docs/research/i18n/EXERCISE_CONTENT_I18N.md`.
+- **Pictures** (`MediaStorageService`, `common/utils/image-processing.ts`): two R2 buckets per environment. The public one sits behind `MEDIA_PUBLIC_URL` (`img.motionhive.fit`, `img-dev.motionhive.fit`) and holds avatars, posts, blog covers and exercise pictures; the apps resize through `/cdn-cgi/image/` (`withImageTransform` in core). The private one has no address and holds workout photos (`<id>.jpg` + `<id>_thumb.jpg`), streamed by the API after its access check. Keys are `motionhive/<env>/<resource>/<userId>/...`, so erasure and post deletes are prefix deletes. **Every public upload goes through `normaliseImage`** (upright, max 2048px, re-encoded, HEIC converted): that is what keeps GPS/EXIF out of a public file, so never `PutObject` user bytes directly. Links into the old Cloudinary account still count as ours until `scripts/move-media-to-r2.ts` has rewritten them.
 - **Shared singletons**: `EmailService` is exported from a `@Global() EmailModule` registered in AppModule. Don't list `EmailService` as a provider in feature modules — just inject it.
 
 ### RBAC
@@ -211,7 +212,7 @@ Full schema in `src/config/env.validation.ts` (Joi, `abortEarly: false`).
 
 **Stripe**: `STRIPE_SECRET_KEY`, `STRIPE_PUBLISHABLE_KEY`, `STRIPE_WEBHOOK_SECRET` (required for payments); `STRIPE_API_VERSION` (default `'2026-03-25.dahlia'`); `DEFAULT_PLATFORM_FEE_BPS` (default 0)
 
-**Optional**: `REDIS_HOST`, `REDIS_PORT`, `GOOGLE_CLIENT_ID/SECRET`, `FACEBOOK_APP_ID/SECRET`, `CLOUDINARY_*`, `JWT_EXPIRES_IN`, `JWT_REFRESH_EXPIRES_IN`, `EMAIL_FROM`, `EMAIL_FROM_NAME`, `RESEND_API_KEY`, `PUBLIC_SITE_URL` (marketing site origin for the blog sitemap, default `https://www.motionhive.fit`; never reuse `FRONTEND_URL`, which is the `app.` origin)
+**Optional**: `REDIS_HOST`, `REDIS_PORT`, `GOOGLE_CLIENT_ID/SECRET`, `FACEBOOK_APP_ID/SECRET`, `R2_ENDPOINT` + `R2_ACCESS_KEY_ID` + `R2_SECRET_ACCESS_KEY` + `R2_PUBLIC_BUCKET` + `R2_PRIVATE_BUCKET` + `MEDIA_PUBLIC_URL` (pictures; all six or uploads answer with an error), `CLOUDINARY_*` (old picture host, read only by `scripts/move-media-to-r2.ts` and to recognise not-yet-moved links), `JWT_EXPIRES_IN`, `JWT_REFRESH_EXPIRES_IN`, `EMAIL_FROM`, `EMAIL_FROM_NAME`, `RESEND_API_KEY`, `PUBLIC_SITE_URL` (marketing site origin for the blog sitemap, default `https://www.motionhive.fit`; never reuse `FRONTEND_URL`, which is the `app.` origin)
 
 ## Known Issues & Technical Debt
 

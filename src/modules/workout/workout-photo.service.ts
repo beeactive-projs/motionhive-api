@@ -6,27 +6,24 @@ import {
 import { InjectModel } from '@nestjs/sequelize';
 
 import { apiError } from '../../common/i18n';
-import { CloudinaryService } from '../../common/services/cloudinary.service';
+import { MediaStorageService } from '../../common/services/media-storage.service';
 import { stripJpegMetadata } from '../../common/utils/image.utils';
 import { CoachAccessService, isReadableByCoach } from './coach-access.service';
 import { WorkoutLog } from './entities/workout-log.entity';
 import { profileVisibleWhere } from './profile-visibility';
 import { WorkoutLogStatus, WorkoutVisibility } from './entities/workout.enums';
 
-/** The Cloudinary folder per person; account erasure deletes it. */
+/** The storage folder per person; account erasure deletes it. */
 export const WORKOUT_PHOTO_RESOURCE = 'workout-photos';
 
 /** The whole photo, or a small 3:4 crop for a grid of them. */
 export type WorkoutPhotoSize = 'full' | 'thumb';
 
-/** Three across a phone at 3x is about 360px; a little over keeps it crisp. */
-const THUMB_WIDTH = 480;
-
 /**
  * One photo per finished workout, private by construction.
  *
- * Stored as an `authenticated` Cloudinary asset, whose signed URLs never
- * expire, so no URL is ever handed out: every read comes through here,
+ * Stored in the private bucket, which has no address at all, so no URL is
+ * ever handed out: every read comes through here,
  * where the reader is checked the same way the workout itself is (the
  * owner, a coach `isReadableByCoach` lets in, or someone the profile shows
  * the workout to), and the bytes are streamed back. Location and other camera metadata are stripped before
@@ -36,7 +33,7 @@ const THUMB_WIDTH = 480;
 export class WorkoutPhotoService {
   constructor(
     @InjectModel(WorkoutLog) private readonly logModel: typeof WorkoutLog,
-    private readonly cloudinaryService: CloudinaryService,
+    private readonly mediaStorage: MediaStorageService,
     private readonly coachAccess: CoachAccessService,
   ) {}
 
@@ -58,15 +55,11 @@ export class WorkoutPhotoService {
     const jpeg = stripJpegMetadata(file.buffer);
     if (!jpeg) throw new BadRequestException(apiError('workout.photoJpegOnly'));
 
-    const { publicId, version } =
-      await this.cloudinaryService.uploadPrivateImage(
-        jpeg,
-        this.cloudinaryService.buildPrivateFolder(
-          WORKOUT_PHOTO_RESOURCE,
-          userId,
-        ),
-        log.id,
-      );
+    const { publicId, version } = await this.mediaStorage.uploadPrivateImage(
+      jpeg,
+      this.mediaStorage.buildPrivateFolder(WORKOUT_PHOTO_RESOURCE, userId),
+      log.id,
+    );
     await log.update({ photoPublicId: publicId, photoVersion: version });
     return { hasPhoto: true, photoVersion: version };
   }
@@ -76,7 +69,7 @@ export class WorkoutPhotoService {
     if (!log.photoPublicId) return;
     const publicId = log.photoPublicId;
     await log.update({ photoPublicId: null, photoVersion: null });
-    await this.cloudinaryService.deletePrivateImage(publicId);
+    await this.mediaStorage.deletePrivateImage(publicId);
   }
 
   /** The owner's own photo. 404 when there is none, like a missing workout. */
@@ -154,10 +147,9 @@ export class WorkoutPhotoService {
   ): Promise<Buffer> {
     if (!log.photoPublicId)
       throw new NotFoundException(apiError('workout.photoNotFound'));
-    return this.cloudinaryService.fetchPrivateImage(
-      log.photoPublicId,
-      size === 'thumb' ? { width: THUMB_WIDTH } : {},
-    );
+    return this.mediaStorage.fetchPrivateImage(log.photoPublicId, {
+      thumb: size === 'thumb',
+    });
   }
 
   private async _owned(id: string, userId: string): Promise<WorkoutLog> {

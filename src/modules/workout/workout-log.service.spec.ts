@@ -25,7 +25,7 @@ import { User } from '../user/entities/user.entity';
 import { InstructorProfile } from '../profile/entities/instructor-profile.entity';
 import { NotificationService } from '../notification/notification.service';
 import { ExerciseNoteService } from '../exercise/exercise-note.service';
-import { CloudinaryService } from '../../common/services/cloudinary.service';
+import { MediaStorageService } from '../../common/services/media-storage.service';
 import { Program } from './entities/program.entity';
 import { WorkoutLog } from './entities/workout-log.entity';
 import {
@@ -115,7 +115,7 @@ describe('WorkoutLogService (smoke — not exhaustive)', () => {
     completeIfFinished: jest.fn().mockResolvedValue(false),
   };
   const exerciseNotes = { notesFor: jest.fn().mockResolvedValue(new Map()) };
-  const cloudinary = { deletePrivateImage: jest.fn() };
+  const storage = { deletePrivateImage: jest.fn() };
   const sequelize = {
     transaction: jest.fn((cb: (tx: unknown) => unknown) =>
       Promise.resolve(cb(fakeTx)),
@@ -177,7 +177,7 @@ describe('WorkoutLogService (smoke — not exhaustive)', () => {
         { provide: NotificationService, useValue: notificationService },
         { provide: ProgramAssignmentService, useValue: assignments },
         { provide: ExerciseNoteService, useValue: exerciseNotes },
-        { provide: CloudinaryService, useValue: cloudinary },
+        { provide: MediaStorageService, useValue: storage },
         { provide: Sequelize, useValue: sequelize },
         { provide: WINSTON_MODULE_NEST_PROVIDER, useValue: makeSilentLogger() },
       ],
@@ -3112,11 +3112,11 @@ describe('WorkoutLogService (smoke — not exhaustive)', () => {
       logModel.findByPk.mockResolvedValueOnce(
         finished({ assignedWorkoutId: null, programAssignmentId: null }),
       );
-      cloudinary.deletePrivateImage.mockRejectedValueOnce(new Error('down'));
+      storage.deletePrivateImage.mockRejectedValueOnce(new Error('down'));
 
       await expect(service.remove('wl-1', 'me')).resolves.toBeUndefined();
 
-      expect(cloudinary.deletePrivateImage).toHaveBeenCalledWith(
+      expect(storage.deletePrivateImage).toHaveBeenCalledWith(
         'workout-photos/me/wl-1',
       );
     });
@@ -3143,7 +3143,7 @@ describe('WorkoutLogService (smoke — not exhaustive)', () => {
         { lastPerformedAt: previous },
         { where: { id: 'prog-1' } },
       );
-      expect(cloudinary.deletePrivateImage).not.toHaveBeenCalled();
+      expect(storage.deletePrivateImage).not.toHaveBeenCalled();
     });
 
     it('deletes an abandoned one the same way, leaving any plan alone when no day was filled', async () => {

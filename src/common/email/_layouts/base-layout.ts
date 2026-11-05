@@ -36,11 +36,13 @@ import { DEFAULT_LOCALE, Locale, translate } from '../../i18n';
 /**
  * Hosted PNG of the honey hex icon. Email clients (especially
  * Outlook + Gmail webmail) cannot render SVG reliably, so we serve
- * a transparent PNG. Update this URL when the brand updates the
- * uploaded asset; do NOT inline SVG.
+ * a PNG. It lives in the production picture bucket (put there by
+ * `scripts/move-media-to-r2.ts`), the same address for every
+ * environment. Update this URL when the brand updates the file; do NOT
+ * inline SVG.
  */
 export const LOGO_URL =
-  'https://res.cloudinary.com/dom4dfr1q/image/upload/v1778503491/logo-bg-navy-sm_1_ac6drj.png';
+  'https://img.motionhive.fit/motionhive/static/email/logo-bg-navy-sm.png';
 
 // ─────────────────────────────────────────────────────────────────────
 // LEGAL IDENTITY

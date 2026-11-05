@@ -12,7 +12,7 @@ import { Op, Transaction, UniqueConstraintError } from 'sequelize';
 import { Post, PostApprovalState } from './entities/post.entity';
 import { PostComment } from './entities/post-comment.entity';
 import { PostReaction } from './entities/post-reaction.entity';
-import { CloudinaryService } from '../../common/services/cloudinary.service';
+import { MediaStorageService } from '../../common/services/media-storage.service';
 import { apiError } from '../../common/i18n';
 import { Group, MemberPostPolicy } from '../group/entities/group.entity';
 import {
@@ -98,7 +98,7 @@ export class PostService {
     @InjectModel(User) private readonly userModel: typeof User,
     private readonly searchIndexService: SearchIndexService,
     private readonly notificationService: NotificationService,
-    private readonly cloudinaryService: CloudinaryService,
+    private readonly mediaStorage: MediaStorageService,
     private readonly groupService: GroupService,
     private readonly workoutLogService: WorkoutLogService,
     @Inject(WINSTON_MODULE_NEST_PROVIDER)
@@ -118,7 +118,7 @@ export class PostService {
    *
    * Image handling: the FE uploads each image once via /posts/upload-image
    * (staging URL). For each created post we clone every staging asset
-   * into the post's per-post Cloudinary folder. After all posts are
+   * into the post's own storage folder. After all posts are
    * created we delete the original staging asset so it doesn't linger.
    */
   async createPost(
@@ -131,7 +131,7 @@ export class PostService {
     }
 
     if (dto.mediaUrls?.length) {
-      this.cloudinaryService.assertOwnedUrls(dto.mediaUrls);
+      this.mediaStorage.assertOwnedUrls(dto.mediaUrls);
     }
     if (dto.workoutLogId) {
       await this.workoutLogService.assertShareable(dto.workoutLogId, authorId);
@@ -166,7 +166,7 @@ export class PostService {
     );
     await this.notifyAuthorsForPending(authorId, created);
     await Promise.all(
-      stagingUrls.map((url) => this.cloudinaryService.deleteByUrl(url)),
+      stagingUrls.map((url) => this.mediaStorage.deleteByUrl(url)),
     );
 
     const items = await Promise.all(
@@ -240,7 +240,7 @@ export class PostService {
   /**
    * Insert one post + clone every staging asset into the post's folder.
    * Uses a transaction for the DB writes; image clones happen after
-   * commit so a Cloudinary slowdown can't tie up a Postgres connection.
+   * commit so a storage slowdown can't tie up a Postgres connection.
    * If image cloning fails partway through, the post still exists with
    * the assets that were cloned so far — the user retries by editing.
    */
@@ -276,7 +276,7 @@ export class PostService {
       const cloned: string[] = [];
       for (const src of stagingUrls) {
         try {
-          const { url } = await this.cloudinaryService.cloneByUrl(src, {
+          const { url } = await this.mediaStorage.cloneByUrl(src, {
             resource: 'posts',
             userId: authorId,
             postId: post.id,
@@ -529,7 +529,7 @@ export class PostService {
     }
 
     if (dto.mediaUrls?.length) {
-      this.cloudinaryService.assertOwnedUrls(dto.mediaUrls);
+      this.mediaStorage.assertOwnedUrls(dto.mediaUrls);
     }
 
     const previousMedia = post.mediaUrls ?? [];
@@ -545,7 +545,7 @@ export class PostService {
       const nextSet = new Set(dto.mediaUrls);
       const orphaned = previousMedia.filter((url) => !nextSet.has(url));
       await Promise.all(
-        orphaned.map((url) => this.cloudinaryService.deleteByUrl(url)),
+        orphaned.map((url) => this.mediaStorage.deleteByUrl(url)),
       );
     }
 
@@ -830,7 +830,7 @@ export class PostService {
 
   /**
    * After-commit side effects when a post is fully deleted: drop search
-   * index entry and purge the post's Cloudinary folder. Failures are
+   * index entry and purge the post's storage folder. Failures are
    * logged but never surfaced — the user-visible state already changed.
    */
   private async afterPostFullyDeleted(
@@ -842,11 +842,10 @@ export class PostService {
       .removeIfExists('post', postId)
       .catch(() => undefined);
     if (mediaUrls.length > 0) {
-      // Nuke the post's folder in one shot — covers every media URL plus
-      // any orphaned versions (e.g. transformations Cloudinary may have
-      // generated). Falls back to per-URL delete if the folder API fails.
-      const folder = this.cloudinaryService.buildPostFolder(authorId, postId);
-      await this.cloudinaryService.deleteFolder(folder);
+      // Clear the post's folder in one pass: every media URL plus any
+      // copy an interrupted edit left behind.
+      const folder = this.mediaStorage.buildPostFolder(authorId, postId);
+      await this.mediaStorage.deleteFolder(folder);
     }
   }
 

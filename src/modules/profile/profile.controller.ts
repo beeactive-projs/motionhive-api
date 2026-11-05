@@ -142,7 +142,7 @@ export class ProfileController {
   @Get('users/by-handle/:handle/workouts/:workoutLogId/photo')
   @UseGuards(OptionalJwtAuthGuard)
   // Open to guests, and each one pulls the image through us from
-  // Cloudinary: far more than a person scrolling a profile needs.
+  // storage: far more than a person scrolling a profile needs.
   @Throttle({ default: { limit: 60, ttl: 60_000 } })
   @ApiEndpoint(ProfileDocs.getPublicUserWorkoutPhoto)
   async getPublicUserWorkoutPhoto(

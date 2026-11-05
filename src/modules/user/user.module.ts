@@ -5,7 +5,7 @@ import { SocialAccount } from './entities/social-account.entity';
 import { UserService } from './user.service';
 import { UserController } from './user.controller';
 import { CryptoService } from '../../common/services';
-import { CloudinaryService } from '../../common/services/cloudinary.service';
+import { MediaStorageService } from '../../common/services/media-storage.service';
 import { SearchModule } from '../search/search.module';
 
 /**
@@ -26,7 +26,7 @@ import { SearchModule } from '../search/search.module';
   providers: [
     UserService,
     CryptoService, // Provide CryptoService for token hashing
-    CloudinaryService, // Used by UserService.uploadAvatar
+    MediaStorageService, // Used by UserService.uploadAvatar
   ],
   exports: [UserService], // Export UserService so AuthModule can use it
 })

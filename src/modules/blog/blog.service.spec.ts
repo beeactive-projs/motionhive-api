@@ -14,7 +14,7 @@ import { BlogPost } from './entities/blog-post.entity';
 import { BlogService } from './blog.service';
 import { CreateBlogPostDto } from './dto/create-blog-post.dto';
 import { UpdateBlogPostDto } from './dto/update-blog-post.dto';
-import { CloudinaryService } from '../../common/services/cloudinary.service';
+import { MediaStorageService } from '../../common/services/media-storage.service';
 
 /**
  * Smoke tests for BlogService — covers the surface the FE depends on:
@@ -81,7 +81,7 @@ describe('BlogService (smoke — not exhaustive)', () => {
     findAll: jest.fn(),
     findAndCountAll: jest.fn(),
   };
-  const cloudinaryService = {
+  const mediaStorage = {
     uploadImage: jest.fn(),
     deleteByUrl: jest.fn().mockResolvedValue(undefined),
   };
@@ -101,7 +101,7 @@ describe('BlogService (smoke — not exhaustive)', () => {
       providers: [
         BlogService,
         { provide: getModelToken(BlogPost), useValue: blogPostModel },
-        { provide: CloudinaryService, useValue: cloudinaryService },
+        { provide: MediaStorageService, useValue: mediaStorage },
         { provide: ConfigService, useValue: configService },
       ],
     }).compile();
@@ -312,7 +312,7 @@ describe('BlogService (smoke — not exhaustive)', () => {
         { userId: me, roles: ['WRITER'] },
       );
 
-      expect(cloudinaryService.deleteByUrl).toHaveBeenCalledWith(
+      expect(mediaStorage.deleteByUrl).toHaveBeenCalledWith(
         'https://cdn/old.jpg',
       );
     });
@@ -353,7 +353,7 @@ describe('BlogService (smoke — not exhaustive)', () => {
       await service.delete('p-1', { userId: me, roles: ['WRITER'] });
 
       expect(post.destroy).toHaveBeenCalledTimes(1);
-      expect(cloudinaryService.deleteByUrl).toHaveBeenCalledWith(
+      expect(mediaStorage.deleteByUrl).toHaveBeenCalledWith(
         'https://cdn/old.jpg',
       );
     });
@@ -366,7 +366,7 @@ describe('BlogService (smoke — not exhaustive)', () => {
         service.delete('p-1', { userId: me, roles: ['WRITER'] }),
       ).rejects.toThrow(ForbiddenException);
       expect(someoneElses.destroy).not.toHaveBeenCalled();
-      expect(cloudinaryService.deleteByUrl).not.toHaveBeenCalled();
+      expect(mediaStorage.deleteByUrl).not.toHaveBeenCalled();
     });
   });
 

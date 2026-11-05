@@ -48,7 +48,7 @@ export class CreatePostDto {
 
   @ApiPropertyOptional({
     description:
-      'Cloudinary secure URLs returned by POST /posts/upload-image. Max 4.',
+      'Public image URLs returned by POST /posts/upload-image. Max 4.',
     type: [String],
   })
   @IsArray()

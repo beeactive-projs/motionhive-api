@@ -6,7 +6,7 @@ import { Op, QueryTypes } from 'sequelize';
 import { Sequelize } from 'sequelize-typescript';
 
 import { toLocale } from '../../common/i18n';
-import { CloudinaryService } from '../../common/services/cloudinary.service';
+import { MediaStorageService } from '../../common/services/media-storage.service';
 import { WORKOUT_PHOTO_RESOURCE } from '../workout/workout-photo.service';
 import { EXERCISE_IMAGE_RESOURCE } from '../exercise/exercise.service';
 import { escapeLikeWildcards } from '../../common/utils/search.utils';
@@ -211,7 +211,7 @@ export class AccountErasureService {
     private readonly windDownService: AccountWindDownService,
     private readonly messagingService: MessagingService,
     private readonly stripeService: StripeService,
-    private readonly cloudinaryService: CloudinaryService,
+    private readonly mediaStorage: MediaStorageService,
     private readonly emailService: EmailService,
     private readonly sequelize: Sequelize,
     @Inject(WINSTON_MODULE_NEST_PROVIDER)
@@ -322,7 +322,7 @@ export class AccountErasureService {
         email: user.email,
         erasedEmail: erasedEmail(user.id),
         now,
-        exerciseImages: `%/${escapeLikeWildcards(this.cloudinaryService.buildUserFolder(EXERCISE_IMAGE_RESOURCE, user.id))}/%`,
+        exerciseImages: `%/${escapeLikeWildcards(this.mediaStorage.buildUserFolder(EXERCISE_IMAGE_RESOURCE, user.id))}/%`,
       };
       for (const [, sql] of ERASURE_STATEMENTS) {
         await this.sequelize.query(sql, {
@@ -357,20 +357,17 @@ export class AccountErasureService {
 
     // Best effort, after the commit: the files hold no link to anyone once
     // the rows above are gone.
-    await this.cloudinaryService.deleteFolder(
-      this.cloudinaryService.buildUserFolder('avatars', user.id),
+    await this.mediaStorage.deleteFolder(
+      this.mediaStorage.buildUserFolder('avatars', user.id),
     );
-    await this.cloudinaryService.deleteFolder(
-      this.cloudinaryService.buildUserFolder(EXERCISE_IMAGE_RESOURCE, user.id),
+    await this.mediaStorage.deleteFolder(
+      this.mediaStorage.buildUserFolder(EXERCISE_IMAGE_RESOURCE, user.id),
     );
     // Workout photos are private assets, which a prefix delete only
     // reaches when told their type.
-    await this.cloudinaryService.deleteFolder(
-      this.cloudinaryService.buildPrivateFolder(
-        WORKOUT_PHOTO_RESOURCE,
-        user.id,
-      ),
-      'authenticated',
+    await this.mediaStorage.deleteFolder(
+      this.mediaStorage.buildPrivateFolder(WORKOUT_PHOTO_RESOURCE, user.id),
+      'private',
     );
 
     await this.emailService.sendAccountDeletionCompletedEmail(

@@ -1,7 +1,7 @@
 import { Module } from '@nestjs/common';
 import { SequelizeModule } from '@nestjs/sequelize';
 
-import { CloudinaryService } from '../../common/services/cloudinary.service';
+import { MediaStorageService } from '../../common/services/media-storage.service';
 import { RoleModule } from '../role/role.module';
 import { SearchModule } from '../search/search.module';
 import { User } from '../user/entities/user.entity';
@@ -69,7 +69,7 @@ import { EquipmentController } from './equipment.controller';
     // `exercise.popularity_score`, for search ranking.
     ExercisePopularityService,
     // Exercise pictures (ExerciseService.setImage).
-    CloudinaryService,
+    MediaStorageService,
   ],
   // ExerciseNoteService: the owner's workout reads carry their notes.
   // ExercisePopularityService: the nightly recompute job.

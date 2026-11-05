@@ -201,7 +201,7 @@ export class CreateProgramDto {
   periodizationModel?: string;
 
   @ApiPropertyOptional({
-    example: 'https://res.cloudinary.com/.../cover.jpg',
+    example: 'https://img.motionhive.fit/motionhive/production/.../cover.jpg',
   })
   @IsOptional()
   @IsUrl({ protocols: ['http', 'https'], require_protocol: true })

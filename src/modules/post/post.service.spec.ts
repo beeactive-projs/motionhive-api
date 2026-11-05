@@ -21,7 +21,7 @@ import { User } from '../user/entities/user.entity';
 import { ModerationDecision } from './dto/moderate-post.dto';
 import { SearchIndexService } from '../search/search-index.service';
 import { NotificationService } from '../notification/notification.service';
-import { CloudinaryService } from '../../common/services/cloudinary.service';
+import { MediaStorageService } from '../../common/services/media-storage.service';
 import { GroupService } from '../group/group.service';
 import { WorkoutLogService } from '../workout/workout-log.service';
 import { makeSilentLogger } from '../../../test/helpers/sequelize-mocks';
@@ -81,7 +81,7 @@ describe('PostService', () => {
   let userModel: UserModelMock;
   let searchIndex: { upsertPost: jest.Mock; removeIfExists: jest.Mock };
   let notificationService: { notify: jest.Mock; notifyMany: jest.Mock };
-  let cloudinaryService: {
+  let mediaStorage: {
     isOwnedUrl: jest.Mock;
     assertOwnedUrls: jest.Mock;
     extractPublicId: jest.Mock;
@@ -153,7 +153,7 @@ describe('PostService', () => {
       notify: jest.fn().mockResolvedValue(undefined),
       notifyMany: jest.fn().mockResolvedValue(undefined),
     };
-    cloudinaryService = {
+    mediaStorage = {
       isOwnedUrl: jest.fn().mockReturnValue(true),
       assertOwnedUrls: jest.fn(),
       extractPublicId: jest.fn().mockReturnValue('mock-id'),
@@ -186,7 +186,7 @@ describe('PostService', () => {
         { provide: getModelToken(User), useValue: userModel },
         { provide: SearchIndexService, useValue: searchIndex },
         { provide: NotificationService, useValue: notificationService },
-        { provide: CloudinaryService, useValue: cloudinaryService },
+        { provide: MediaStorageService, useValue: mediaStorage },
         { provide: GroupService, useValue: groupService },
         { provide: WorkoutLogService, useValue: workoutLogService },
         { provide: WINSTON_MODULE_NEST_PROVIDER, useValue: makeSilentLogger() },
@@ -412,7 +412,7 @@ describe('PostService', () => {
     });
 
     it('rejects mediaUrls that fail Cloudinary whitelist before any DB read', async () => {
-      cloudinaryService.assertOwnedUrls.mockImplementationOnce(() => {
+      mediaStorage.assertOwnedUrls.mockImplementationOnce(() => {
         throw new BadRequestException('mediaUrls must be Cloudinary URLs');
       });
 
@@ -445,11 +445,13 @@ describe('PostService', () => {
       await service.createPost(authorId, {
         content: 'x',
         groupIds: ['g1'],
-        mediaUrls: ['https://res.cloudinary.com/c/image/upload/staging.png'],
+        mediaUrls: [
+          'https://img.motionhive.fit/motionhive/test/posts/staging.png',
+        ],
       });
 
-      expect(cloudinaryService.cloneByUrl).toHaveBeenCalledWith(
-        'https://res.cloudinary.com/c/image/upload/staging.png',
+      expect(mediaStorage.cloneByUrl).toHaveBeenCalledWith(
+        'https://img.motionhive.fit/motionhive/test/posts/staging.png',
         expect.objectContaining({
           resource: 'posts',
           userId: authorId,
@@ -458,11 +460,11 @@ describe('PostService', () => {
       );
       expect(updateSpy).toHaveBeenCalledWith({
         mediaUrls: [
-          'https://res.cloudinary.com/c/image/upload/staging.png#cloned',
+          'https://img.motionhive.fit/motionhive/test/posts/staging.png#cloned',
         ],
       });
-      expect(cloudinaryService.deleteByUrl).toHaveBeenCalledWith(
-        'https://res.cloudinary.com/c/image/upload/staging.png',
+      expect(mediaStorage.deleteByUrl).toHaveBeenCalledWith(
+        'https://img.motionhive.fit/motionhive/test/posts/staging.png',
       );
     });
   });
@@ -519,20 +521,20 @@ describe('PostService', () => {
         id: postId,
         authorId,
         mediaUrls: [
-          'https://res.cloudinary.com/c/image/upload/v1/a.png',
-          'https://res.cloudinary.com/c/image/upload/v1/b.png',
+          'https://img.motionhive.fit/motionhive/test/posts/a.png',
+          'https://img.motionhive.fit/motionhive/test/posts/b.png',
         ],
         update: jest.fn().mockResolvedValue(undefined),
       };
       postModel.findByPk.mockResolvedValue(post);
 
       await service.updatePost(authorId, postId, {
-        mediaUrls: ['https://res.cloudinary.com/c/image/upload/v1/b.png'],
+        mediaUrls: ['https://img.motionhive.fit/motionhive/test/posts/b.png'],
       });
 
-      expect(cloudinaryService.deleteByUrl).toHaveBeenCalledTimes(1);
-      expect(cloudinaryService.deleteByUrl).toHaveBeenCalledWith(
-        'https://res.cloudinary.com/c/image/upload/v1/a.png',
+      expect(mediaStorage.deleteByUrl).toHaveBeenCalledTimes(1);
+      expect(mediaStorage.deleteByUrl).toHaveBeenCalledWith(
+        'https://img.motionhive.fit/motionhive/test/posts/a.png',
       );
     });
 
@@ -559,7 +561,7 @@ describe('PostService', () => {
         authorId,
         groupId: 'g1',
         deletedAt: null,
-        mediaUrls: ['https://res.cloudinary.com/c/image/upload/v1/a.png'],
+        mediaUrls: ['https://img.motionhive.fit/motionhive/test/posts/a.png'],
         update: jest.fn().mockResolvedValue(undefined),
         destroy: jest.fn().mockResolvedValue(undefined),
         ...overrides,
@@ -575,7 +577,7 @@ describe('PostService', () => {
       const result = await service.deletePost(authorId, postId);
 
       expect(result).toEqual({ deleted: true });
-      expect(cloudinaryService.deleteFolder).not.toHaveBeenCalled();
+      expect(mediaStorage.deleteFolder).not.toHaveBeenCalled();
     });
 
     it('author can delete own post — tombstones, cascades, purges Cloudinary folder', async () => {
@@ -598,7 +600,7 @@ describe('PostService', () => {
         expect.anything(),
       );
       expect(post.destroy).toHaveBeenCalled();
-      expect(cloudinaryService.deleteFolder).toHaveBeenCalledWith(
+      expect(mediaStorage.deleteFolder).toHaveBeenCalledWith(
         `motionhive/development/posts/${authorId}/${postId}`,
       );
     });
@@ -671,7 +673,7 @@ describe('PostService', () => {
         authorId: 'author-1',
         groupId: 'g1',
         approvalState: PostApprovalState.PENDING,
-        mediaUrls: ['https://res.cloudinary.com/c/image/upload/v1/a.png'],
+        mediaUrls: ['https://img.motionhive.fit/motionhive/test/posts/a.png'],
         update: jest.fn().mockResolvedValue(undefined),
         destroy: jest.fn().mockResolvedValue(undefined),
       };
@@ -688,7 +690,7 @@ describe('PostService', () => {
       });
 
       expect(post.destroy).toHaveBeenCalled();
-      expect(cloudinaryService.deleteFolder).toHaveBeenCalled();
+      expect(mediaStorage.deleteFolder).toHaveBeenCalled();
       expect(notificationService.notify).toHaveBeenCalledWith(
         expect.objectContaining({ type: 'POST_REJECTED' }),
       );

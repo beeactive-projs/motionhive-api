@@ -8,7 +8,7 @@ import { GroupMember } from '../group/entities/group-member.entity';
 import { User } from '../user/entities/user.entity';
 import { PostController } from './post.controller';
 import { PostService } from './post.service';
-import { CloudinaryService } from '../../common/services/cloudinary.service';
+import { MediaStorageService } from '../../common/services/media-storage.service';
 import { SearchModule } from '../search/search.module';
 import { GroupModule } from '../group/group.module';
 import { WorkoutModule } from '../workout/workout.module';
@@ -29,7 +29,7 @@ import { WorkoutModule } from '../workout/workout.module';
     WorkoutModule,
   ],
   controllers: [PostController],
-  providers: [PostService, CloudinaryService],
+  providers: [PostService, MediaStorageService],
   exports: [PostService],
 })
 export class PostModule {}

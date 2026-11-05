@@ -96,7 +96,7 @@ export class User extends Model {
   declare avatarId: number;
 
   /**
-   * Cloudinary secure_url of the user's uploaded profile picture.
+   * Public URL of the user's uploaded profile picture.
    * Null until they upload one; UI falls back to a coloured initials
    * badge in that case.
    */
@@ -107,8 +107,8 @@ export class User extends Model {
   declare avatarUrl: string | null;
 
   /**
-   * Cloudinary public_id for the uploaded avatar. Used to DELETE the
-   * previous asset when the user replaces their picture — without this
+   * Storage key of the uploaded avatar. Used to DELETE the previous
+   * file when the user replaces their picture — without this
    * we'd leak storage on every re-upload.
    */
   @Column({

@@ -3,8 +3,8 @@ import type { MulterOptions } from '@nestjs/platform-express/multer/interfaces/m
 import { apiError } from '../i18n';
 
 /**
- * Magic-byte signature check for the image formats Cloudinary accepts
- * for inline rendering on a post. Defense-in-depth against a client that
+ * Magic-byte signature check for the image formats the upload pipeline
+ * reads (`normaliseImage`). Defense-in-depth against a client that
  * spoofs `Content-Type: image/png` on a non-image payload.
  */
 export function isSupportedImage(buf: Buffer): boolean {
@@ -54,7 +54,7 @@ export function isSupportedImage(buf: Buffer): boolean {
   }
 
   // HEIC / HEIF / AVIF: an ISO media box, '....ftyp' then the brand. An
-  // iPhone photo on a Mac is usually HEIC, and Cloudinary takes it.
+  // iPhone photo on a Mac is usually HEIC, and the server converts it.
   if (buf.toString('latin1', 4, 8) === 'ftyp') {
     return ISO_IMAGE_BRANDS.has(buf.toString('latin1', 8, 12));
   }

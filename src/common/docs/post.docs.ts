@@ -10,7 +10,7 @@ export const PostDocs = {
     summary: 'Upload a post image',
     description:
       'Accepts a single image under the `file` form field. Max 5 MB, image MIME types only. ' +
-      'Returns the Cloudinary secure URL + public ID. Caller appends the URL to mediaUrls before POST /posts.',
+      'Returns the public URL + storage key. Caller appends the URL to mediaUrls before POST /posts.',
     auth: true,
     responses: [
       { status: 200, description: 'Image uploaded' },
@@ -115,7 +115,7 @@ export const PostDocs = {
     summary: 'Delete a post',
     description:
       'Soft-deletes the post (tombstones content, cascades to comments + reactions, purges ' +
-      'every Cloudinary asset under the post`s folder). Idempotent on already-deleted rows. ' +
+      'every stored file in the post folder). Idempotent on already-deleted rows. ' +
       'Callable by the author or by any OWNER/MODERATOR of the post`s group.',
     auth: true,
     responses: [
@@ -130,7 +130,7 @@ export const PostDocs = {
     summary: 'Approve or reject a pending post',
     description:
       'OWNER/MODERATOR of the post`s group only. APPROVED → post becomes visible. REJECTED → ' +
-      'post is destroyed (tombstone + cascade + Cloudinary purge). Author is notified either way.',
+      'post is destroyed (tombstone + cascade + storage purge). Author is notified either way.',
     auth: true,
     responses: [
       { status: 200, description: 'Decision applied' },

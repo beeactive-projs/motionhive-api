@@ -123,8 +123,8 @@ export class UserController {
 
   /**
    * Upload a new profile picture. Accepts a single image under the
-   * `file` form field. The server streams it to Cloudinary (folder
-   * `avatars/`), saves the secure URL on the user, and cleans up the
+   * `file` form field. The server stores it (folder
+   * `avatars/`), saves the public URL on the user, and cleans up the
    * previous asset. Returns the new avatar URL so the UI can swap the
    * image in place without refetching the whole profile.
    */

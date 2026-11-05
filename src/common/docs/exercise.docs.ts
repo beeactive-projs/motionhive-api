@@ -52,7 +52,7 @@ const exerciseExample = {
     id: '5c1a8b9d-2e3f-4a01-9b8c-7d6e5f4a3b2c',
     firstName: 'Diana',
     lastName: 'Marin',
-    avatarUrl: 'https://res.cloudinary.com/.../diana.jpg',
+    avatarUrl: 'https://img.motionhive.fit/motionhive/production/.../diana.jpg',
     handle: 'diana-marin',
   },
   forkedFrom: null,
@@ -191,7 +191,7 @@ export const ExerciseDocs = {
     description:
       'INSTRUCTOR or USER, owner only (not catalog rows). One image under the ' +
       '`file` form field, at most 5 MB, image types only. Stored as a public ' +
-      "Cloudinary image in the owner's folder and returned as `thumbnailUrl` " +
+      "public image in the owner's folder and returned as `thumbnailUrl` " +
       'on the exercise. A picture it replaces stays stored, since workouts ' +
       'logged with it keep its link.',
     auth: true,

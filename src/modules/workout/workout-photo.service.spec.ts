@@ -3,7 +3,7 @@ import { Test } from '@nestjs/testing';
 import { Op } from 'sequelize';
 import { getModelToken } from '@nestjs/sequelize';
 
-import { CloudinaryService } from '../../common/services/cloudinary.service';
+import { MediaStorageService } from '../../common/services/media-storage.service';
 import { CoachAccessService } from './coach-access.service';
 import { WorkoutLog } from './entities/workout-log.entity';
 import { WorkoutLogStatus } from './entities/workout.enums';
@@ -27,7 +27,7 @@ const file = (buffer: Buffer) => ({ buffer }) as Express.Multer.File;
 describe('WorkoutPhotoService', () => {
   let service: WorkoutPhotoService;
   const logModel = { findByPk: jest.fn(), findOne: jest.fn() };
-  const cloudinary = {
+  const storage = {
     uploadPrivateImage: jest
       .fn()
       .mockResolvedValue({ publicId: 'p/wl-1', version: 7 }),
@@ -52,7 +52,7 @@ describe('WorkoutPhotoService', () => {
       providers: [
         WorkoutPhotoService,
         { provide: getModelToken(WorkoutLog), useValue: logModel },
-        { provide: CloudinaryService, useValue: cloudinary },
+        { provide: MediaStorageService, useValue: storage },
         { provide: CoachAccessService, useValue: coachAccess },
       ],
     }).compile();
@@ -71,8 +71,7 @@ describe('WorkoutPhotoService', () => {
         photoVersion: 7,
       });
 
-      const [stored, folder, name] =
-        cloudinary.uploadPrivateImage.mock.calls[0];
+      const [stored, folder, name] = storage.uploadPrivateImage.mock.calls[0];
       expect((stored as Buffer).toString('latin1')).not.toContain('GPS');
       expect(folder).toBe('motionhive/test/workout-photos/me');
       expect(name).toBe('wl-1');
@@ -91,7 +90,7 @@ describe('WorkoutPhotoService', () => {
       ).rejects.toMatchObject({
         response: { messageKey: 'workout.photoNotFinished' },
       });
-      expect(cloudinary.uploadPrivateImage).not.toHaveBeenCalled();
+      expect(storage.uploadPrivateImage).not.toHaveBeenCalled();
     });
 
     it('refuses anything but a JPEG, whose metadata it can strip', async () => {
@@ -102,7 +101,7 @@ describe('WorkoutPhotoService', () => {
       await expect(
         service.setPhoto('wl-1', 'me', file(png)),
       ).rejects.toBeInstanceOf(BadRequestException);
-      expect(cloudinary.uploadPrivateImage).not.toHaveBeenCalled();
+      expect(storage.uploadPrivateImage).not.toHaveBeenCalled();
     });
 
     it("hides someone else's workout", async () => {
@@ -123,7 +122,7 @@ describe('WorkoutPhotoService', () => {
       photoPublicId: null,
       photoVersion: null,
     });
-    expect(cloudinary.deletePrivateImage).toHaveBeenCalledWith('p/wl-1');
+    expect(storage.deletePrivateImage).toHaveBeenCalledWith('p/wl-1');
   });
 
   describe('photoForCoach — the same gate as the workout', () => {
@@ -154,7 +153,7 @@ describe('WorkoutPhotoService', () => {
       await expect(
         coachRead({ programAssignmentId: null, visibility: 'ONLY_ME' }),
       ).rejects.toBeInstanceOf(NotFoundException);
-      expect(cloudinary.fetchPrivateImage).not.toHaveBeenCalled();
+      expect(storage.fetchPrivateImage).not.toHaveBeenCalled();
     });
   });
 
@@ -163,15 +162,17 @@ describe('WorkoutPhotoService', () => {
       finished({ photoPublicId: 'p/wl-1' }),
     );
     await service.photoForOwner('wl-1', 'me', 'thumb');
-    expect(cloudinary.fetchPrivateImage).toHaveBeenCalledWith('p/wl-1', {
-      width: 480,
+    expect(storage.fetchPrivateImage).toHaveBeenCalledWith('p/wl-1', {
+      thumb: true,
     });
 
     logModel.findByPk.mockResolvedValueOnce(
       finished({ photoPublicId: 'p/wl-1' }),
     );
     await service.photoForOwner('wl-1', 'me');
-    expect(cloudinary.fetchPrivateImage).toHaveBeenLastCalledWith('p/wl-1', {});
+    expect(storage.fetchPrivateImage).toHaveBeenLastCalledWith('p/wl-1', {
+      thumb: false,
+    });
   });
 
   describe('photoForProfile — whoever the profile shows the workout to', () => {
@@ -202,7 +203,7 @@ describe('WorkoutPhotoService', () => {
       await expect(
         service.photoForProfile('owner', ['PUBLIC'], 'wl-1'),
       ).rejects.toBeInstanceOf(NotFoundException);
-      expect(cloudinary.fetchPrivateImage).not.toHaveBeenCalled();
+      expect(storage.fetchPrivateImage).not.toHaveBeenCalled();
     });
 
     it('404s when the workout has no photo', async () => {

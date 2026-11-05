@@ -19,7 +19,7 @@ import {
 import { Sequelize } from 'sequelize-typescript';
 import { apiError, Locale } from '../../common/i18n';
 import { assertOwned } from '../../common/utils/ownership.utils';
-import { CloudinaryService } from '../../common/services/cloudinary.service';
+import { MediaStorageService } from '../../common/services/media-storage.service';
 import {
   buildPaginatedResponse,
   getOffset,
@@ -85,7 +85,7 @@ const EXERCISE_OWNER_ATTRIBUTES = [
   'handle',
 ] as const;
 
-/** The Cloudinary folder for exercise pictures, per owner; account erasure deletes it. */
+/** The storage folder for exercise pictures, per owner; account erasure deletes it. */
 export const EXERCISE_IMAGE_RESOURCE = 'exercises';
 
 @Injectable()
@@ -105,7 +105,7 @@ export class ExerciseService {
     private readonly searchIndex: SearchIndexService,
     private readonly exerciseSearch: ExerciseSearchService,
     private readonly notificationService: NotificationService,
-    private readonly cloudinaryService: CloudinaryService,
+    private readonly mediaStorage: MediaStorageService,
     @Inject(WINSTON_MODULE_NEST_PROVIDER)
     private readonly logger: LoggerService,
   ) {}
@@ -376,7 +376,7 @@ export class ExerciseService {
   // ────────────────────────────────────────────────────────────────────
 
   /**
-   * Sets the exercise's picture: a public Cloudinary image in the owner's
+   * Sets the exercise's picture: a public image in the owner's
    * folder, shown wherever the exercise is (list, picker, logger). Public on
    * purpose: a coach's exercise is seen by their clients, and the link is
    * not guessable. Account erasure deletes the folder.
@@ -390,7 +390,7 @@ export class ExerciseService {
     principal: PrincipalContext,
   ): Promise<Exercise> {
     const exercise = await this.ownedCustom(id, principal);
-    const { url } = await this.cloudinaryService.uploadImage(file, {
+    const { url } = await this.mediaStorage.uploadImage(file, {
       resource: EXERCISE_IMAGE_RESOURCE,
       userId: principal.userId,
     });
