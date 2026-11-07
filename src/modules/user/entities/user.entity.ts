@@ -12,6 +12,7 @@ import {
 import { Role } from '../../role/entities/role.entity';
 import { UserRole } from '../../role/entities/user-role.entity';
 import { SocialAccount } from './social-account.entity';
+import type { StoredWorkoutSettings } from '../workout-settings';
 
 /**
  * Visibility level a user can pick for an individual profile field.
@@ -35,7 +36,9 @@ export type PrivacyControlledField =
   | 'phone'
   | 'city'
   | 'language'
-  | 'timezone';
+  | 'timezone'
+  /** Not a profile field: the level new workouts start at (migration 073). */
+  | 'workouts';
 
 export type UserPrivacySettings = Partial<
   Record<PrivacyControlledField, ProfilePrivacyLevel>
@@ -93,7 +96,7 @@ export class User extends Model {
   declare avatarId: number;
 
   /**
-   * Cloudinary secure_url of the user's uploaded profile picture.
+   * Public URL of the user's uploaded profile picture.
    * Null until they upload one; UI falls back to a coloured initials
    * badge in that case.
    */
@@ -104,8 +107,8 @@ export class User extends Model {
   declare avatarUrl: string | null;
 
   /**
-   * Cloudinary public_id for the uploaded avatar. Used to DELETE the
-   * previous asset when the user replaces their picture — without this
+   * Storage key of the uploaded avatar. Used to DELETE the previous
+   * file when the user replaces their picture — without this
    * we'd leak storage on every re-upload.
    */
   @Column({
@@ -231,6 +234,19 @@ export class User extends Model {
     defaultValue: {},
   })
   declare privacySettings: UserPrivacySettings;
+
+  /**
+   * The workout logger settings the person changed (migration 079). See
+   * `WorkoutSettings`: missing keys resolve to defaults at read time
+   * (`resolveWorkoutSettings`). Read and patched through
+   * `/users/me/workout-settings`.
+   */
+  @Column({
+    type: DataType.JSONB,
+    allowNull: false,
+    defaultValue: {},
+  })
+  declare workoutSettings: StoredWorkoutSettings;
 
   @CreatedAt
   declare createdAt: Date;

@@ -78,9 +78,17 @@ export class Post extends Model {
   @Column({
     type: DataType.JSON,
     allowNull: true,
-    comment: 'Array of Cloudinary secure_url strings owned by THIS post',
+    comment: 'Array of public image URLs owned by THIS post',
   })
   declare mediaUrls: string[] | null;
+
+  /**
+   * A finished workout shared into the group (migration 075), shown as a
+   * card from its safe summary. Null for an ordinary post, or once the
+   * workout is gone.
+   */
+  @Column({ type: DataType.CHAR(36), allowNull: true })
+  declare workoutLogId: string | null;
 
   @Column({
     type: DataType.DATE,

@@ -8,12 +8,16 @@ import {
   ParseUUIDPipe,
   Patch,
   Post,
+  Put,
   Query,
   Request,
+  UploadedFile,
   UseGuards,
+  UseInterceptors,
 } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
-import { ApiTags } from '@nestjs/swagger';
+import { FileInterceptor } from '@nestjs/platform-express';
+import { ApiConsumes, ApiTags } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
 
 import { ApiEndpoint } from '../../common/decorators/api-response.decorator';
@@ -24,10 +28,16 @@ import {
   type PrincipalContext,
 } from '../../common/decorators/principal.decorator';
 import { RolesGuard } from '../../common/guards/roles.guard';
+import {
+  IMAGE_UPLOAD_OPTIONS,
+  assertImageFile,
+} from '../../common/utils/image.utils';
 import type { AuthenticatedRequest } from '../../common/types/authenticated-request';
 
 import { ExerciseService } from './exercise.service';
+import { ExerciseNoteService } from './exercise-note.service';
 import { CreateExerciseDto } from './dto/create-exercise.dto';
+import { UpdateExerciseNoteDto } from './dto/update-exercise-note.dto';
 import { UpdateExerciseDto } from './dto/update-exercise.dto';
 import { ListExercisesQueryDto } from './dto/list-exercises.query.dto';
 
@@ -37,14 +47,19 @@ import { ListExercisesQueryDto } from './dto/list-exercises.query.dto';
  * `GET` endpoints accept both INSTRUCTOR and USER roles; the service
  * gates clients via `assertClientCanBrowse` (locked decision §19).
  *
- * Mutating endpoints (create, update, delete, fork) are
- * INSTRUCTOR-only — clients never author or own exercises.
+ * Create, update and delete are open to everyone since workouts round 2:
+ * someone training without a coach makes their own exercises, which are
+ * always PRIVATE (source USER). Fork stays INSTRUCTOR-only. The personal
+ * note (`:id/note`) is the caller's own and never shown to a coach.
  */
 @ApiTags('Exercises')
 @Controller('exercises')
 @UseGuards(AuthGuard('jwt'), RolesGuard)
 export class ExerciseController {
-  constructor(private readonly exerciseService: ExerciseService) {}
+  constructor(
+    private readonly exerciseService: ExerciseService,
+    private readonly exerciseNoteService: ExerciseNoteService,
+  ) {}
 
   // ── Read ──────────────────────────────────────────────────────────
 
@@ -71,21 +86,49 @@ export class ExerciseController {
     return this.exerciseService.findById(id, principal);
   }
 
-  // ── Write (instructor only) ───────────────────────────────────────
+  // ── The caller's private note ─────────────────────────────────────
+
+  @Get(':id/note')
+  @Roles('INSTRUCTOR', 'USER')
+  @ApiEndpoint(ExerciseDocs.getNote)
+  async getNote(
+    @Request() req: AuthenticatedRequest,
+    @Param('id', ParseUUIDPipe) id: string,
+  ) {
+    return this.exerciseNoteService.get(id, req.user.id);
+  }
+
+  @Put(':id/note')
+  @Roles('INSTRUCTOR', 'USER')
+  @Throttle({ default: { limit: 120, ttl: 3_600_000 } })
+  @ApiEndpoint({ ...ExerciseDocs.putNote, body: UpdateExerciseNoteDto })
+  async putNote(
+    @Request() req: AuthenticatedRequest,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: UpdateExerciseNoteDto,
+  ) {
+    return this.exerciseNoteService.put(id, req.user.id, dto.note);
+  }
+
+  // ── Write (owner; fork is coaches only) ───────────────────────────
 
   @Post()
-  @Roles('INSTRUCTOR')
+  @Roles('INSTRUCTOR', 'USER')
   @Throttle({ default: { limit: 60, ttl: 3_600_000 } })
   @ApiEndpoint({ ...ExerciseDocs.create, body: CreateExerciseDto })
   async create(
-    @Request() req: AuthenticatedRequest,
+    @Principal() principal: PrincipalContext,
     @Body() dto: CreateExerciseDto,
   ) {
-    return this.exerciseService.create(dto, req.user.id);
+    return this.exerciseService.create(
+      dto,
+      principal.userId,
+      principal.isInstructor,
+    );
   }
 
   @Patch(':id')
-  @Roles('INSTRUCTOR')
+  @Roles('INSTRUCTOR', 'USER')
   @Throttle({ default: { limit: 120, ttl: 3_600_000 } })
   @ApiEndpoint({ ...ExerciseDocs.update, body: UpdateExerciseDto })
   async update(
@@ -97,7 +140,7 @@ export class ExerciseController {
   }
 
   @Delete(':id')
-  @Roles('INSTRUCTOR')
+  @Roles('INSTRUCTOR', 'USER')
   @HttpCode(204)
   @Throttle({ default: { limit: 30, ttl: 3_600_000 } })
   @ApiEndpoint(ExerciseDocs.remove)
@@ -106,6 +149,32 @@ export class ExerciseController {
     @Param('id', ParseUUIDPipe) id: string,
   ): Promise<void> {
     await this.exerciseService.softDelete(id, principal);
+  }
+
+  @Put(':id/image')
+  @Roles('INSTRUCTOR', 'USER')
+  @UseInterceptors(FileInterceptor('file', IMAGE_UPLOAD_OPTIONS))
+  @ApiConsumes('multipart/form-data')
+  @Throttle({ default: { limit: 30, ttl: 3_600_000 } })
+  @ApiEndpoint(ExerciseDocs.setImage)
+  async setImage(
+    @Principal() principal: PrincipalContext,
+    @Param('id', ParseUUIDPipe) id: string,
+    @UploadedFile() file: Express.Multer.File | undefined,
+  ) {
+    assertImageFile(file);
+    return this.exerciseService.setImage(id, file, principal);
+  }
+
+  @Delete(':id/image')
+  @Roles('INSTRUCTOR', 'USER')
+  @Throttle({ default: { limit: 30, ttl: 3_600_000 } })
+  @ApiEndpoint(ExerciseDocs.removeImage)
+  async removeImage(
+    @Principal() principal: PrincipalContext,
+    @Param('id', ParseUUIDPipe) id: string,
+  ) {
+    return this.exerciseService.removeImage(id, principal);
   }
 
   @Post(':id/fork')

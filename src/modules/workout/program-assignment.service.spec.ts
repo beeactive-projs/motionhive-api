@@ -5,6 +5,7 @@ import {
 } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { getModelToken } from '@nestjs/sequelize';
+import { Op } from 'sequelize';
 import { Sequelize } from 'sequelize-typescript';
 import { WINSTON_MODULE_NEST_PROVIDER } from 'nest-winston';
 
@@ -27,6 +28,7 @@ import {
   fakeTx,
   makeSilentLogger,
 } from '../../../test/helpers/sequelize-mocks';
+import { foldedLike } from '../../../test/helpers/folded-search';
 
 /**
  * Smoke tests for ProgramAssignmentService — the headliner. Covers:
@@ -60,6 +62,7 @@ describe('ProgramAssignmentService (smoke — not exhaustive)', () => {
     transaction: jest.fn((cb: (tx: unknown) => unknown) =>
       Promise.resolve(cb(fakeTx)),
     ),
+    escape: jest.fn((value: string) => `'${value.replace(/'/g, "''")}'`),
   };
   const notificationService = {
     notify: jest.fn().mockResolvedValue(undefined),
@@ -263,23 +266,30 @@ describe('ProgramAssignmentService (smoke — not exhaustive)', () => {
       assignmentModel.findAndCountAll.mockResolvedValue({ rows: [], count: 0 });
     });
 
+    const searchOf = () =>
+      (whereOf() as Record<symbol, Array<{ val: string }> | undefined>)[
+        Op.and
+      ]?.map((clause) => clause.val);
+
     it('omits the name clause entirely when no term is given', async () => {
       await service.listForInstructor(me, { clientId: 'c-1' });
-      expect(whereOf()).not.toHaveProperty('programNameSnapshot');
+      expect(searchOf()).toBeUndefined();
     });
 
     it('treats whitespace as no search', async () => {
       await service.listForInstructor(me, { clientId: 'c-1', search: '   ' });
-      expect(whereOf()).not.toHaveProperty('programNameSnapshot');
+      expect(searchOf()).toBeUndefined();
     });
 
-    it('escapes LIKE wildcards so % cannot match everything', async () => {
-      await service.listForInstructor(me, { clientId: 'c-1', search: '100%' });
-      const clause = whereOf()['programNameSnapshot'] as Record<symbol, string>;
-      const value = Object.getOwnPropertySymbols(clause)
-        .map((sym) => clause[sym])
-        .find((v) => typeof v === 'string');
-      expect(value).toBe('%100\\%%');
+    // "forta" finds "Forță", and a % is a %: escaped after the fold.
+    it('searches the plan name blind to accents, wildcards literal', async () => {
+      await service.listForInstructor(me, {
+        clientId: 'c-1',
+        search: 'Forță 100%',
+      });
+      expect(searchOf()).toEqual([
+        foldedLike('"ProgramAssignment"."program_name_snapshot"', 'Forta 100%'),
+      ]);
     });
   });
 
@@ -772,6 +782,20 @@ describe('ProgramAssignmentService (smoke — not exhaustive)', () => {
       );
     });
 
+    it('schedules a DRAFT routine like any other', async () => {
+      programModel.findByPk.mockResolvedValueOnce(routine({ status: 'DRAFT' }));
+      assignmentModel.create.mockResolvedValueOnce({ id: 'pa-1' });
+      assignedWorkoutModel.create.mockResolvedValue({ id: 'aw-x' });
+
+      await expect(
+        service.scheduleRoutine(
+          'me',
+          { programId: 'p-1', daysOfWeek: [3] },
+          '2026-08-06',
+        ),
+      ).resolves.toEqual({ id: 'pa-1' });
+    });
+
     it('refuses to schedule an empty routine', async () => {
       programModel.findByPk.mockResolvedValueOnce(routine({ workouts: [] }));
 
@@ -930,6 +954,109 @@ describe('ProgramAssignmentService (smoke — not exhaustive)', () => {
       await expect(service.findById('a-1', 'me')).rejects.toThrow(
         NotFoundException,
       );
+    });
+  });
+
+  // ─── Planned rest travels with the copy (workouts round 2) ───────
+
+  describe('planned rest on the copy', () => {
+    const restsWritten = () =>
+      (
+        (assignedSetModel.bulkCreate.mock.calls as unknown[][])[0][0] as {
+          restAfterSeconds: number | null;
+        }[]
+      ).map((row) => row.restAfterSeconds);
+
+    it("fills a set with no rest from the day's, else the program's default", async () => {
+      const program = buildTinyProgram();
+      const day = program.workouts[0];
+      day.exercises[0].sets[0].restAfterSeconds = null as unknown as number;
+      setupHappyPath();
+      programModel.findByPk.mockReset();
+      programModel.findByPk.mockResolvedValueOnce({
+        ...program,
+        defaultRestSeconds: 60,
+        workouts: [{ ...day, defaultRestSeconds: 150 }],
+      });
+
+      await service.assignProgramToClient(me, 'Coach Co.', {
+        programId: 'prog-1',
+        clientId: 'c-1',
+        startDate: '2026-06-09',
+      });
+
+      // The set's own 90 wins; the empty one takes the day's 150.
+      expect(restsWritten()).toEqual([150, 90]);
+    });
+
+    it("falls back to the program's default when the day has none", async () => {
+      const program = buildTinyProgram();
+      const day = program.workouts[0];
+      for (const set of day.exercises[0].sets) {
+        set.restAfterSeconds = null as unknown as number;
+      }
+      setupHappyPath();
+      programModel.findByPk.mockReset();
+      programModel.findByPk.mockResolvedValueOnce({
+        ...program,
+        defaultRestSeconds: 60,
+        workouts: [{ ...day, defaultRestSeconds: null }],
+      });
+
+      await service.assignProgramToClient(me, 'Coach Co.', {
+        programId: 'prog-1',
+        clientId: 'c-1',
+        startDate: '2026-06-09',
+      });
+
+      expect(restsWritten()).toEqual([60, 60]);
+    });
+
+    it("gives a scheduled routine's sets its rest between sets", async () => {
+      programModel.findByPk.mockResolvedValueOnce({
+        id: 'p-1',
+        ownerId: 'me',
+        name: 'Push day A',
+        defaultRestSeconds: 75,
+        workouts: [
+          {
+            id: 'pw-1',
+            notes: null,
+            estimatedDurationMinutes: 45,
+            defaultRestSeconds: null,
+            exercises: [
+              {
+                id: 'pe-1',
+                exerciseId: 'ex-1',
+                supersetGroupId: null,
+                orderIndex: 0,
+                notes: null,
+                alternateExerciseId: null,
+                sets: [
+                  { id: 'ps-1', orderIndex: 0, restAfterSeconds: null },
+                  { id: 'ps-2', orderIndex: 1, restAfterSeconds: 120 },
+                ],
+              },
+            ],
+          },
+        ],
+      });
+      assignmentModel.create.mockResolvedValueOnce({ id: 'pa-1' });
+      assignedWorkoutModel.create.mockResolvedValue({ id: 'aw-x' });
+      assignedExerciseModel.create.mockResolvedValue({ id: 'ae-x' });
+
+      await service.scheduleRoutine(
+        'me',
+        {
+          programId: 'p-1',
+          daysOfWeek: [5],
+          repeatMode: 'BLOCK' as never,
+          repeatWeeks: 1,
+        },
+        '2026-08-06',
+      );
+
+      expect(restsWritten()).toEqual([75, 120]);
     });
   });
 });

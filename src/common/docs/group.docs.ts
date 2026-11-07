@@ -28,7 +28,7 @@ export const GroupDocs = {
               slug: 'morning-hiit-crew',
               description:
                 'High-intensity interval training every weekday morning',
-              logoUrl: 'https://res.cloudinary.com/...',
+              logoUrl: 'https://img.motionhive.fit/motionhive/production/...',
               tags: ['fitness', 'hiit', 'morning'],
               joinPolicy: 'OPEN',
               city: 'Bucharest',
@@ -302,7 +302,7 @@ export const GroupDocs = {
               userId: 'user-uuid',
               firstName: 'Jane',
               lastName: 'Doe',
-              avatarId: 'cloudinary-asset-id-or-null',
+              avatarId: 'storage-key-or-null',
               role: 'MEMBER',
               isOwner: false,
               sharedHealthInfo: true,

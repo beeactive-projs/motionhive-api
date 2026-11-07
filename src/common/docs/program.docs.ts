@@ -65,8 +65,12 @@ export const ProgramDocs = {
     summary: 'List the instructor’s programs',
     description:
       'Owner-scoped. Returns the authenticated instructor’s programs ' +
-      '(paginated). Filters: `search` (name iLIKE), `status`. Ordered by ' +
-      '`updatedAt DESC` so recently-edited programs surface first.',
+      '(paginated). Filters: `search` (name iLIKE), `status`, and ' +
+      '`archived`: `exclude` leaves ARCHIVED out (the list a routine is ' +
+      'started from), `only` lists ARCHIVED alone (to restore one, with ' +
+      'PATCH `status: DRAFT`); omitted keeps every status. Ordered by ' +
+      '`updatedAt DESC` so recently-edited programs surface first. Each ' +
+      'row carries `defaultRestSeconds` (rest between sets, or null).',
     auth: true,
     responses: [
       {
@@ -117,9 +121,12 @@ export const ProgramDocs = {
   update: {
     summary: 'Update a program',
     description:
-      'INSTRUCTOR only, owner only. PATCH semantics — any subset of fields. ' +
-      'Does NOT propagate to existing assignments (copy-on-assign tree is ' +
-      'independent per locked decision §10).',
+      'Owner only. PATCH semantics: any subset of fields, including ' +
+      '`defaultRestSeconds` (0 to 600, null clears it) and `status` ' +
+      '(ARCHIVED archives a routine or program, DRAFT restores it). Does ' +
+      'NOT propagate to existing assignments (copy-on-assign tree is ' +
+      'independent per locked decision §10). A routine `exercises` tree ' +
+      'with a superset group of one exercise is saved unlinked.',
     auth: true,
     responses: [
       { status: 200, description: 'Program updated', example: programExample },
@@ -243,8 +250,11 @@ export const ProgramDocs = {
   updateWorkout: {
     summary: 'Update a workout',
     description:
-      'INSTRUCTOR only. Moving a workout to a (week, day) already occupied ' +
-      'by another workout returns 409.',
+      'Owner only. Moving a workout to a (week, day) already occupied ' +
+      'by another workout returns 409. `defaultRestSeconds` (0 to 600, ' +
+      "null clears it) is the day's rest, between a set's own and the " +
+      "program's default; assigning the program writes it into the " +
+      'assigned sets that have no rest.',
     auth: true,
     responses: [
       { status: 200, description: 'Workout updated', example: workoutExample },
@@ -272,7 +282,8 @@ export const ProgramDocs = {
       'INSTRUCTOR only. `exerciseId` must reference an exercise the ' +
       'caller can read (SYSTEM, their own, or PUBLIC by another). ' +
       'Hides existence (404) for PRIVATE-by-another rows. Pass ' +
-      '`defaultSets` to create that many empty sets with it atomically.',
+      '`defaultSets` to create that many empty sets with it atomically, ' +
+      'and `restAfterSeconds` to give them that rest.',
     auth: true,
     responses: [
       { status: 201, description: 'Exercise slot added' },
@@ -283,6 +294,13 @@ export const ProgramDocs = {
 
   updateExercise: {
     summary: 'Update an exercise slot',
+    description:
+      'Owner only. `restAfterSeconds` (0 to 600, or null) is written to ' +
+      'every set of the exercise in one transaction: exercise-level rest ' +
+      'has no column of its own. `supersetGroupId` links it into a ' +
+      'superset (the same number on two or three exercises of the day); ' +
+      'null unlinks it, and a superset left with one exercise is ' +
+      'dissolved in the same transaction.',
     auth: true,
     responses: [
       { status: 200, description: 'Updated' },
@@ -292,6 +310,9 @@ export const ProgramDocs = {
 
   removeExercise: {
     summary: 'Remove an exercise slot',
+    description:
+      'Owner only. Removing one exercise of a pair unlinks the other, in ' +
+      'the same transaction.',
     auth: true,
     responses: [
       { status: 204, description: 'Removed' },

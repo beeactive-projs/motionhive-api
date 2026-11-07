@@ -13,13 +13,20 @@ import { Feedback } from '../../feedback/entities/feedback.entity';
 import { Waitlist } from '../../waitlist/entities/waitlist.entity';
 import { AdminListDto } from '../dto/admin-list.dto';
 import { AdminAuditService } from './admin-audit.service';
+import {
+  ListWorkoutReportsDto,
+  ResolveWorkoutReportDto,
+} from '../../workout/dto/resolve-workout-report.dto';
+import { WorkoutReportService } from '../../workout/workout-report.service';
+import { WorkoutPhotoService } from '../../workout/workout-photo.service';
 
 const AUTHOR_BRIEF = ['id', 'email', 'firstName', 'lastName'];
 
 /**
  * Content moderation (cross-tenant). Posts and reviews can be listed and
- * soft-deleted (hidden). Feedback, waitlist and blog reuse their existing
- * admin endpoints, so they aren't duplicated here.
+ * soft-deleted (hidden); reported workouts are reviewed and taken down.
+ * Feedback, waitlist and blog reuse their existing admin endpoints, so
+ * they aren't duplicated here.
  */
 @Injectable()
 export class AdminContentService {
@@ -29,6 +36,8 @@ export class AdminContentService {
     @InjectModel(Feedback) private readonly feedbackModel: typeof Feedback,
     @InjectModel(Waitlist) private readonly waitlistModel: typeof Waitlist,
     private readonly audit: AdminAuditService,
+    private readonly workoutReports: WorkoutReportService,
+    private readonly workoutPhotos: WorkoutPhotoService,
     @Inject(WINSTON_MODULE_NEST_PROVIDER)
     private readonly logger: LoggerService,
   ) {}
@@ -62,6 +71,53 @@ export class AdminContentService {
       'AdminContentService',
     );
     return { id, deleted: true };
+  }
+
+  listWorkoutReports(dto: ListWorkoutReportsDto) {
+    return this.workoutReports.list(dto.page ?? 1, dto.limit ?? 20, dto.status);
+  }
+
+  async resolveWorkoutReport(
+    adminId: string,
+    id: string,
+    dto: ResolveWorkoutReportDto,
+    ip: string | null,
+  ) {
+    const row = await this.workoutReports.resolve(adminId, id, dto);
+    await this.audit.record({
+      adminUserId: adminId,
+      action: dto.takeDown
+        ? 'content.workout.takedown'
+        : 'content.workout_report.resolve',
+      targetType: 'workout_report',
+      targetId: id,
+      meta: { status: dto.status, workoutLogId: row.workoutLogId },
+      ip,
+    });
+    return row;
+  }
+
+  /**
+   * The photo of a reported workout, for the person reviewing the report.
+   * Every view is written to the audit log: it is a private photo, seen
+   * only because someone reported it.
+   */
+  async workoutReportPhoto(
+    adminId: string,
+    id: string,
+    ip: string | null,
+  ): Promise<Buffer> {
+    const workoutLogId = await this.workoutReports.reportedWorkoutId(id);
+    const bytes = await this.workoutPhotos.photoForReview(workoutLogId);
+    await this.audit.record({
+      adminUserId: adminId,
+      action: 'content.workout_photo.view',
+      targetType: 'workout_log',
+      targetId: workoutLogId,
+      meta: { reportId: id },
+      ip,
+    });
+    return bytes;
   }
 
   async listFeedback(dto: AdminListDto) {

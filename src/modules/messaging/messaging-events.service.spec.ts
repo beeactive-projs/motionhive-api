@@ -79,7 +79,7 @@ describe('MessagingEventsService — Stage 7', () => {
   it('delivers each event type with the correct shape', async () => {
     const stream$ = service.subscribeForUser('u').pipe(
       filter((e) => e.data.type !== 'heartbeat'),
-      take(5),
+      take(6),
       toArray(),
     );
     const got = firstValueFrom(stream$);
@@ -104,6 +104,11 @@ describe('MessagingEventsService — Stage 7', () => {
       userId: 'u',
       markedUnread: true,
     });
+    service.emitConversationCleared(['u'], {
+      conversationId: 'c1',
+      userId: 'u',
+      clearedAt: '2026-10-25T00:00:00.000Z',
+    });
 
     const events = await got;
     expect(events.map((e) => e.data.type)).toEqual([
@@ -112,6 +117,7 @@ describe('MessagingEventsService — Stage 7', () => {
       'conversation.read',
       'conversation.muted',
       'conversation.unread',
+      'conversation.cleared',
     ]);
   });
 

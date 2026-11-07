@@ -9,8 +9,11 @@ import {
   Query,
   UseGuards,
   Request,
+  Res,
 } from '@nestjs/common';
+import type { Response } from 'express';
 import { AuthGuard } from '@nestjs/passport';
+import { Throttle } from '@nestjs/throttler';
 import { ApiTags } from '@nestjs/swagger';
 import type { AuthenticatedRequest } from '../../common/types/authenticated-request';
 import { OptionalJwtAuthGuard } from '../../common/guards/optional-jwt-auth.guard';
@@ -19,8 +22,17 @@ import { CreateInstructorProfileDto } from './dto/create-instructor-profile.dto'
 import { UpdateInstructorProfileDto } from './dto/update-instructor-profile.dto';
 import { UpdateFullProfileDto } from './dto/update-full-profile.dto';
 import { DiscoverInstructorsDto } from './dto/discover-instructors.dto';
+import { CoachDirectoryDto } from './dto/coach-directory.dto';
+import { SuggestedInstructorsDto } from './dto/suggested-instructors.dto';
 import { UpdatePrivacySettingsDto } from './dto/update-privacy-settings.dto';
 import { UpdateHandleDto } from './dto/update-handle.dto';
+import {
+  ProfileViewQueryDto,
+  ProfileWorkoutPhotoQueryDto,
+  ProfileWorkoutsQueryDto,
+} from './dto/profile-view-query.dto';
+import { sendPrivateImage } from '../workout/workout-photo.http';
+import { ReportWorkoutDto } from '../workout/dto/report-workout.dto';
 import { ApiEndpoint } from '../../common/decorators/api-response.decorator';
 import { ProfileDocs } from '../../common/docs/profile.docs';
 
@@ -31,8 +43,11 @@ import { ProfileDocs } from '../../common/docs/profile.docs';
  *
  * Public (no auth):
  * - GET    /profile/instructors/discover → Browse/search public instructors
+ * - GET    /profile/instructors/directory → The paged coach directory (viewer left out when signed in)
+ * - GET    /profile/instructors/directory/facets → Its cities and specializations, with counts
  *
  * Authenticated:
+ * - GET    /profile/instructors/suggested → Coaches suggested to the caller
  * - GET    /profile/me              → Full profile overview (roles + instructor profile)
  * - PATCH  /profile/me              → Unified profile update (account + instructor)
  * - POST   /profile/instructor      → Activate instructor profile ("I want to instruct")
@@ -54,10 +69,117 @@ export class ProfileController {
     return this.profileService.discoverInstructors(dto);
   }
 
+  /** Before `instructors/:id`, or its UUID pipe would reject "directory". */
+  @Get('instructors/directory')
+  @UseGuards(OptionalJwtAuthGuard)
+  @ApiEndpoint(ProfileDocs.coachDirectory)
+  async coachDirectory(
+    @Query() dto: CoachDirectoryDto,
+    @Request() req: AuthenticatedRequest,
+  ) {
+    return this.profileService.coachDirectory(req.user?.id ?? null, dto);
+  }
+
+  @Get('instructors/directory/facets')
+  @UseGuards(OptionalJwtAuthGuard)
+  @ApiEndpoint(ProfileDocs.coachDirectoryFacets)
+  async coachDirectoryFacets(@Request() req: AuthenticatedRequest) {
+    return this.profileService.coachDirectoryFacets(req.user?.id ?? null);
+  }
+
+  /** Before `instructors/:id`, or its UUID pipe would reject "suggested". */
+  @Get('instructors/suggested')
+  @UseGuards(AuthGuard('jwt'))
+  @ApiEndpoint(ProfileDocs.suggestInstructors)
+  async suggestInstructors(
+    @Request() req: AuthenticatedRequest,
+    @Query() dto: SuggestedInstructorsDto,
+  ) {
+    return this.profileService.suggestInstructors(req.user.id, dto);
+  }
+
   @Get('instructors/by-handle/:handle')
   @ApiEndpoint(ProfileDocs.getInstructorPublicProfileByHandle)
   async getInstructorPublicProfileByHandle(@Param('handle') handle: string) {
     return this.profileService.getInstructorPublicProfileByHandle(handle);
+  }
+
+  /** The workouts this person made visible to the viewer; see the docs entry. */
+  @Get('users/by-handle/:handle/workouts')
+  @UseGuards(OptionalJwtAuthGuard)
+  @ApiEndpoint(ProfileDocs.getPublicUserWorkouts)
+  async getPublicUserWorkouts(
+    @Param('handle') handle: string,
+    @Query() query: ProfileWorkoutsQueryDto,
+    @Request() req: AuthenticatedRequest,
+  ) {
+    return this.profileService.getPublicUserWorkouts(
+      handle,
+      req.user?.id ?? null,
+      query,
+    );
+  }
+
+  /** One workout this person made visible to the viewer; see the docs entry. */
+  @Get('users/by-handle/:handle/workouts/:workoutLogId')
+  @UseGuards(OptionalJwtAuthGuard)
+  @ApiEndpoint(ProfileDocs.getPublicUserWorkout)
+  async getPublicUserWorkout(
+    @Param('handle') handle: string,
+    @Param('workoutLogId', ParseUUIDPipe) workoutLogId: string,
+    @Query() query: ProfileViewQueryDto,
+    @Request() req: AuthenticatedRequest,
+  ) {
+    return this.profileService.getPublicUserWorkout(
+      handle,
+      req.user?.id ?? null,
+      workoutLogId,
+      query.previewAs,
+    );
+  }
+
+  /** That workout's photo, streamed; there is no public link to it. */
+  @Get('users/by-handle/:handle/workouts/:workoutLogId/photo')
+  @UseGuards(OptionalJwtAuthGuard)
+  // Open to guests, and each one pulls the image through us from
+  // storage: far more than a person scrolling a profile needs.
+  @Throttle({ default: { limit: 60, ttl: 60_000 } })
+  @ApiEndpoint(ProfileDocs.getPublicUserWorkoutPhoto)
+  async getPublicUserWorkoutPhoto(
+    @Param('handle') handle: string,
+    @Param('workoutLogId', ParseUUIDPipe) workoutLogId: string,
+    @Query() query: ProfileWorkoutPhotoQueryDto,
+    @Request() req: AuthenticatedRequest,
+    @Res() res: Response,
+  ) {
+    sendPrivateImage(
+      res,
+      await this.profileService.getPublicUserWorkoutPhoto(
+        handle,
+        req.user?.id ?? null,
+        workoutLogId,
+        query.previewAs,
+      ),
+    );
+  }
+
+  /** Report a workout this profile shows the caller; see the docs entry. */
+  @Post('users/by-handle/:handle/workouts/:workoutLogId/report')
+  @UseGuards(AuthGuard('jwt'))
+  @Throttle({ default: { limit: 10, ttl: 3_600_000 } })
+  @ApiEndpoint(ProfileDocs.reportUserWorkout)
+  async reportUserWorkout(
+    @Param('handle') handle: string,
+    @Param('workoutLogId', ParseUUIDPipe) workoutLogId: string,
+    @Body() dto: ReportWorkoutDto,
+    @Request() req: AuthenticatedRequest,
+  ) {
+    return this.profileService.reportUserWorkout(
+      handle,
+      req.user.id,
+      workoutLogId,
+      dto,
+    );
   }
 
   /**
@@ -72,10 +194,14 @@ export class ProfileController {
   @ApiEndpoint(ProfileDocs.getPublicUserProfileByHandle)
   async getPublicUserProfileByHandle(
     @Param('handle') handle: string,
+    @Query() query: ProfileViewQueryDto,
     @Request() req: AuthenticatedRequest,
   ) {
-    const viewerId = req.user?.id ?? null;
-    return this.profileService.getPublicUserProfileByHandle(handle, viewerId);
+    return this.profileService.getPublicUserProfileByHandle(
+      handle,
+      req.user?.id ?? null,
+      query.previewAs,
+    );
   }
 
   @Get('instructors/:id')

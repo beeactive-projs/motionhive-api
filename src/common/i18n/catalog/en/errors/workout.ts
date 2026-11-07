@@ -68,8 +68,27 @@ export const workout = {
   cannotAddSetsNotInProgress:
     'Cannot add sets to a workout that is no longer in progress.',
   sameExerciseSwap: 'That is already the exercise being logged.',
-  cannotDiscardFinished:
-    'Only a workout in progress can be cancelled. Finished workouts stay in your history.',
+  cannotCompleteNotInProgress: 'Only a workout in progress can be finished.',
+  photoNotFinished: 'Add a photo once the workout is finished.',
+  photoJpegOnly: 'Send the photo as a JPEG.',
+  photoNotFound: 'This workout has no photo.',
+  durationNotFinished: 'Only a finished workout can have its length corrected.',
+  durationOutOfRange: 'A workout lasts between 1 minute and 6 hours.',
+  pauseGapTooLong:
+    'That is longer than the workout has been running, so it cannot be paused for that long.',
+
+  // ─── Reports and takedowns ───────────────────────────────────────
+  takenDownNoShare:
+    "This workout was removed after a report, so it can't be shared.",
+  takenDownStaysPrivate:
+    'This workout was removed after a report, so it has to stay private.',
+  cannotReportOwn: "You can't report your own workout.",
+  reportAlreadyOpen:
+    "You've already reported this workout. We're looking into it.",
+  reportNotFound: 'Report not found.',
+  reportTransition: 'This report can no longer move to that status.',
+  takeDownNeedsResolve:
+    'Taking a workout down resolves its report, so set the status to resolved.',
   alreadyInProgress:
     '{name} is still in progress. Finish or discard it before starting another workout.',
 };

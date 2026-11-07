@@ -10,12 +10,27 @@ import {
   Post,
   Query,
   Request,
+  Res,
+  UploadedFile,
   UseGuards,
+  UseInterceptors,
 } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
-import { ApiTags } from '@nestjs/swagger';
+import { FileInterceptor } from '@nestjs/platform-express';
+import { ApiConsumes, ApiTags } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
+import type { Response } from 'express';
 
+import {
+  assertImageFile,
+  IMAGE_UPLOAD_OPTIONS,
+} from '../../common/utils/image.utils';
+import { WorkoutPhotoService } from './workout-photo.service';
+import { sendPrivateImage } from './workout-photo.http';
+import { WorkoutPhotoQueryDto } from './dto/workout-photo-query.dto';
+
+import { ApiEndpoint } from '../../common/decorators/api-response.decorator';
+import { WorkoutLogDocs } from '../../common/docs/workout-log.docs';
 import { PaginationDto } from '../../common/dto/pagination.dto';
 import { requestLocale } from '../../common/i18n';
 import { ListWorkoutLogsQueryDto } from './dto/list-workout-logs.query.dto';
@@ -26,7 +41,10 @@ import { AddLogExerciseDto } from './dto/add-log-exercise.dto';
 import { AddLogSetDto } from './dto/add-log-set.dto';
 import { CompleteWorkoutDto } from './dto/complete-workout.dto';
 import { LogSetDto } from './dto/log-set.dto';
+import { PauseGapDto } from './dto/pause-gap.dto';
 import { RecordOneRepMaxDto } from './dto/record-one-rep-max.dto';
+import { SetWorkoutDurationDto } from './dto/set-workout-duration.dto';
+import { SetWorkoutVisibilityDto } from './dto/set-workout-visibility.dto';
 import { SkipLogExerciseDto } from './dto/skip-log-exercise.dto';
 import { SaveLogAsRoutineDto } from './dto/save-log-as-routine.dto';
 import { StartWorkoutDto } from './dto/start-workout.dto';
@@ -43,7 +61,10 @@ import { WorkoutLogService } from './workout-log.service';
 @UseGuards(AuthGuard('jwt'), RolesGuard)
 @Roles('USER')
 export class WorkoutLogController {
-  constructor(private readonly workoutLogService: WorkoutLogService) {}
+  constructor(
+    private readonly workoutLogService: WorkoutLogService,
+    private readonly workoutPhotoService: WorkoutPhotoService,
+  ) {}
 
   // ── Lifecycle ────────────────────────────────────────────────────
 
@@ -58,6 +79,7 @@ export class WorkoutLogController {
 
   @Patch('workout-logs/:id/sets/:setId')
   @Throttle({ default: { limit: 600, ttl: 3_600_000 } })
+  @ApiEndpoint({ ...WorkoutLogDocs.logSet, body: LogSetDto })
   async logSet(
     @Request() req: AuthenticatedRequest,
     @Param('id', ParseUUIDPipe) id: string,
@@ -176,6 +198,16 @@ export class WorkoutLogController {
     );
   }
 
+  /**
+   * History's memory card: a workout from a year, six, three or one month
+   * back and how far one of its lifts has come since. 200 with a `null`
+   * body when nothing has improved, the same as in-progress.
+   */
+  @Get('workout-logs/memory')
+  async memory(@Request() req: AuthenticatedRequest) {
+    return this.workoutLogService.memoryFor(req.user.id, requestLocale(req));
+  }
+
   /** Most-recent IN_PROGRESS log for the caller (or null). Powers the
    *  home page resume-tile. Returns 200 with `null` body, not 404. */
   @Get('workout-logs/in-progress')
@@ -184,17 +216,19 @@ export class WorkoutLogController {
   }
 
   /**
-   * Cancel a workout in progress and delete it outright. For the
-   * "changed my mind" case, where marking it SKIPPED would wrongly
-   * record a decision not to train.
+   * Delete a workout. One in progress is discarded ("changed my mind",
+   * where marking it SKIPPED would wrongly record a decision not to
+   * train); a finished one is deleted with its records and photo, and its
+   * plan day is open again.
    */
   @Delete('workout-logs/:id')
   @HttpCode(204)
-  async discard(
+  @ApiEndpoint(WorkoutLogDocs.remove)
+  async remove(
     @Request() req: AuthenticatedRequest,
     @Param('id', ParseUUIDPipe) id: string,
   ) {
-    await this.workoutLogService.discard(id, req.user.id);
+    await this.workoutLogService.remove(id, req.user.id);
   }
 
   /** Stop the clock while away; finishing or resuming ends the pause. */
@@ -216,6 +250,99 @@ export class WorkoutLogController {
     return this.workoutLogService.resume(id, req.user.id);
   }
 
+  /**
+   * "You were away 25 min. Pause the workout for that time?" Adds the
+   * time away to the paused time after the fact.
+   */
+  @Post('workout-logs/:id/pause-gap')
+  @HttpCode(200)
+  @ApiEndpoint({ ...WorkoutLogDocs.pauseGap, body: PauseGapDto })
+  async pauseGap(
+    @Request() req: AuthenticatedRequest,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: PauseGapDto,
+  ) {
+    return this.workoutLogService.pauseGap(id, req.user.id, dto.seconds);
+  }
+
+  /**
+   * The finished workout's one photo, replacing any before it. A JPEG the
+   * app re-encoded; the API strips its metadata again before storing it.
+   */
+  @Post('workout-logs/:id/photo')
+  @UseInterceptors(FileInterceptor('file', IMAGE_UPLOAD_OPTIONS))
+  @ApiConsumes('multipart/form-data')
+  @Throttle({ default: { limit: 30, ttl: 3_600_000 } })
+  async setPhoto(
+    @Request() req: AuthenticatedRequest,
+    @Param('id', ParseUUIDPipe) id: string,
+    @UploadedFile() file: Express.Multer.File | undefined,
+  ) {
+    assertImageFile(file);
+    return this.workoutPhotoService.setPhoto(id, req.user.id, file);
+  }
+
+  /**
+   * The owner's photo, streamed; there is no public link to it.
+   * `?size=thumb` is a small 3:4 crop for History's grid of them.
+   */
+  @Get('workout-logs/:id/photo')
+  async photo(
+    @Request() req: AuthenticatedRequest,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Query() query: WorkoutPhotoQueryDto,
+    @Res() res: Response,
+  ) {
+    sendPrivateImage(
+      res,
+      await this.workoutPhotoService.photoForOwner(id, req.user.id, query.size),
+    );
+  }
+
+  @Delete('workout-logs/:id/photo')
+  @HttpCode(204)
+  async removePhoto(
+    @Request() req: AuthenticatedRequest,
+    @Param('id', ParseUUIDPipe) id: string,
+  ) {
+    await this.workoutPhotoService.removePhoto(id, req.user.id);
+  }
+
+  /**
+   * Who besides the owner sees this workout. Owner only; the coach whose
+   * plan it came from sees it whatever the level.
+   */
+  @Patch('workout-logs/:id/visibility')
+  async setVisibility(
+    @Request() req: AuthenticatedRequest,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: SetWorkoutVisibilityDto,
+  ) {
+    return this.workoutLogService.setVisibility(
+      id,
+      req.user.id,
+      dto.visibility,
+    );
+  }
+
+  /**
+   * How long a finished workout really took, set by its owner (the share
+   * sheet's Adjust duration). History, Progress and the card follow it.
+   */
+  @Patch('workout-logs/:id/duration')
+  @ApiEndpoint({ ...WorkoutLogDocs.setDuration, body: SetWorkoutDurationDto })
+  async setDuration(
+    @Request() req: AuthenticatedRequest,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: SetWorkoutDurationDto,
+  ) {
+    return this.workoutLogService.setDuration(
+      id,
+      req.user.id,
+      dto.durationSeconds,
+    );
+  }
+
   @Post('workout-logs/:id/complete')
   async complete(
     @Request() req: AuthenticatedRequest,
@@ -232,7 +359,7 @@ export class WorkoutLogController {
     @Request() req: AuthenticatedRequest,
     @Query() query: ListWorkoutLogsQueryDto,
   ) {
-    return this.workoutLogService.listForUser(req.user.id, query);
+    return this.workoutLogService.listHistory(req.user.id, query);
   }
 
   /**
@@ -250,11 +377,17 @@ export class WorkoutLogController {
   }
 
   @Get('workout-logs/:id')
+  @ApiEndpoint(WorkoutLogDocs.get)
   async get(
     @Request() req: AuthenticatedRequest,
     @Param('id', ParseUUIDPipe) id: string,
   ) {
-    return this.workoutLogService.findById(id, req.user.id, requestLocale(req));
+    return this.workoutLogService.findById(
+      id,
+      req.user.id,
+      requestLocale(req),
+      { summary: true, personalNotes: true },
+    );
   }
 
   // ── 1RM ──────────────────────────────────────────────────────────

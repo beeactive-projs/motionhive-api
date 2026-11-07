@@ -6,7 +6,7 @@
  *     header with the MotionHive hex-icon + Poppins wordmark, a
  *     white content area, an optional honeycomb hero band for
  *     attention-grabbing emails, and a dark footer carrying the
- *     trader identity + policy links (see `COMPANY` / `LEGAL_URLS`).
+ *     trader identity + policy links (see `COMPANY` / `legalUrls`).
  *   - The helpers (`heading`, `paragraph`, `primaryButton`,
  *     `calloutBox`, `dataRow`, `personCard`,
  *     `eyebrow`, `chip`, …) keep individual templates declarative.
@@ -36,18 +36,29 @@ import { DEFAULT_LOCALE, Locale, translate } from '../../i18n';
 /**
  * Hosted PNG of the honey hex icon. Email clients (especially
  * Outlook + Gmail webmail) cannot render SVG reliably, so we serve
- * a transparent PNG. Update this URL when the brand updates the
- * uploaded asset; do NOT inline SVG.
+ * a PNG. It lives in the production picture bucket (put there by
+ * `scripts/move-media-to-r2.ts`), the same address for every
+ * environment. Update this URL when the brand updates the file; do NOT
+ * inline SVG.
  */
 export const LOGO_URL =
-  'https://res.cloudinary.com/dom4dfr1q/image/upload/v1778503491/logo-bg-navy-sm_1_ac6drj.png';
+  'https://img.motionhive.fit/motionhive/static/email/logo-bg-navy-sm.png';
 
 // ─────────────────────────────────────────────────────────────────────
 // LEGAL IDENTITY
 // ─────────────────────────────────────────────────────────────────────
 
-/** Marketing site root. Legal pages and the footer brand link hang off it. */
-export const WEBSITE_URL = 'https://motionhive.fit';
+/**
+ * Marketing site root, per environment: `PUBLIC_SITE_URL` (the dev API sets
+ * the dev site). Legal pages and the footer brand link hang off it. Read on
+ * every render, not at import, so it sees the env however it was loaded.
+ */
+export function websiteUrl(): string {
+  return (process.env.PUBLIC_SITE_URL || 'https://www.motionhive.fit').replace(
+    /\/+$/,
+    '',
+  );
+}
 
 /**
  * Trader identity printed in every email footer.
@@ -67,26 +78,22 @@ export const COMPANY = {
   contactEmail: 'contact@motionhive.fit',
 };
 
-/** Canonical legal-document URLs, linked from the footer of every email. */
-export const LEGAL_URLS = {
-  terms: `${WEBSITE_URL}/legal/terms-of-service`,
-  privacy: `${WEBSITE_URL}/legal/privacy-policy`,
-  cookies: `${WEBSITE_URL}/legal/cookie-policy`,
-};
-
 /**
- * The same documents in the reader's language. The marketing site serves
- * English at the root and every other language under `/<locale>` on the
- * same path.
+ * The legal documents linked from the footer of every email, in the
+ * reader's language. The marketing site serves English at the root and
+ * every other language under `/<locale>` on the same path.
  */
-function legalUrls(locale: Locale): typeof LEGAL_URLS {
-  if (locale === DEFAULT_LOCALE) return LEGAL_URLS;
-  const localized = (url: string) =>
-    url.replace(WEBSITE_URL, `${WEBSITE_URL}/${locale}`);
+function legalUrls(locale: Locale): {
+  terms: string;
+  privacy: string;
+  cookies: string;
+} {
+  const base =
+    locale === DEFAULT_LOCALE ? websiteUrl() : `${websiteUrl()}/${locale}`;
   return {
-    terms: localized(LEGAL_URLS.terms),
-    privacy: localized(LEGAL_URLS.privacy),
-    cookies: localized(LEGAL_URLS.cookies),
+    terms: `${base}/legal/terms-of-service`,
+    privacy: `${base}/legal/privacy-policy`,
+    cookies: `${base}/legal/cookie-policy`,
   };
 }
 
@@ -419,14 +426,18 @@ export function baseLayout(
       .mh-text-heading{color:#ffffff!important;}
       .mh-text-muted{color:#94a3b8!important;}
       .mh-line{border-color:#334155!important;}
-      .mh-callout-info{background-color:#1e293b!important;}
+      /* Boxes inside the card: their colour is inline on the cell, so the
+         class sits on that cell too, or the override never shows. */
+      .mh-callout{background-color:${COLORS.navy900}!important;}
+      .mh-callout-text{color:#e2e8f0!important;}
+      .mh-panel{background-color:${COLORS.navy900}!important;}
     }
   </style>
 </head>
 <body style="margin:0;padding:0;background-color:${COLORS.surface50};font-family:${FONT_BODY};" class="mh-shell">
   ${preheader ? `<div style="display:none;max-height:0px;overflow:hidden;mso-hide:all;">${preheader}&nbsp;&zwnj;&nbsp;&zwnj;&nbsp;&zwnj;&nbsp;&zwnj;&nbsp;&zwnj;&nbsp;&zwnj;&nbsp;&zwnj;&nbsp;&zwnj;</div>` : ''}
 
-  <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="background-color:${COLORS.surface50};">
+  <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" class="mh-shell" style="background-color:${COLORS.surface50};">
     <tr>
       <td align="center" style="padding:40px 16px;">
 
@@ -475,7 +486,7 @@ export function baseLayout(
               <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%">
                 <tr>
                   <td style="font-family:${FONT_DISPLAY};font-size:13px;line-height:1.5;color:${COLORS.white};font-weight:600;letter-spacing:-0.01em;">
-                    <a href="${WEBSITE_URL}" style="color:${COLORS.honey};text-decoration:none;">motionhive.fit</a>
+                    <a href="${websiteUrl()}" style="color:${COLORS.honey};text-decoration:none;">motionhive.fit</a>
                   </td>
                 </tr>
                 <tr>
@@ -673,10 +684,10 @@ export function calloutBox(kind: CalloutKind, text: string): string {
   };
   const s = map[kind];
   return `
-    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:0 0 20px;" class="mh-callout-info">
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:0 0 20px;">
       <tr>
-        <td style="background-color:${s.bg};border-radius:12px;padding:14px 18px;border-left:3px solid ${s.rule};">
-          <p style="margin:0;font-family:${FONT_BODY};font-size:14px;color:${s.fg};line-height:1.55;">${text}</p>
+        <td class="mh-callout" style="background-color:${s.bg};border-radius:12px;padding:14px 18px;border-left:3px solid ${s.rule};">
+          <p class="mh-callout-text" style="margin:0;font-family:${FONT_BODY};font-size:14px;color:${s.fg};line-height:1.55;">${text}</p>
         </td>
       </tr>
     </table>`;
@@ -763,20 +774,22 @@ export function personCard(params: {
 }): string {
   const { name, role, avatarUrl, meta } = params;
   const initial = (name || '?').trim().charAt(0).toUpperCase() || '?';
+  // A blocked image (spam folders, "load images" off) shows its alt text
+  // in the box, so the alt is the initial, styled like the initial tile.
   const avatar = avatarUrl
-    ? `<img src="${avatarUrl}" width="56" height="56" alt="" style="display:block;width:56px;height:56px;border-radius:16px;background-color:${COLORS.honey100};" />`
+    ? `<img src="${avatarUrl}" width="56" height="56" alt="${initial}" style="display:block;width:56px;height:56px;border-radius:16px;background-color:${COLORS.honey};font-family:${FONT_DISPLAY};font-size:22px;font-weight:600;color:${COLORS.navy900};line-height:56px;text-align:center;" />`
     : `<table role="presentation" cellpadding="0" cellspacing="0"><tr><td width="56" height="56" align="center" style="width:56px;height:56px;background-color:${COLORS.honey};border-radius:16px;font-family:${FONT_DISPLAY};font-size:22px;font-weight:600;color:${COLORS.navy900};line-height:56px;text-align:center;letter-spacing:-0.02em;">${initial}</td></tr></table>`;
 
   return `
-    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:0 0 22px;background-color:${COLORS.surface50};border-radius:16px;">
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:0 0 22px;">
       <tr>
-        <td style="padding:18px 20px;">
+        <td class="mh-panel" style="padding:18px 20px;background-color:${COLORS.surface50};border-radius:16px;">
           <table role="presentation" cellpadding="0" cellspacing="0">
             <tr>
               <td style="width:56px;vertical-align:middle;">${avatar}</td>
               <td style="padding-left:14px;vertical-align:middle;font-family:${FONT_BODY};">
-                <div style="font-family:${FONT_DISPLAY};font-size:17px;font-weight:600;color:${COLORS.navy900};letter-spacing:-0.01em;line-height:1.3;">${name}</div>
-                <div style="margin-top:3px;font-size:13px;color:${COLORS.ink2};line-height:1.4;">${role}${meta ? ` &middot; ${meta}` : ''}</div>
+                <div class="mh-text-heading" style="font-family:${FONT_DISPLAY};font-size:17px;font-weight:600;color:${COLORS.navy900};letter-spacing:-0.01em;line-height:1.3;">${name}</div>
+                <div class="mh-text-muted" style="margin-top:3px;font-size:13px;color:${COLORS.ink2};line-height:1.4;">${role}${meta ? ` &middot; ${meta}` : ''}</div>
               </td>
             </tr>
           </table>

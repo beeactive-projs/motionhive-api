@@ -11,7 +11,7 @@ import {
 import { AssignedSet } from './assigned-set.entity';
 import { PrescribedSet } from './prescribed-set.entity';
 import { LoggedExercise } from './logged-exercise.entity';
-import { ExerciseSetType } from './workout.enums';
+import { ExerciseSetType, RestSource } from './workout.enums';
 
 /**
  * One actually-performed set. All actual values are nullable —
@@ -89,8 +89,21 @@ export class LoggedSet extends Model {
   @Column({ type: DataType.SMALLINT, allowNull: true })
   declare rir: number | null;
 
+  /**
+   * The rest actually taken after this set, in seconds. Since migration
+   * 079 the logger writes what happened, with `restSource` saying how it
+   * was measured; on older rows (`restSource` null) it was the planned
+   * rest. The planned rest is worked out on read (`plannedRestSeconds`).
+   */
   @Column({ type: DataType.INTEGER, allowNull: true })
   declare restAfterSeconds: number | null;
+
+  /** How `restAfterSeconds` was measured; see `RestSource`. */
+  @Column({
+    type: DataType.ENUM(...Object.values(RestSource)),
+    allowNull: true,
+  })
+  declare restSource: RestSource | null;
 
   @Column({ type: DataType.BOOLEAN, allowNull: false, defaultValue: false })
   declare isCompleted: boolean;
@@ -109,4 +122,8 @@ export class LoggedSet extends Model {
 
   @BelongsTo(() => AssignedSet, 'assignedSetId')
   declare assignedSet: AssignedSet | null;
+
+  /** The routine's set this one was started from; its targets and rest. */
+  @BelongsTo(() => PrescribedSet, 'prescribedSetId')
+  declare prescribedSet: PrescribedSet | null;
 }

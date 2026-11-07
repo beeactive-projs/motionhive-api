@@ -203,6 +203,47 @@ export const AdminDocs = {
     auth: true,
     responses: [{ status: 200, description: 'Deleted' }],
   },
+  listWorkoutReports: {
+    summary: 'List workout reports',
+    description:
+      'Reports about workouts shown on profiles, open and in-review first. ' +
+      'Each row carries the reporter, the owner and the workout as the public ' +
+      'saw it (the photo as `hasPhoto`). ADMIN/SUPPORT+.',
+    auth: true,
+    responses: [{ status: 200, description: 'Paginated workout reports' }],
+  },
+  resolveWorkoutReport: {
+    summary: 'Resolve a workout report',
+    description:
+      'Moves a report on (OPEN to REVIEWING, RESOLVED or DISMISSED; REVIEWING ' +
+      'to RESOLVED or DISMISSED). With `takeDown` (RESOLVED only) the workout ' +
+      'leaves the profile and group cards, drops to Only me and can never be ' +
+      'Public again; its other open reports close too, and the owner is told ' +
+      'why. ADMIN+ (audited).',
+    auth: true,
+    responses: [
+      { status: 200, description: 'The updated report' },
+      {
+        status: 400,
+        description: 'Not an allowed move, or takeDown without RESOLVED',
+      },
+      { status: 404, description: 'No such report' },
+    ],
+  },
+  workoutReportPhoto: {
+    summary: "A reported workout's photo",
+    description:
+      'Streams the private photo of the reported workout (JPEG) for the ' +
+      'person reviewing the report. Every view is audited. ADMIN/SUPPORT+.',
+    auth: true,
+    responses: [
+      { status: 200, description: 'image/jpeg' },
+      {
+        status: 404,
+        description: 'No such report, or the workout has no photo',
+      },
+    ],
+  },
   listReviews: {
     summary: 'List reviews',
     description:

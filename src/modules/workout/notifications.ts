@@ -59,7 +59,8 @@ export function programAssignedForClient(input: {
  * list and never got wired.
  *
  * Only fires for assigned work. Freestyle training is the client's own
- * business unless they opt into sharing it (`shareOffPlan`).
+ * business; sharing it (`workout_log.visibility`) lets a coach open it,
+ * not get pinged about it.
  *
  * Click target: `/coaching/clients/:clientId` — that client's profile, which
  * lists their recent workouts and is where the replay opens from.
@@ -128,6 +129,55 @@ export function clientCompletedPlanForInstructor(input: {
     data: {
       screen: 'coaching/clients',
       entityId: input.clientId,
+    },
+  };
+}
+
+/**
+ * Staff took one of your workouts down after a report. Says which one and
+ * why, the way a removal has to be explained to the person it affects.
+ *
+ * Click target: that workout's own page, where it now shows as Only me.
+ */
+export function workoutTakenDownForOwner(input: {
+  ownerId: string;
+  workoutLogId: string;
+  workoutName: string;
+  category: string;
+}): NotifyParams {
+  return {
+    userId: input.ownerId,
+    type: NotificationType.WORKOUT_TAKEN_DOWN,
+    message: {
+      key: 'workout.workoutTakenDown',
+      params: { workout: input.workoutName, reason: input.category },
+    },
+    data: {
+      screen: 'user/workout-log',
+      entityId: input.workoutLogId,
+    },
+  };
+}
+
+/**
+ * A workout left open overnight was saved by the nightly job, at its last
+ * ticked set. Told once, in the app, with the way to fix its duration.
+ */
+export function workoutAutoSavedForOwner(input: {
+  ownerId: string;
+  workoutLogId: string;
+  workoutName: string;
+}): NotifyParams {
+  return {
+    userId: input.ownerId,
+    type: NotificationType.WORKOUT_AUTO_SAVED,
+    message: {
+      key: 'workout.workoutAutoSaved',
+      params: { workout: input.workoutName },
+    },
+    data: {
+      screen: 'user/workout-log',
+      entityId: input.workoutLogId,
     },
   };
 }

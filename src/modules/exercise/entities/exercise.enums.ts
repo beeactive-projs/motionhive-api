@@ -6,6 +6,11 @@ export const ExerciseSource = {
   System: 'SYSTEM', // seeded from a public dataset (free-exercise-db, etc.)
   Instructor: 'INSTRUCTOR', // user-created
   Admin: 'ADMIN', // created by MotionHive staff
+  /**
+   * Created by someone who is not a coach, for their own training
+   * (migration 079). Always PRIVATE: a CHECK keeps it that way.
+   */
+  User: 'USER',
 } as const;
 export type ExerciseSource =
   (typeof ExerciseSource)[keyof typeof ExerciseSource];

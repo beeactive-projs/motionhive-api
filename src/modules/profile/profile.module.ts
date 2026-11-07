@@ -9,6 +9,7 @@ import { SearchModule } from '../search/search.module';
 import { ReviewModule } from '../review/review.module';
 import { GroupModule } from '../group/group.module';
 import { VenueModule } from '../venue/venue.module';
+import { WorkoutModule } from '../workout/workout.module';
 
 /**
  * Profile Module
@@ -29,6 +30,8 @@ import { VenueModule } from '../venue/venue.module';
     ReviewModule,
     GroupModule,
     VenueModule,
+    // A person's profile lists the workouts they made visible.
+    WorkoutModule,
   ],
   controllers: [ProfileController],
   providers: [ProfileService],

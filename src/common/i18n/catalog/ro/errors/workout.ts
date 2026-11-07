@@ -74,8 +74,28 @@ export const workout: Catalog['errors']['workout'] = {
   cannotAddSetsNotInProgress:
     'Nu poți adăuga serii într-un antrenament care nu mai e în desfășurare.',
   sameExerciseSwap: 'Acesta e deja exercițiul pe care îl înregistrezi.',
-  cannotDiscardFinished:
-    'Poți anula doar un antrenament în desfășurare. Antrenamentele terminate rămân în istoricul tău.',
+  cannotCompleteNotInProgress:
+    'Poți termina doar un antrenament în desfășurare.',
+  photoNotFinished: 'Poți adăuga o fotografie după ce termini antrenamentul.',
+  photoJpegOnly: 'Trimite fotografia în format JPEG.',
+  photoNotFound: 'Antrenamentul nu are nicio fotografie.',
+  durationNotFinished:
+    'Poți corecta durata doar după ce termini antrenamentul.',
+  durationOutOfRange: 'Un antrenament durează între 1 minut și 6 ore.',
+  pauseGapTooLong:
+    'Antrenamentul nu rulează de atât timp, așa că nu poate fi pus pe pauză atât de mult.',
+
+  // ─── Reports and takedowns ───────────────────────────────────────
+  takenDownNoShare:
+    'Antrenamentul a fost scos în urma unei raportări, așa că nu poate fi distribuit.',
+  takenDownStaysPrivate:
+    'Antrenamentul a fost scos în urma unei raportări, așa că trebuie să rămână privat.',
+  cannotReportOwn: 'Nu îți poți raporta propriul antrenament.',
+  reportAlreadyOpen: 'Ai raportat deja acest antrenament. Ne uităm la el.',
+  reportNotFound: 'Raportul nu a fost găsit.',
+  reportTransition: 'Raportul nu mai poate trece în această stare.',
+  takeDownNeedsResolve:
+    'Scoaterea unui antrenament rezolvă raportul, așa că alege starea „rezolvat”.',
   alreadyInProgress:
     '{name} este încă în desfășurare. Termină-l sau renunță la el înainte să începi alt antrenament.',
 };

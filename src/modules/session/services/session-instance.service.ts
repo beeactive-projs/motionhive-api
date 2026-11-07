@@ -185,7 +185,7 @@ export class SessionInstanceService {
     const { rows, count } = await this.instanceModel.findAndCountAll({
       where,
       include,
-      order: [['startAt', 'ASC']],
+      order: [['startAt', query.order === 'desc' ? 'DESC' : 'ASC']],
       limit,
       offset: getOffset(page, limit),
       // distinct keeps the count correct when JOIN duplicates rows

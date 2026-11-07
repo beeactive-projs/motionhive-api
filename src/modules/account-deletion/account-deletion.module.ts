@@ -3,7 +3,7 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
 import { JwtModule } from '@nestjs/jwt';
 import { SequelizeModule } from '@nestjs/sequelize';
 
-import { CloudinaryService } from '../../common/services/cloudinary.service';
+import { MediaStorageService } from '../../common/services/media-storage.service';
 import { getJwtConfig } from '../../config/jwt.config';
 import { RefreshToken } from '../auth/entities/refresh-token.entity';
 import { ClientModule } from '../client/client.module';
@@ -78,7 +78,7 @@ import { AccountDeletion } from './entities/account-deletion.entity';
     AccountDeletionService,
     AccountWindDownService,
     AccountErasureService,
-    CloudinaryService,
+    MediaStorageService,
   ],
   exports: [AccountDeletionService, AccountErasureService],
 })

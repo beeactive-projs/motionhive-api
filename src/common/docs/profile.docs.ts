@@ -27,14 +27,15 @@ export const ProfileDocs = {
             userId: 'user-uuid',
             firstName: 'John',
             lastName: 'Doe',
-            avatarId: 'cloudinary-asset-id-or-null',
+            avatarId: 'storage-key-or-null',
             displayName: 'Coach John',
             bio: 'Certified HIIT and strength trainer with 8 years experience',
             specializations: ['hiit', 'strength', 'weight_loss'],
             yearsOfExperience: 8,
             isAcceptingClients: true,
+            isOnline: false,
             city: 'Bucharest',
-            country: 'RO',
+            countryCode: 'RO',
             socialLinks: {
               instagram: 'https://instagram.com/coachjohn',
               website: 'https://coachjohn.com',
@@ -42,6 +43,117 @@ export const ProfileDocs = {
           },
         ],
       },
+    ],
+  } as ApiEndpointOptions,
+
+  coachDirectory: {
+    summary: 'Coach directory',
+    description:
+      'Every active coach, paged, for the mobile Coaches screen. Authentication optional: a signed-in ' +
+      'caller is left out of the list, along with anyone on either side of a block with them. ' +
+      'Filters combine with AND: search (name, display name, bio, city, specializations; blind to ' +
+      'accents and case), city (contains), country (ISO 3166-1 alpha-2), accepting (taking new clients), ' +
+      'online (has an active online venue), requested (coaches the caller asked and is still waiting ' +
+      'on; nobody for a guest), specializations (repeat the param; any of them, matched ' +
+      'whole), minYears. sort: recommended (default: taking clients first, then experience, then name), ' +
+      'experience, name. page (default 1), limit (1 to 50, default 20). `isOnline` on each row is the ' +
+      'same online-venue test. `requestSent` is true when the caller asked that coach and the request ' +
+      'is still waiting (pending, not expired); always false for a guest. `isPublic` is not applied yet.',
+    auth: false,
+    responses: [
+      {
+        status: 200,
+        description: 'One page of coaches',
+        example: {
+          items: [
+            {
+              id: 'profile-uuid',
+              userId: 'user-uuid',
+              handle: 'coach-john',
+              firstName: 'John',
+              lastName: 'Doe',
+              avatarId: 'storage-key-or-null',
+              avatarUrl: null,
+              displayName: 'Coach John',
+              bio: 'Certified HIIT and strength trainer with 8 years experience',
+              specializations: ['HIIT', 'Strength'],
+              yearsOfExperience: 8,
+              isAcceptingClients: true,
+              isOnline: true,
+              city: 'Bucharest',
+              countryCode: 'RO',
+              socialLinks: null,
+              requestSent: false,
+            },
+          ],
+          total: 42,
+          page: 1,
+          pageSize: 20,
+        },
+      },
+      ApiStandardResponses.BadRequest,
+    ],
+  } as ApiEndpointOptions,
+
+  coachDirectoryFacets: {
+    summary: 'Coach directory facets',
+    description:
+      "The cities the directory's coaches are in and the specializations they list, each with how " +
+      'many coaches, the most common first (up to 40 of each). Counted over the whole directory before ' +
+      'any filter, with the same coaches left out as there. Entries are grouped blind to accents and ' +
+      'case and labelled with the spelling most coaches use. Authentication optional.',
+    auth: false,
+    responses: [
+      {
+        status: 200,
+        description: 'Cities and specializations with counts',
+        example: {
+          cities: [
+            { label: 'București', count: 12 },
+            { label: 'Cluj-Napoca', count: 7 },
+          ],
+          specializations: [
+            { label: 'Yoga', count: 9 },
+            { label: 'Forță', count: 6 },
+          ],
+        },
+      },
+    ],
+  } as ApiEndpointOptions,
+
+  suggestInstructors: {
+    summary: 'Suggested coaches',
+    description:
+      'Coaches suggested to the caller, for the "Suggested coaches" strips (new message, Home, Discover). ' +
+      'Only users who hold the INSTRUCTOR role. Leaves out the caller, coaches they already have or have a pending request with, coaches not ' +
+      'accepting clients, and anyone on either side of a block. Ranked same country first, then coaches ' +
+      'with a photo, then by years of experience. Each row carries a `reason` (only SUGGESTED today; ' +
+      'SPONSORED is planned). Clients must ignore a reason they do not know. ' +
+      'Query params: limit (1 to 20, default 10).',
+    auth: true,
+    responses: [
+      {
+        status: 200,
+        description: 'Suggested coaches (plain array, at most `limit`)',
+        example: [
+          {
+            id: 'profile-uuid',
+            userId: 'user-uuid',
+            handle: 'coach-john',
+            firstName: 'John',
+            lastName: 'Doe',
+            avatarUrl:
+              'https://img.motionhive.fit/motionhive/production/.../avatar.jpg',
+            displayName: 'Coach John',
+            specializations: ['hiit', 'strength'],
+            yearsOfExperience: 8,
+            city: 'Bucharest',
+            countryCode: 'RO',
+            reason: 'SUGGESTED',
+          },
+        ],
+      },
+      ApiStandardResponses.Unauthorized,
     ],
   } as ApiEndpointOptions,
 
@@ -62,7 +174,7 @@ export const ProfileDocs = {
           userId: 'user-uuid',
           firstName: 'John',
           lastName: 'Doe',
-          avatarId: 'cloudinary-asset-id-or-null',
+          avatarId: 'storage-key-or-null',
           displayName: 'Coach John',
           bio: 'Certified HIIT and strength trainer',
           specializations: ['hiit', 'strength'],
@@ -288,17 +400,113 @@ export const ProfileDocs = {
     ],
   } as ApiEndpointOptions,
 
+  getPublicUserWorkouts: {
+    summary: "List the workouts on a person's profile",
+    description:
+      'Completed workouts the viewer may see, newest first, as safe ' +
+      'summaries: name, date, duration, sets, records and the share ' +
+      'message. Never the private note, weights or the plan behind them. ' +
+      'Anonymous viewers and the owner get PUBLIC workouts (the owner sees ' +
+      'the page as the public would, or as their coaches would with ' +
+      '`previewAs=COACH`); an ACTIVE coach also gets COACHES_ONLY ones. ' +
+      'Paginated like every list.',
+    auth: false,
+    responses: [
+      { status: 200, description: 'Paginated workout summaries' },
+      { status: 404, description: 'No such handle, or the account is closing' },
+    ],
+  },
+
+  getPublicUserWorkout: {
+    summary: "Get one workout on a person's profile",
+    description:
+      'The same safe summary as one row of the list, for the workout page ' +
+      'and links to it. The same audience rule, `previewAs` included. A ' +
+      'workout the viewer cannot see there (another level, taken down, not ' +
+      'finished, someone else) is a 404, the same as one that does not ' +
+      'exist.',
+    auth: false,
+    responses: [
+      {
+        status: 200,
+        description: 'Workout summary',
+        example: {
+          id: 'workout-log-uuid',
+          name: 'Leg day',
+          completedAt: '2026-10-22T16:52:00.000Z',
+          durationSeconds: 3120,
+          setsCompleted: 18,
+          recordCount: 1,
+          shareCaption: 'First 100! Knee held up.',
+          hasPhoto: true,
+          photoVersion: 2,
+        },
+      },
+      { status: 404, description: 'No such handle, or no such workout on it' },
+    ],
+  },
+
+  getPublicUserWorkoutPhoto: {
+    summary: "Get the photo of a workout on a person's profile",
+    description:
+      'The JPEG bytes, streamed by the API (the stored asset has no public ' +
+      'address). The same rule as the workout: whoever may see it on the ' +
+      'profile sees its photo, `previewAs` included; anyone else, and a ' +
+      "workout with no photo, gets a 404. `v` is the summary's " +
+      '`photoVersion`, so a replaced photo is a new address. ' +
+      '`Cache-Control: private`.',
+    auth: false,
+    responses: [
+      { status: 200, description: 'image/jpeg' },
+      {
+        status: 404,
+        description: 'No such workout on the profile, or no photo',
+      },
+    ],
+  },
+
+  reportUserWorkout: {
+    summary: 'Report a workout on a profile',
+    description:
+      'Files a report about a workout this profile shows the caller, with the ' +
+      'categories of a message report and optional notes. Staff review it in ' +
+      'the admin queue and may take the workout down. A workout the caller ' +
+      'cannot see on the profile is a 404, so a report never confirms a ' +
+      'hidden one exists. Limited to 10 an hour.',
+    auth: true,
+    responses: [
+      { status: 201, description: 'Report filed: `{ id, status }`' },
+      {
+        status: 400,
+        description: 'Reporting your own workout, or a bad category',
+      },
+      { status: 404, description: 'No such handle, or no such workout on it' },
+      {
+        status: 409,
+        description: 'The caller already has an open report on it',
+      },
+    ],
+  },
+
   getPublicUserProfileByHandle: {
     summary: 'Get public profile by handle (any user)',
     description:
       'Resolves a `/@<handle>` profile for any user, not just instructors. ' +
-      'Anonymous viewers receive the PUBLIC slice; signed-in viewers may see ' +
-      'more — coaches connected to the profile owner see COACHES_ONLY fields, ' +
-      'and the owner themselves sees every field. Returns the audience tier ' +
-      'so the UI does not have to recompute it. Fields not visible to the ' +
-      'viewer are returned as `null`. `sharedGroups` lists the groups a ' +
-      'signed-in viewer and the owner are both active members of (empty for ' +
-      'a guest or the owner).',
+      'Anonymous viewers receive the PUBLIC slice; an ACTIVE coach of the ' +
+      'owner also sees COACHES_ONLY fields. The owner sees the page as the ' +
+      'public would, or as their coaches would with `previewAs=COACH` ' +
+      '(ignored for anyone else); `audience` still says OWNER so the UI can ' +
+      'offer editing. Fields not visible are returned as `null`. ' +
+      '`sharedGroups` lists the groups a signed-in viewer and the owner are ' +
+      'both active members of (empty for a guest or the owner). ' +
+      '`workoutCount` counts the workouts this viewer may see. ' +
+      "`yourCoachSince` is when the owner became the viewer's coach, and " +
+      'null unless that relationship is active now. ' +
+      '`pendingRequest` is a coaching request between the viewer and the ' +
+      'owner still waiting (pending, not expired) in either direction, with ' +
+      '`sentByYou` saying which: a viewer who asked a coach, or one a coach ' +
+      'invited. Null for a guest, the owner, or when there is none; any ' +
+      'pending request blocks a new one.',
     auth: false,
     responses: [
       {
@@ -310,7 +518,8 @@ export const ProfileDocs = {
           audience: 'PUBLIC',
           firstName: 'Jane',
           lastName: 'Doe',
-          avatarUrl: 'https://res.cloudinary.com/.../jane.jpg',
+          avatarUrl:
+            'https://img.motionhive.fit/motionhive/production/.../jane.jpg',
           email: null,
           phone: null,
           city: 'Cluj-Napoca',
@@ -323,6 +532,15 @@ export const ProfileDocs = {
           sharedGroups: [
             { id: 'group-uuid', name: 'Morning Crew', logoUrl: null },
           ],
+          workoutCount: 12,
+          yourCoachSince: null,
+          pendingRequest: {
+            id: 'request-uuid',
+            type: 'CLIENT_TO_INSTRUCTOR',
+            sentByYou: true,
+            createdAt: '2026-11-01T10:00:00.000Z',
+            expiresAt: '2026-12-01T10:00:00.000Z',
+          },
         },
       },
       ApiStandardResponses.NotFound,

@@ -5,6 +5,8 @@ import { WINSTON_MODULE_NEST_PROVIDER } from 'nest-winston';
 
 import { toLocale } from '../../../../common/i18n';
 import { EmailService } from '../../../../common/services/email.service';
+import { ClientImportService } from '../../../client/client-import.service';
+import { MessagingService } from '../../../messaging/messaging.service';
 import { PushDeliveryService } from '../../../notification/push/push-delivery.service';
 import { NotificationReceiptService } from '../../../notification/services/notification-receipt.service';
 import { JobHandler, MultiJobWorker } from '../../common/multi-job.worker';
@@ -36,6 +38,8 @@ export class NotificationsWorker extends MultiJobWorker {
     private readonly emailService: EmailService,
     private readonly pushDelivery: PushDeliveryService,
     private readonly receiptService: NotificationReceiptService,
+    private readonly messagingService: MessagingService,
+    private readonly clientImport: ClientImportService,
   ) {
     super(logger);
   }
@@ -45,6 +49,11 @@ export class NotificationsWorker extends MultiJobWorker {
       this.emailSend(payload as JobPayload<'notifications.email_send'>, ctx),
     push_send: (payload, ctx) =>
       this.pushSend(payload as JobPayload<'notifications.push_send'>, ctx),
+    client_invite_send: (payload, ctx) =>
+      this.clientInviteSend(
+        payload as JobPayload<'notifications.client_invite_send'>,
+        ctx,
+      ),
   };
 
   private async emailSend(
@@ -110,6 +119,7 @@ export class NotificationsWorker extends MultiJobWorker {
       body: payload.body,
       data: payload.data,
       collapseKey: payload.collapseKey,
+      badge: await this.badgeCount(payload.userId, ctx),
     });
 
     await this.pushDelivery.recordOutcome(payload.receiptId, outcome);
@@ -134,5 +144,64 @@ export class NotificationsWorker extends MultiJobWorker {
     ctx.log.log(
       `push not delivered user=${payload.userId} reason=${outcome.reason ?? 'unknown'} (not retrying)`,
     );
+  }
+
+  /**
+   * One invite from a client import. The row's `email_status` is the
+   * already-sent check (the service skips anything not QUEUED), so the
+   * only thing left here is retry policy: transient until the last
+   * attempt, which marks the row FAILED so the coach can see it.
+   */
+  private async clientInviteSend(
+    payload: JobPayload<'notifications.client_invite_send'>,
+    ctx: JobContext,
+  ): Promise<void> {
+    const outcome = await this.clientImport.sendInviteEmail(
+      payload.requestId,
+      toLocale(payload.locale),
+    );
+
+    if (outcome.status === 'sent') {
+      ctx.log.log(`client invite sent request=${payload.requestId}`);
+      return;
+    }
+    if (outcome.status === 'skipped') {
+      ctx.log.log(
+        `client invite skip (${outcome.reason}) request=${payload.requestId}`,
+      );
+      return;
+    }
+
+    if (ctx.attempt >= (ctx.job.opts.attempts ?? 1)) {
+      await this.clientImport.markInviteEmailFailed(payload.requestId);
+    }
+    throw new TemporaryError(`client invite send failed: ${outcome.reason}`);
+  }
+
+  /**
+   * The app icon number: unread messages plus unread bell notifications,
+   * the same two counts the app shows. Read at send time, not enqueue
+   * time, so a retried job carries the current number. A message never
+   * counts twice: its receipt has in-app off, which the bell count skips.
+   *
+   * A failed count sends the push without a number (iOS keeps the last
+   * one) rather than holding the alert back.
+   */
+  private async badgeCount(
+    userId: string,
+    ctx: JobContext,
+  ): Promise<number | undefined> {
+    try {
+      const [messages, notifications] = await Promise.all([
+        this.messagingService.getUnreadCount(userId),
+        this.receiptService.unreadCount(userId),
+      ]);
+      return messages.count + notifications;
+    } catch (err) {
+      ctx.log.warn(
+        `badge count failed user=${userId}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return undefined;
+    }
   }
 }

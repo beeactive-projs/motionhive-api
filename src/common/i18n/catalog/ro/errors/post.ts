@@ -3,9 +3,6 @@ import type { Catalog } from '../..';
 export const post: Catalog['errors']['post'] = {
   notFound: 'Nu am găsit postarea.',
   commentNotFound: 'Nu am găsit comentariul.',
-  noFile: 'Nu ai ales niciun fișier.',
-  imageOnly: 'Poți încărca doar imagini.',
-  imageTooLarge: 'Fișierul depășește {maxMb} MB.',
   duplicateGroups: 'Ai ales același grup de mai multe ori.',
   groupsNotFound: 'Nu am găsit unul sau mai multe dintre grupurile alese.',
   cannotPostNotMember:

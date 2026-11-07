@@ -134,6 +134,18 @@ export class InstructorProfile extends Model {
   })
   declare isPublic: boolean;
 
+  /**
+   * Whether a client may name this coach on a workout they share outside
+   * the app (the Full share card's coach line). Off until the coach says
+   * so (migration 078).
+   */
+  @Column({
+    type: DataType.BOOLEAN,
+    allowNull: false,
+    defaultValue: false,
+  })
+  declare allowClientMentions: boolean;
+
   @CreatedAt
   declare createdAt: Date;
 

@@ -101,6 +101,21 @@ export interface JobPayloads {
     collapseKey?: string;
   };
 
+  /**
+   * One invite email from a client import (`ClientImportService`).
+   *
+   * Carries only the request id: the worker reads the row at send time,
+   * so an invite cancelled or accepted in the meantime is skipped, and
+   * the row's `email_status` (QUEUED → SENT) is the post-failure retry
+   * guard, the job of the receipt check on `email_send`.
+   */
+  'notifications.client_invite_send': {
+    /** client_request id. The jobId adds the expiry, so a resend is a new job. */
+    requestId: string;
+    /** Language for someone with no account; one with an account reads theirs. */
+    locale?: Locale;
+  };
+
   // ── Sessions ────────────────────────────────────────────────────────
   // System-wide sweeps. No per-call payload — the worker queries the DB
   // for what's due at run time (resilient: a run catches up everything
@@ -121,8 +136,12 @@ export interface JobPayloads {
 
   /** Skip never-started assigned workouts whose scheduled date is in the past. */
   'workouts.auto_skip_past_workouts': { runKey?: string };
+  /** Close workouts left open and untouched for a day. */
+  'workouts.close_stale_workouts': { runKey?: string };
   /** Complete assignments whose workouts are all COMPLETED or SKIPPED. */
   'workouts.auto_complete_assignments': { runKey?: string };
+  /** Recompute `exercise.popularity_score` from logs and plans (search ranking). */
+  'workouts.recompute_exercise_popularity': { runKey?: string };
 
   // ── Payments ────────────────────────────────────────────────────────
   // System-wide reminder/maintenance sweeps; idempotent via notification
@@ -191,12 +210,15 @@ export type JobPayload<K extends keyof JobPayloads> = JobPayloads[K];
 export const ALL_JOB_NAMES: ReadonlyArray<keyof JobPayloads> = [
   'notifications.email_send',
   'notifications.push_send',
+  'notifications.client_invite_send',
   'sessions.reminder_dispatch',
   'sessions.status_transition',
   'sessions.generate_recurring',
   'sessions.cleanup_stale_participants',
   'workouts.auto_skip_past_workouts',
+  'workouts.close_stale_workouts',
   'workouts.auto_complete_assignments',
+  'workouts.recompute_exercise_popularity',
   'payments.invoice_due_soon',
   'payments.invoice_overdue',
   'payments.card_expiring',
@@ -219,13 +241,16 @@ export const ALL_JOB_NAMES: ReadonlyArray<keyof JobPayloads> = [
  * Jobs an operator may trigger on demand from the admin console. These
  * are the idempotent system sweeps — every one takes a `{ runKey? }`
  * payload and is safe to fire manually (a manual run just catches up
- * whatever is outstanding). The two payload-carrying jobs
- * (`notifications.email_send`, `payments.process_webhook`) are
- * deliberately excluded — they need real per-event data, not a sweep.
+ * whatever is outstanding). The payload-carrying jobs
+ * (`notifications.email_send`, `notifications.client_invite_send`,
+ * `payments.process_webhook`) are deliberately excluded — they need
+ * real per-event data, not a sweep.
  */
 export type TriggerableJobName = Exclude<
   keyof JobPayloads,
-  'notifications.email_send' | 'payments.process_webhook'
+  | 'notifications.email_send'
+  | 'notifications.client_invite_send'
+  | 'payments.process_webhook'
 >;
 
 /**
@@ -264,9 +289,19 @@ export const TRIGGERABLE_JOBS: ReadonlyArray<{
     schedule: 'daily 02:00',
   },
   {
+    key: 'workouts.close_stale_workouts',
+    queue: QueueName.Workouts,
+    schedule: 'daily 02:15',
+  },
+  {
     key: 'workouts.auto_complete_assignments',
     queue: QueueName.Workouts,
     schedule: 'daily 02:30',
+  },
+  {
+    key: 'workouts.recompute_exercise_popularity',
+    queue: QueueName.Workouts,
+    schedule: 'daily 02:45',
   },
   {
     key: 'payments.invoice_due_soon',

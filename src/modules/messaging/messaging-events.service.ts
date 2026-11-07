@@ -17,6 +17,7 @@ export type MessagingStreamEvent =
   | { type: 'conversation.read'; payload: ConversationReadPayload }
   | { type: 'conversation.muted'; payload: ConversationMutedPayload }
   | { type: 'conversation.unread'; payload: ConversationUnreadPayload }
+  | { type: 'conversation.cleared'; payload: ConversationClearedPayload }
   | { type: 'heartbeat'; payload: { ts: number } };
 
 export interface MessageCreatedPayload {
@@ -52,6 +53,13 @@ export interface ConversationUnreadPayload {
   conversationId: string;
   userId: string;
   markedUnread: boolean;
+}
+
+/** The reader deleted the chat for themselves. Sent to the reader only. */
+export interface ConversationClearedPayload {
+  conversationId: string;
+  userId: string;
+  clearedAt: string;
 }
 
 /**
@@ -171,6 +179,13 @@ export class MessagingEventsService implements OnModuleDestroy {
     payload: ConversationUnreadPayload,
   ): void {
     this.publish(recipientIds, { type: 'conversation.unread', payload });
+  }
+
+  emitConversationCleared(
+    recipientIds: string[],
+    payload: ConversationClearedPayload,
+  ): void {
+    this.publish(recipientIds, { type: 'conversation.cleared', payload });
   }
 
   // =========================================================================

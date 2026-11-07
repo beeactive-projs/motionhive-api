@@ -607,7 +607,9 @@ export class SearchIndexService {
     //   - setweight A  → title (highest boost)
     //   - setweight B  → tags + subtitle
     //   - setweight C  → body
-    //   - search_text  → lowercase concat for trigram similarity()
+    //   - search_text  → folded concat for trigram similarity()
+    // Everything goes through `fold_for_search` (unaccent + lower, 063), as
+    // the query does, so accents never decide a match (migration 077).
     //
     // Uses positional `bind` ($1, $2, …) instead of `replacements`
     // because Sequelize's replacement engine string-joins JS arrays and
@@ -623,12 +625,12 @@ export class SearchIndexService {
          $1, $2, $3, $4, $5, $6, $7,
          $8, $9, $10,
          (
-           setweight(to_tsvector('simple', coalesce($3::text, '')),    'A') ||
-           setweight(to_tsvector('simple', array_to_string(coalesce($6::text[], '{}'::text[]), ' ')), 'B') ||
-           setweight(to_tsvector('simple', coalesce($4::text, '')), 'B') ||
-           setweight(to_tsvector('simple', coalesce($5::text, '')),     'C')
+           setweight(to_tsvector('simple', fold_for_search(coalesce($3::text, ''))),    'A') ||
+           setweight(to_tsvector('simple', fold_for_search(array_to_string(coalesce($6::text[], '{}'::text[]), ' '))), 'B') ||
+           setweight(to_tsvector('simple', fold_for_search(coalesce($4::text, ''))), 'B') ||
+           setweight(to_tsvector('simple', fold_for_search(coalesce($5::text, ''))),     'C')
          ),
-         lower(
+         fold_for_search(
            coalesce($3::text, '') || ' ' ||
            coalesce($4::text, '') || ' ' ||
            coalesce($5::text, '') || ' ' ||

@@ -3,6 +3,7 @@ import {
   Controller,
   Delete,
   Get,
+  HttpCode,
   Param,
   ParseUUIDPipe,
   Patch,
@@ -21,9 +22,14 @@ import { ClientDocs } from '../../common/docs/client.docs';
 import { FilterSettingsDto } from '../../common/dto/filter-settings.dto';
 import { RolesGuard } from '../../common/guards/roles.guard';
 import type { AuthenticatedRequest } from '../../common/types/authenticated-request';
+import { ClientImportService } from './client-import.service';
 import { ClientService } from './client.service';
 import { AcceptByTokenDto } from './dto/accept-by-token.dto';
 import { CreateClientRequestDto } from './dto/create-client-request.dto';
+import {
+  ImportClientsDto,
+  PreviewImportEmailDto,
+} from './dto/import-clients.dto';
 import { ListClientsDto } from './dto/list-clients.dto';
 import { RequestClientDto } from './dto/request-client.dto';
 import { UpdateClientDto } from './dto/update-client.dto';
@@ -37,9 +43,13 @@ import { InstructorClientStatus } from './entities/instructor-client.entity';
  * - GET    /clients                                  → List my clients (INSTRUCTOR)
  * - GET    /clients/my-instructors                   → List instructors I'm a client of
  * - GET    /clients/requests/pending                 → List my pending incoming requests
+ * - GET    /clients/requests/pending/count           → Count my pending requests, by who acts
  * - GET    /clients/invites                          → List pending email-only invitations (INSTRUCTOR)
  * - GET    /clients/invite/:token                    → Get invite details by token (PUBLIC)
  * - POST   /clients/invite                           → Send client invitation (INSTRUCTOR)
+ * - POST   /clients/import/preview                   → What an import would do, nothing saved (INSTRUCTOR)
+ * - POST   /clients/import                           → Import a client list as invitations (INSTRUCTOR)
+ * - POST   /clients/import/email-preview             → The import's invite email, rendered (INSTRUCTOR)
  * - POST   /clients/request/:instructorId            → Request to become a client
  * - POST   /clients/requests/:requestId/accept       → Accept a request
  * - POST   /clients/requests/:requestId/decline      → Decline a request
@@ -51,7 +61,10 @@ import { InstructorClientStatus } from './entities/instructor-client.entity';
 @ApiTags('Clients')
 @Controller('clients')
 export class ClientController {
-  constructor(private readonly clientService: ClientService) {}
+  constructor(
+    private readonly clientService: ClientService,
+    private readonly clientImportService: ClientImportService,
+  ) {}
 
   /**
    * POST /clients/filter
@@ -161,18 +174,22 @@ export class ClientController {
 
   /**
    * GET /clients/requests/pending/count
-   * Counts pending client_request rows in BOTH directions — invitations the
-   * instructor sent and requests addressed to them — and reports each
-   * separately alongside the total.
+   * Counts the caller's pending client_request rows by who has to act:
+   * `incoming` (trainees asking this coach), `outgoing` (invitations this
+   * coach sent), `invitations` (coaches inviting the caller), plus `count`
+   * (incoming + outgoing, the old total).
    *
    * The total alone read as a contradiction next to
    * `GET /clients/requests/pending`, which lists incoming rows only: one
    * outgoing invitation made the badge say "1 pending" over an empty list.
    * Same numbers, but now the shape says which is which.
+   *
+   * Open to any signed-in account, like `requests/pending`: every count is
+   * scoped to the caller, and a trainee needs `invitations` for the dot that
+   * says a coach invited them. Coach-only, it answered every trainee 403.
    */
   @Get('requests/pending/count')
-  @UseGuards(AuthGuard('jwt'), RolesGuard)
-  @Roles('INSTRUCTOR', 'ADMIN', 'SUPER_ADMIN')
+  @UseGuards(AuthGuard('jwt'))
   @ApiEndpoint(ClientDocs.getPendingRequestsCount)
   getPendingRequestsCount(@Request() req: AuthenticatedRequest) {
     return this.clientService.getPendingRequestsCount(req.user.id);
@@ -224,6 +241,64 @@ export class ClientController {
     @Body() dto: CreateClientRequestDto,
   ) {
     return this.clientService.sendInvitationFromDto(req.user.id, dto);
+  }
+
+  /**
+   * POST /clients/import/preview
+   * Dry run of an import: what each row would do, nothing saved or sent.
+   * Its own, looser bucket than the import itself: the review screen
+   * asks again after every fix the coach makes.
+   */
+  @Post('import/preview')
+  @HttpCode(200)
+  @Throttle({ default: { limit: 60, ttl: 3600000 } })
+  @UseGuards(AuthGuard('jwt'), RolesGuard)
+  @Roles('INSTRUCTOR', 'ADMIN', 'SUPER_ADMIN')
+  @ApiEndpoint({ ...ClientDocs.previewImport, body: ImportClientsDto })
+  async previewImport(
+    @Request() req: AuthenticatedRequest,
+    @Body() dto: ImportClientsDto,
+  ) {
+    return this.clientImportService.importClients(req.user.id, dto, true);
+  }
+
+  /**
+   * POST /clients/import/email-preview
+   * The invite email the import will send, rendered with the coach's own
+   * name and message. Nothing is saved or sent.
+   */
+  @Post('import/email-preview')
+  @HttpCode(200)
+  @Throttle({ default: { limit: 60, ttl: 3600000 } })
+  @UseGuards(AuthGuard('jwt'), RolesGuard)
+  @Roles('INSTRUCTOR', 'ADMIN', 'SUPER_ADMIN')
+  @ApiEndpoint({
+    ...ClientDocs.previewImportEmail,
+    body: PreviewImportEmailDto,
+  })
+  async previewImportEmail(
+    @Request() req: AuthenticatedRequest,
+    @Body() dto: PreviewImportEmailDto,
+  ) {
+    return this.clientImportService.previewInviteEmail(req.user.id, dto);
+  }
+
+  /**
+   * POST /clients/import
+   * Import a client list: one invitation per new person, emails queued.
+   * One request for the whole list, because `POST /clients/invite` is
+   * 10 an hour and a loop of it would not be atomic either.
+   */
+  @Post('import')
+  @Throttle({ default: { limit: 10, ttl: 3600000 } })
+  @UseGuards(AuthGuard('jwt'), RolesGuard)
+  @Roles('INSTRUCTOR', 'ADMIN', 'SUPER_ADMIN')
+  @ApiEndpoint({ ...ClientDocs.importClients, body: ImportClientsDto })
+  async importClients(
+    @Request() req: AuthenticatedRequest,
+    @Body() dto: ImportClientsDto,
+  ) {
+    return this.clientImportService.importClients(req.user.id, dto, false);
   }
 
   /**

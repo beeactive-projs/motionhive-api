@@ -177,6 +177,9 @@ export class SearchService {
     //   2. similarity(search_text, q) > 0.3 — fuzzy fallback for typos
     //      ('yga' -> 'yoga'); threshold kept tight to cut weak noise
     // and a single composite score that combines both signals.
+    // Both sides are folded (`fold_for_search`, unaccent + lower): the
+    // index stores folded text (migration 077), and the term is folded
+    // here, so "bucuresti" finds "București" and "Brașov" finds "Brasov".
 
     // Sequelize's `:name` replacement does NOT auto-expand arrays into
     // an IN-list (it stringifies as 'a, b'). So we build per-value
@@ -199,8 +202,8 @@ export class SearchService {
           subtitle,
           avatar_url,
           (
-            COALESCE(ts_rank_cd(search_vector, to_tsquery('simple', :tsQuery)), 0) * 1.0
-            + similarity(search_text, :q) * 0.4
+            COALESCE(ts_rank_cd(search_vector, to_tsquery('simple', fold_for_search(:tsQuery))), 0) * 1.0
+            + similarity(search_text, fold_for_search(:q)) * 0.4
           ) * (
             CASE entity_type
               WHEN 'instructor' THEN 1.5
@@ -214,15 +217,15 @@ export class SearchService {
           ROW_NUMBER() OVER (
             PARTITION BY entity_type
             ORDER BY (
-              COALESCE(ts_rank_cd(search_vector, to_tsquery('simple', :tsQuery)), 0)
-              + similarity(search_text, :q) * 0.4
+              COALESCE(ts_rank_cd(search_vector, to_tsquery('simple', fold_for_search(:tsQuery))), 0)
+              + similarity(search_text, fold_for_search(:q)) * 0.4
             ) DESC
           ) AS rn
         FROM search_doc
         WHERE entity_type IN (${typePlaceholders})
           AND (
-            search_vector @@ to_tsquery('simple', :tsQuery)
-            OR similarity(search_text, :q) > 0.3
+            search_vector @@ to_tsquery('simple', fold_for_search(:tsQuery))
+            OR similarity(search_text, fold_for_search(:q)) > 0.3
           )
           AND (
             is_public = TRUE

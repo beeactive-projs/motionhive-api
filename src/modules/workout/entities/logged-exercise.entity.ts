@@ -102,6 +102,10 @@ export class LoggedExercise extends Model {
   @BelongsTo(() => AssignedExercise, 'assignedExerciseId')
   declare assignedExercise: AssignedExercise | null;
 
+  /** The routine's exercise this one was started from, with its note. */
+  @BelongsTo(() => PrescribedExercise, 'prescribedExerciseId')
+  declare prescribedExercise: PrescribedExercise | null;
+
   @HasMany(() => LoggedSet)
   declare sets: LoggedSet[];
 }

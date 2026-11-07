@@ -13,7 +13,7 @@ import { CreateBlogPostDto } from './dto/create-blog-post.dto';
 import { UpdateBlogPostDto } from './dto/update-blog-post.dto';
 import { BlogQueryDto } from './dto/blog-query.dto';
 import { User, USER_SAFE_ATTRIBUTES } from '../user/entities/user.entity';
-import { CloudinaryService } from '../../common/services/cloudinary.service';
+import { MediaStorageService } from '../../common/services/media-storage.service';
 import {
   buildPaginatedResponse,
   PaginatedResponse,
@@ -72,7 +72,7 @@ export interface BlogPostResponse {
   /** Computed: first letter of first + last name. */
   authorInitials: string;
   /**
-   * Cloudinary URL of the registered author's profile picture, when
+   * Public URL of the registered author's profile picture, when
    * present. Null for guest-authored posts (no user join) and for
    * registered authors who haven't uploaded an avatar. The FE falls
    * back to the initials circle when this is null.
@@ -111,7 +111,7 @@ export class BlogService {
   constructor(
     @InjectModel(BlogPost)
     private readonly blogPostModel: typeof BlogPost,
-    private readonly cloudinaryService: CloudinaryService,
+    private readonly mediaStorage: MediaStorageService,
     private readonly configService: ConfigService,
   ) {}
 
@@ -121,7 +121,7 @@ export class BlogService {
    * - Registered author: `firstName lastName` from the joined user.
    *   Initials = first letter of each. Falls back to email-local-part
    *   if names are missing (rare but possible if user sets blanks).
-   *   `authorAvatarUrl` is the user's uploaded Cloudinary URL when
+   *   `authorAvatarUrl` is the user's uploaded picture URL when
    *   present; null otherwise (the FE falls back to initials).
    * - Guest contributor: byline = `guestAuthorName`. Initials derived
    *   from the byline (first letters of the first two words).
@@ -394,7 +394,7 @@ export class BlogService {
   ): Promise<BlogPostResponse> {
     const post = await this.findEntityById(id);
     this.assertCanEdit(post, auth);
-    // Snapshot the previous cover so we can purge it from Cloudinary
+    // Snapshot the previous cover so we can purge it from storage
     // after the DB write commits, if the writer replaces (or clears) it.
     const previousCover = post.coverImage;
     // Snapshot publish state to decide whether the live (prerendered) site
@@ -431,13 +431,13 @@ export class BlogService {
 
     await post.update(patch);
 
-    // Cover replaced or cleared → purge the previous Cloudinary asset.
+    // Cover replaced or cleared → purge the previous file.
     if (
       dto.coverImage !== undefined &&
       previousCover &&
       previousCover !== dto.coverImage
     ) {
-      await this.cloudinaryService.deleteByUrl(previousCover);
+      await this.mediaStorage.deleteByUrl(previousCover);
     }
 
     // Reload to pick up any author-relation change after attribution
@@ -459,7 +459,7 @@ export class BlogService {
     const slug = post.slug;
     await post.destroy();
     if (cover) {
-      await this.cloudinaryService.deleteByUrl(cover);
+      await this.mediaStorage.deleteByUrl(cover);
     }
     // A published post was live on the site → rebuild to drop its page.
     if (wasPublished) {
@@ -468,7 +468,7 @@ export class BlogService {
   }
 
   async uploadImage(file: Express.Multer.File, authorId: string) {
-    return this.cloudinaryService.uploadImage(file, {
+    return this.mediaStorage.uploadImage(file, {
       resource: 'blog',
       userId: authorId,
     });

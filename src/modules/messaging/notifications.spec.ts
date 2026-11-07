@@ -11,6 +11,7 @@ describe('messaging notifications builder — Stage 6', () => {
     preview: 'See you at 5pm',
     suppressEmail: false,
     hidePreviewInEmail: false,
+    muted: false,
   };
 
   it('builds a MESSAGE_RECEIVED NotifyParams with correct deep-link', () => {
@@ -92,5 +93,23 @@ describe('messaging notifications builder — Stage 6', () => {
     expect(
       messageReceived({ ...base, suppressEmail: true }).channelOverride,
     ).toEqual({ in_app: false, email: false });
+  });
+
+  it('leaves push to the preference, and turns it off for a muted conversation', () => {
+    // Not in the override at all, so a user who switched message push
+    // off in their settings stays off.
+    expect(messageReceived(base).channelOverride).not.toHaveProperty('push');
+    expect(messageReceived({ ...base, muted: true }).channelOverride).toEqual({
+      in_app: false,
+      email: true,
+      push: false,
+    });
+  });
+
+  it('groups pushes by conversation without deduplicating them', () => {
+    const p = messageReceived(base);
+    expect(p.collapseKey).toBe('conversation.conv-id');
+    // A fingerprint would swallow the second message in the thread.
+    expect(p.fingerprint).toBeUndefined();
   });
 });

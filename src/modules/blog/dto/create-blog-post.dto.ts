@@ -54,7 +54,9 @@ export class CreateBlogPostDto {
   @MaxLength(50)
   category: string;
 
-  @ApiPropertyOptional({ example: 'https://res.cloudinary.com/...' })
+  @ApiPropertyOptional({
+    example: 'https://img.motionhive.fit/motionhive/production/...',
+  })
   @IsString()
   @IsOptional()
   @MaxLength(500)

@@ -59,6 +59,7 @@ const MOBILE_ROUTED = [
   'coaching/payments',
   'profile/invoices',
   'profile',
+  'user/workout-log',
 ];
 const MOBILE_NAMED = [
   'groups',

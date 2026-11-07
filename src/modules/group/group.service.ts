@@ -12,7 +12,7 @@ import { Op, Transaction, WhereOptions, literal } from 'sequelize';
 import { buildPaginatedResponse } from '../../common/dto/pagination.dto';
 import { CryptoService } from '../../common/services/crypto.service';
 import { EmailService } from '../../common/services/email.service';
-import { buildSearchTerm } from '../../common/utils/search.utils';
+import { foldedContains } from '../../common/utils/search.utils';
 import { InstructorClient } from '../client/entities/instructor-client.entity';
 import { NotificationService } from '../notification/notification.service';
 import {
@@ -258,26 +258,39 @@ export class GroupService {
   }
 
   /**
-   * Get all groups the user belongs to (active memberships only)
+   * Get all groups the user belongs to (active memberships only), each with
+   * the user's role in it: whether they may post somewhere depends on it
+   * (staff always may), and the membership rows are loaded here anyway.
    */
-  async getMyGroups(userId: string): Promise<Group[]> {
+  async getMyGroups(
+    userId: string,
+  ): Promise<Array<Group & { myRole: GroupMemberRole }>> {
     const memberships = await this.memberModel.findAll({
       where: { userId, leftAt: null },
-      attributes: ['groupId'],
+      attributes: ['groupId', 'role'],
     });
 
-    const groupIds = memberships.map((m) => m.groupId);
+    const roleByGroup = new Map(memberships.map((m) => [m.groupId, m.role]));
+    const groupIds = [...roleByGroup.keys()];
     if (groupIds.length === 0) return [];
 
     const memberCountLiteral = literal(
       '(SELECT COUNT(*)::int FROM group_member WHERE group_member.group_id = "Group"."id" AND group_member.left_at IS NULL)',
     );
 
-    return this.groupModel.findAll({
+    const groups = await this.groupModel.findAll({
       where: { id: { [Op.in]: groupIds }, isActive: true },
       attributes: {
         include: [[memberCountLiteral, 'memberCount']],
       },
+    });
+    // Plain rows: an instance drops an added property when serialised.
+    return groups.map((group) => {
+      const plain = group.get({ plain: true }) as Group & {
+        myRole: GroupMemberRole;
+      };
+      plain.myRole = roleByGroup.get(group.id) ?? GroupMemberRole.MEMBER;
+      return plain;
     });
   }
   /**
@@ -740,7 +753,7 @@ export class GroupService {
             ),
           )
         : null;
-    const term = dto.search ? buildSearchTerm(dto.search) : null;
+    const esc = (value: string) => sequelize.escape(value);
 
     // When the caller is signed in, exclude any group where they're an
     // active member. Member groups belong in "Your groups", not Discover.
@@ -752,25 +765,29 @@ export class GroupService {
         ]
       : [];
 
-    const andClauses = [...(tagConditions ?? []), ...excludeMemberClause];
+    const andClauses = [
+      ...(tagConditions ?? []),
+      ...excludeMemberClause,
+      // Folded and escaped like the search below: "brasov" finds "Brașov".
+      ...(dto.city ? [foldedContains('"Group"."city"', dto.city, esc)] : []),
+    ];
 
     const where: WhereOptions<Group> = {
       isPublic: true,
       isActive: true,
       joinPolicy: { [Op.ne]: JoinPolicy.INVITE_ONLY },
-      ...(dto.city && { city: { [Op.iLike]: `%${dto.city}%` } }),
       ...(dto.country && { country: dto.country }),
       ...(andClauses.length > 0 && { [Op.and]: andClauses }),
       // Accent- and case-blind, as exercise and program search are: someone
       // typing "forta" is looking for "Forță", and most phones type without
       // diacritics. `fold_for_search` is the shared unaccent + lower (063).
-      ...(term && {
+      ...(dto.search && {
         [Op.or]: [
-          literal(
-            `fold_for_search("Group"."name") LIKE fold_for_search(${sequelize.escape(term)})`,
-          ),
-          literal(
-            `fold_for_search(COALESCE("Group"."description", '')) LIKE fold_for_search(${sequelize.escape(term)})`,
+          foldedContains('"Group"."name"', dto.search, esc),
+          foldedContains(
+            `COALESCE("Group"."description", '')`,
+            dto.search,
+            esc,
           ),
         ],
       }),

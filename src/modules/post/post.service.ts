@@ -12,7 +12,7 @@ import { Op, Transaction, UniqueConstraintError } from 'sequelize';
 import { Post, PostApprovalState } from './entities/post.entity';
 import { PostComment } from './entities/post-comment.entity';
 import { PostReaction } from './entities/post-reaction.entity';
-import { CloudinaryService } from '../../common/services/cloudinary.service';
+import { MediaStorageService } from '../../common/services/media-storage.service';
 import { apiError } from '../../common/i18n';
 import { Group, MemberPostPolicy } from '../group/entities/group.entity';
 import {
@@ -20,6 +20,7 @@ import {
   GroupMemberRole,
 } from '../group/entities/group-member.entity';
 import { GroupService } from '../group/group.service';
+import { PostWorkout, WorkoutLogService } from '../workout/workout-log.service';
 import { User, USER_SAFE_ATTRIBUTES } from '../user/entities/user.entity';
 import { CreatePostDto } from './dto/create-post.dto';
 import { UpdatePostDto } from './dto/update-post.dto';
@@ -39,13 +40,7 @@ import {
   postRejectedForAuthor,
   postNewComment,
 } from './notifications';
-
-/**
- * Tombstone written into post/comment `content` when the row is
- * soft-deleted, so the plaintext doesn't sit in the DB after delete.
- * The row itself is kept (paranoid: true) for audit; the body is gone.
- */
-const DELETED_CONTENT_TOMBSTONE = '[deleted]';
+import { DELETED_CONTENT_TOMBSTONE, destroyPostFully } from './post-deletion';
 
 export interface FeedItem {
   id: string;
@@ -79,6 +74,8 @@ export interface FeedItem {
    * this `null` because the group is implicit in the URL.
    */
   group?: { id: string; name: string; logoUrl: string | null } | null;
+  /** A shared workout as a card; null for an ordinary post or a deleted workout. */
+  workout: PostWorkout | null;
 }
 
 /** Per-group spec used inside the create-post fan-out. */
@@ -101,8 +98,9 @@ export class PostService {
     @InjectModel(User) private readonly userModel: typeof User,
     private readonly searchIndexService: SearchIndexService,
     private readonly notificationService: NotificationService,
-    private readonly cloudinaryService: CloudinaryService,
+    private readonly mediaStorage: MediaStorageService,
     private readonly groupService: GroupService,
+    private readonly workoutLogService: WorkoutLogService,
     @Inject(WINSTON_MODULE_NEST_PROVIDER)
     private readonly logger: LoggerService,
   ) {}
@@ -120,7 +118,7 @@ export class PostService {
    *
    * Image handling: the FE uploads each image once via /posts/upload-image
    * (staging URL). For each created post we clone every staging asset
-   * into the post's per-post Cloudinary folder. After all posts are
+   * into the post's own storage folder. After all posts are
    * created we delete the original staging asset so it doesn't linger.
    */
   async createPost(
@@ -133,7 +131,10 @@ export class PostService {
     }
 
     if (dto.mediaUrls?.length) {
-      this.cloudinaryService.assertOwnedUrls(dto.mediaUrls);
+      this.mediaStorage.assertOwnedUrls(dto.mediaUrls);
+    }
+    if (dto.workoutLogId) {
+      await this.workoutLogService.assertShareable(dto.workoutLogId, authorId);
     }
 
     const specs = await this.resolveCreateSpecs(authorId, uniqueGroupIds);
@@ -144,8 +145,9 @@ export class PostService {
       const post = await this.createSinglePost(
         authorId,
         spec,
-        dto.content,
+        dto.content ?? '',
         stagingUrls,
+        dto.workoutLogId ?? null,
       );
       created.push(post);
     }
@@ -164,7 +166,7 @@ export class PostService {
     );
     await this.notifyAuthorsForPending(authorId, created);
     await Promise.all(
-      stagingUrls.map((url) => this.cloudinaryService.deleteByUrl(url)),
+      stagingUrls.map((url) => this.mediaStorage.deleteByUrl(url)),
     );
 
     const items = await Promise.all(
@@ -238,7 +240,7 @@ export class PostService {
   /**
    * Insert one post + clone every staging asset into the post's folder.
    * Uses a transaction for the DB writes; image clones happen after
-   * commit so a Cloudinary slowdown can't tie up a Postgres connection.
+   * commit so a storage slowdown can't tie up a Postgres connection.
    * If image cloning fails partway through, the post still exists with
    * the assets that were cloned so far — the user retries by editing.
    */
@@ -247,6 +249,7 @@ export class PostService {
     spec: GroupCreateSpec,
     content: string,
     stagingUrls: string[],
+    workoutLogId: string | null,
   ): Promise<Post> {
     const sequelize = this.postModel.sequelize!;
     const tx = await sequelize.transaction();
@@ -259,6 +262,7 @@ export class PostService {
           approvalState: spec.approvalState,
           content,
           mediaUrls: null,
+          workoutLogId,
         },
         { transaction: tx },
       );
@@ -272,7 +276,7 @@ export class PostService {
       const cloned: string[] = [];
       for (const src of stagingUrls) {
         try {
-          const { url } = await this.cloudinaryService.cloneByUrl(src, {
+          const { url } = await this.mediaStorage.cloneByUrl(src, {
             resource: 'posts',
             userId: authorId,
             postId: post.id,
@@ -525,7 +529,7 @@ export class PostService {
     }
 
     if (dto.mediaUrls?.length) {
-      this.cloudinaryService.assertOwnedUrls(dto.mediaUrls);
+      this.mediaStorage.assertOwnedUrls(dto.mediaUrls);
     }
 
     const previousMedia = post.mediaUrls ?? [];
@@ -541,7 +545,7 @@ export class PostService {
       const nextSet = new Set(dto.mediaUrls);
       const orphaned = previousMedia.filter((url) => !nextSet.has(url));
       await Promise.all(
-        orphaned.map((url) => this.cloudinaryService.deleteByUrl(url)),
+        orphaned.map((url) => this.mediaStorage.deleteByUrl(url)),
       );
     }
 
@@ -815,31 +819,18 @@ export class PostService {
   // SHARED HELPERS
   // =====================================================================
 
-  /**
-   * Inside-transaction cleanup when a post is being soft-deleted in full.
-   *
-   * Tombstones plaintext on the post, cascades the same treatment to its
-   * comments (paranoid: true on PostComment), and hard-deletes its
-   * reactions (paranoid: false — no content to retain).
-   */
-  private async destroyPostFully(post: Post, tx: Transaction): Promise<void> {
-    const postId = post.id;
-    await this.commentModel.update(
-      { content: DELETED_CONTENT_TOMBSTONE },
-      { where: { postId }, transaction: tx },
+  /** Inside-transaction cleanup when a post is soft-deleted in full. */
+  private destroyPostFully(post: Post, tx: Transaction): Promise<void> {
+    return destroyPostFully(
+      post,
+      { comment: this.commentModel, reaction: this.reactionModel },
+      tx,
     );
-    await this.commentModel.destroy({ where: { postId }, transaction: tx });
-    await this.reactionModel.destroy({ where: { postId }, transaction: tx });
-    await post.update(
-      { content: DELETED_CONTENT_TOMBSTONE, mediaUrls: null },
-      { transaction: tx },
-    );
-    await post.destroy({ transaction: tx });
   }
 
   /**
    * After-commit side effects when a post is fully deleted: drop search
-   * index entry and purge the post's Cloudinary folder. Failures are
+   * index entry and purge the post's storage folder. Failures are
    * logged but never surfaced — the user-visible state already changed.
    */
   private async afterPostFullyDeleted(
@@ -851,11 +842,10 @@ export class PostService {
       .removeIfExists('post', postId)
       .catch(() => undefined);
     if (mediaUrls.length > 0) {
-      // Nuke the post's folder in one shot — covers every media URL plus
-      // any orphaned versions (e.g. transformations Cloudinary may have
-      // generated). Falls back to per-URL delete if the folder API fails.
-      const folder = this.cloudinaryService.buildPostFolder(authorId, postId);
-      await this.cloudinaryService.deleteFolder(folder);
+      // Clear the post's folder in one pass: every media URL plus any
+      // copy an interrupted edit left behind.
+      const folder = this.mediaStorage.buildPostFolder(authorId, postId);
+      await this.mediaStorage.deleteFolder(folder);
     }
   }
 
@@ -945,11 +935,15 @@ export class PostService {
     options: { includeGroup?: boolean } = {},
   ): Promise<FeedItem[]> {
     const postIds = posts.map((p) => p.id);
-    const [reactionCounts, commentCounts, myReactions] = await Promise.all([
-      this.countReactionsByPost(postIds),
-      this.countCommentsByPost(postIds),
-      this.fetchMyReactions(userId, postIds),
-    ]);
+    const [reactionCounts, commentCounts, myReactions, workouts] =
+      await Promise.all([
+        this.countReactionsByPost(postIds),
+        this.countCommentsByPost(postIds),
+        this.fetchMyReactions(userId, postIds),
+        this.workoutLogService.summariesForPosts(
+          posts.flatMap((p) => (p.workoutLogId ? [p.workoutLogId] : [])),
+        ),
+      ]);
 
     return posts.map((post) => ({
       id: post.id,
@@ -964,6 +958,7 @@ export class PostService {
       reactionCount: reactionCounts.get(post.id) ?? 0,
       commentCount: commentCounts.get(post.id) ?? 0,
       myReaction: myReactions.get(post.id) ?? null,
+      workout: (post.workoutLogId && workouts.get(post.workoutLogId)) || null,
       author: post.author
         ? {
             id: post.author.id,
@@ -999,11 +994,15 @@ export class PostService {
     });
     if (!post) throw new NotFoundException(apiError('post.notFound'));
 
-    const [reactionCount, commentCount, myReaction] = await Promise.all([
-      this.reactionModel.count({ where: { postId } }),
-      this.commentModel.count({ where: { postId } }),
-      this.reactionModel.findOne({ where: { postId, authorId: userId } }),
-    ]);
+    const [reactionCount, commentCount, myReaction, workouts] =
+      await Promise.all([
+        this.reactionModel.count({ where: { postId } }),
+        this.commentModel.count({ where: { postId } }),
+        this.reactionModel.findOne({ where: { postId, authorId: userId } }),
+        this.workoutLogService.summariesForPosts(
+          post.workoutLogId ? [post.workoutLogId] : [],
+        ),
+      ]);
 
     return {
       id: post.id,
@@ -1018,6 +1017,7 @@ export class PostService {
       reactionCount,
       commentCount,
       myReaction: myReaction?.reactionType ?? null,
+      workout: (post.workoutLogId && workouts.get(post.workoutLogId)) || null,
       author: post.author
         ? {
             id: post.author.id,

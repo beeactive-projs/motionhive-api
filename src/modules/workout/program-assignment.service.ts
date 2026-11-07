@@ -17,7 +17,7 @@ import {
   translatedText,
   type Locale,
 } from '../../common/i18n';
-import { escapeLikeWildcards } from '../../common/utils/search.utils';
+import { foldedContains } from '../../common/utils/search.utils';
 
 import {
   InstructorClient,
@@ -54,6 +54,29 @@ import {
   clientCompletedPlanForInstructor,
   programAssignedForClient,
 } from './notifications';
+import { plannedSetRest } from './planned-rest';
+
+/**
+ * A plan that can still finish. A waiting one too: if its workouts were
+ * all done before it started, it is done. A paused one is left alone,
+ * since the coach paused it and resuming is theirs to do.
+ */
+const FINISHABLE_STATUSES = [
+  ProgramAssignmentStatus.Active,
+  ProgramAssignmentStatus.Pending,
+];
+
+/**
+ * Beyond `id` because finishing a plan notifies the coach, and the
+ * builder needs who to tell and what to call it. Selecting only `id`
+ * left those undefined and the notification silently skipped its guard.
+ */
+const PLAN_COMPLETION_ATTRIBUTES = [
+  'id',
+  'instructorId',
+  'clientId',
+  'programNameSnapshot',
+];
 
 /**
  * ProgramAssignmentService — the copy-on-assign headliner (locked
@@ -281,34 +304,46 @@ export class ProgramAssignmentService {
   }
 
   /**
-   * `iLike` on the denormalised name, so search needs no join. Escapes
-   * the LIKE wildcards — otherwise a stray `%` matches everything and a
-   * `_` silently matches any character.
+   * On the denormalised name, so search needs no join. Blind to accents
+   * and case on both sides, LIKE wildcards escaped (`foldedContains`):
+   * "forta" finds "Forță", and a stray `%` is only a `%`.
    */
   private _searchWhere(search?: string) {
     const term = search?.trim();
     if (!term) return {};
-    const escaped = escapeLikeWildcards(term);
-    return { programNameSnapshot: { [Op.iLike]: `%${escaped}%` } };
+    const esc = (value: string) => this.sequelize.escape(value);
+    return {
+      [Op.and]: [
+        foldedContains(
+          '"ProgramAssignment"."program_name_snapshot"',
+          term,
+          esc,
+        ),
+      ],
+    };
   }
 
   /**
-   * Same escaping as `_searchWhere`, widened to the eager-loaded coach.
-   *
-   * The `$instructor.x$` form is resolved as raw SQL against the joined
-   * table, so it needs the *column* name, not the model attribute —
-   * `underscored: true` means `firstName` is `first_name` on disk and
-   * the camelCase form errors with "column does not exist".
+   * Same as `_searchWhere`, widened to the eager-loaded coach's full name,
+   * so "ana pop" finds Ana Pop. The joined table is the include's alias,
+   * `instructor`, with its on-disk column names.
    */
   private _clientSearchWhere(search?: string) {
     const term = search?.trim();
     if (!term) return {};
-    const like = `%${escapeLikeWildcards(term)}%`;
+    const esc = (value: string) => this.sequelize.escape(value);
     return {
       [Op.or]: [
-        { programNameSnapshot: { [Op.iLike]: like } },
-        { '$instructor.first_name$': { [Op.iLike]: like } },
-        { '$instructor.last_name$': { [Op.iLike]: like } },
+        foldedContains(
+          '"ProgramAssignment"."program_name_snapshot"',
+          term,
+          esc,
+        ),
+        foldedContains(
+          `concat_ws(' ', "instructor"."first_name", "instructor"."last_name")`,
+          term,
+          esc,
+        ),
       ],
     };
   }
@@ -572,7 +607,9 @@ export class ProgramAssignmentService {
               targetDistanceMeters: ps.targetDistanceMeters,
               targetRpe: ps.targetRpe,
               targetRir: ps.targetRir,
-              restAfterSeconds: ps.restAfterSeconds,
+              // The copy carries the planned rest whole: the routine's
+              // "Rest between sets" fills a set that has none.
+              restAfterSeconds: plannedSetRest(ps, source, program),
               tempo: ps.tempo,
               notes: ps.notes,
             })),
@@ -780,6 +817,7 @@ export class ProgramAssignmentService {
     // counts toward "this workout is done with" the same way COMPLETED
     // does — the client moves past it either way.
     await this._recomputeProgressForSkip(aw.programAssignmentId);
+    await this.completeIfFinished(aw.programAssignmentId);
     return aw;
   }
 
@@ -853,16 +891,6 @@ export class ProgramAssignmentService {
   }
 
   /**
-   * Complete ACTIVE assignments whose every workout is now COMPLETED or
-   * SKIPPED. Driven by the daily `workouts.auto_complete_assignments`
-   * cron (scheduled after auto-skip so a same-day skip can finish the
-   * plan). Skeleton assignments (zero workouts) never auto-complete.
-   *
-   * Idempotent: the `status = ACTIVE` guard on the UPDATE means a re-run
-   * is a no-op — which is also what keeps the notification from firing
-   * twice, since only the run that actually flips the row notifies.
-   */
-  /**
    * Best-effort, and deliberately outside the status update: a coach's
    * notification is not worth failing a completed plan over.
    */
@@ -899,63 +927,23 @@ export class ProgramAssignmentService {
     }
   }
 
+  /**
+   * Finish every plan whose workouts are all done or skipped. The
+   * backstop for `completeIfFinished`, which runs the moment the last
+   * one is finished or skipped; this catches the rest (auto-skips, a
+   * missed call). Driven by the nightly `workouts.auto_complete_assignments`
+   * (after auto-skip, so a same-day skip can finish the plan). Skeleton
+   * assignments (zero workouts) never auto-complete.
+   */
   async autoCompleteAssignments(): Promise<{ completed: number }> {
-    const active = await this.assignmentModel.findAll({
-      where: { status: ProgramAssignmentStatus.Active },
-      // Beyond `id` because finishing a plan now notifies the coach, and
-      // the builder needs who to tell and what to call it. Selecting only
-      // `id` left those undefined and the notification silently skipped
-      // its own guard.
-      attributes: ['id', 'instructorId', 'clientId', 'programNameSnapshot'],
+    const open = await this.assignmentModel.findAll({
+      where: { status: { [Op.in]: FINISHABLE_STATUSES } },
+      attributes: PLAN_COMPLETION_ATTRIBUTES,
     });
 
     let completed = 0;
-    for (const assignment of active) {
-      const [total, outstanding] = await Promise.all([
-        this.assignedWorkoutModel.count({
-          where: { programAssignmentId: assignment.id },
-        }),
-        this.assignedWorkoutModel.count({
-          where: {
-            programAssignmentId: assignment.id,
-            [Op.or]: [
-              { status: null },
-              {
-                status: {
-                  [Op.in]: [
-                    WorkoutLogStatus.InProgress,
-                    WorkoutLogStatus.Abandoned,
-                  ],
-                },
-              },
-            ],
-          },
-        }),
-      ]);
-      if (total === 0 || outstanding > 0) continue;
-
-      // A COMPLETED assignment is 100% done by definition — pin the
-      // percent too so the state is self-consistent regardless of how
-      // the workouts reached done/skipped.
-      const [n] = await this.assignmentModel.update(
-        {
-          status: ProgramAssignmentStatus.Completed,
-          completionPercent: 100,
-        },
-        {
-          where: {
-            id: assignment.id,
-            status: ProgramAssignmentStatus.Active,
-          },
-        },
-      );
-      completed += n;
-
-      // Only the run that actually flipped the row notifies (n === 0 on
-      // a re-run), so the cron staying idempotent keeps this to one.
-      if (n > 0) {
-        await this._notifyInstructorOfPlanCompletion(assignment, total);
-      }
+    for (const assignment of open) {
+      if (await this._completeIfFinished(assignment)) completed += 1;
     }
 
     if (completed > 0) {
@@ -965,6 +953,73 @@ export class ProgramAssignmentService {
       );
     }
     return { completed };
+  }
+
+  /**
+   * Finish this plan now if nothing is left in it, so a plan done today
+   * moves to past plans today rather than after the night's sweep. Call
+   * it after the change that finished the last workout has committed.
+   */
+  async completeIfFinished(assignmentId: string): Promise<boolean> {
+    const assignment = await this.assignmentModel.findOne({
+      where: {
+        id: assignmentId,
+        status: { [Op.in]: FINISHABLE_STATUSES },
+      },
+      attributes: PLAN_COMPLETION_ATTRIBUTES,
+    });
+    return assignment ? this._completeIfFinished(assignment) : false;
+  }
+
+  /**
+   * COMPLETED at 100% when every workout is done or skipped, and the
+   * coach told. Idempotent: the status guard on the UPDATE flips a row
+   * once, so only that call notifies and a re-run is a no-op.
+   */
+  private async _completeIfFinished(
+    assignment: ProgramAssignment,
+  ): Promise<boolean> {
+    const [total, outstanding] = await Promise.all([
+      this.assignedWorkoutModel.count({
+        where: { programAssignmentId: assignment.id },
+      }),
+      this.assignedWorkoutModel.count({
+        where: {
+          programAssignmentId: assignment.id,
+          [Op.or]: [
+            { status: null },
+            {
+              status: {
+                [Op.in]: [
+                  WorkoutLogStatus.InProgress,
+                  WorkoutLogStatus.Abandoned,
+                ],
+              },
+            },
+          ],
+        },
+      }),
+    ]);
+    if (total === 0 || outstanding > 0) return false;
+
+    // A COMPLETED assignment is 100% done by definition — pin the
+    // percent too so the state is self-consistent regardless of how
+    // the workouts reached done/skipped.
+    const [n] = await this.assignmentModel.update(
+      {
+        status: ProgramAssignmentStatus.Completed,
+        completionPercent: 100,
+      },
+      {
+        where: {
+          id: assignment.id,
+          status: { [Op.in]: FINISHABLE_STATUSES },
+        },
+      },
+    );
+    if (n === 0) return false;
+    await this._notifyInstructorOfPlanCompletion(assignment, total);
+    return true;
   }
 
   private async _recomputeProgressForSkip(
@@ -1069,7 +1124,9 @@ export class ProgramAssignmentService {
             targetDistanceMeters: ps.targetDistanceMeters,
             targetRpe: ps.targetRpe,
             targetRir: ps.targetRir,
-            restAfterSeconds: ps.restAfterSeconds,
+            // The client's copy carries the planned rest whole: the day's
+            // rest, else the program's default, fills a set that has none.
+            restAfterSeconds: plannedSetRest(ps, pw, program),
             tempo: ps.tempo,
             notes: ps.notes,
           })),

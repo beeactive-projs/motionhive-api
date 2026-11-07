@@ -472,13 +472,13 @@ async function backfillSearchIndex(client: Client): Promise<void> {
       TRUE,
       e.owner_id,
       e.thumbnail_url,
-      setweight(to_tsvector('simple', coalesce(e.name, '')), 'A') ||
-        setweight(to_tsvector('simple', coalesce(
+      setweight(to_tsvector('simple', fold_for_search(coalesce(e.name, ''))), 'A') ||
+        setweight(to_tsvector('simple', fold_for_search(coalesce(
           (SELECT string_agg(m.common_name, ', ' ORDER BY m.display_order)
              FROM exercise_muscle em JOIN muscle m ON m.id = em.muscle_id
-            WHERE em.exercise_id = e.id AND em.role = 'PRIMARY'), '')), 'B') ||
-        setweight(to_tsvector('simple', coalesce(NULLIF(CONCAT_WS(E'\\n\\n', e.description, e.instructions), ''), '')), 'C'),
-      lower(
+            WHERE em.exercise_id = e.id AND em.role = 'PRIMARY'), ''))), 'B') ||
+        setweight(to_tsvector('simple', fold_for_search(coalesce(NULLIF(CONCAT_WS(E'\\n\\n', e.description, e.instructions), ''), ''))), 'C'),
+      fold_for_search(
         coalesce(e.name, '') || ' ' ||
         coalesce(
           (SELECT string_agg(m.common_name, ', ' ORDER BY m.display_order)

@@ -19,7 +19,10 @@ import { PrescribedSet } from './entities/prescribed-set.entity';
 import { Program } from './entities/program.entity';
 import { ProgramWorkout } from './entities/program-workout.entity';
 import { ProgramService } from './program.service';
-import { ProgramLibrary } from './dto/list-programs.query.dto';
+import {
+  ProgramArchivedFilter,
+  ProgramLibrary,
+} from './dto/list-programs.query.dto';
 import { ProgramSource } from './entities/workout.enums';
 import { ProgramAssignment } from './entities/program-assignment.entity';
 import {
@@ -63,6 +66,7 @@ describe('ProgramService (smoke — not exhaustive)', () => {
     findOne: jest.fn(),
     findAll: jest.fn(),
     create: jest.fn(),
+    update: jest.fn(),
     destroy: jest.fn(),
     max: jest.fn(),
   };
@@ -70,6 +74,7 @@ describe('ProgramService (smoke — not exhaustive)', () => {
     findByPk: jest.fn(),
     findOne: jest.fn(),
     create: jest.fn(),
+    update: jest.fn(),
     bulkCreate: jest.fn(),
     max: jest.fn(),
   };
@@ -1316,6 +1321,371 @@ describe('ProgramService (smoke — not exhaustive)', () => {
       await expect(service.deleteWeek('p-1', 0, 'me')).rejects.toThrow(
         BadRequestException,
       );
+    });
+  });
+
+  // ─── Workouts round 2: rest defaults, supersets, archive ─────────
+
+  describe('rest defaults in the builders', () => {
+    it("saves a routine's rest between sets", async () => {
+      programModel.create.mockResolvedValueOnce({ id: 'p-new' });
+
+      await service.create(
+        { name: 'Upper A', defaultRestSeconds: 120 },
+        'me',
+        false,
+      );
+
+      expect(programModel.create).toHaveBeenCalledWith(
+        expect.objectContaining({ defaultRestSeconds: 120 }),
+      );
+    });
+
+    it('changes it, and clears it with null', async () => {
+      const update = jest.fn().mockResolvedValue(undefined);
+      programModel.findByPk.mockResolvedValue({
+        id: 'p-1',
+        ownerId: 'me',
+        isSingleWorkout: true,
+        update,
+      });
+
+      await service.update('p-1', { defaultRestSeconds: 90 }, 'me');
+      await service.update('p-1', { defaultRestSeconds: null }, 'me');
+      await service.update('p-1', { name: 'Upper B' }, 'me');
+
+      expect(
+        (update.mock.calls as unknown[][]).map(([fields]) => fields),
+      ).toEqual([
+        { defaultRestSeconds: 90 },
+        { defaultRestSeconds: null },
+        { name: 'Upper B' },
+      ]);
+      programModel.findByPk.mockReset();
+    });
+
+    it("sets a coach day's rest", async () => {
+      const update = jest.fn().mockResolvedValue(undefined);
+      programModel.findByPk.mockResolvedValueOnce({ id: 'p-1', ownerId: 'me' });
+      workoutModel.findOne.mockResolvedValueOnce({
+        id: 'w-1',
+        weekIndex: 0,
+        dayIndex: 0,
+        update,
+      });
+
+      await service.updateWorkout(
+        'p-1',
+        'w-1',
+        { defaultRestSeconds: 150 },
+        'me',
+      );
+
+      expect(update).toHaveBeenCalledWith({ defaultRestSeconds: 150 });
+    });
+
+    it("writes an exercise's rest to every one of its sets, in one transaction", async () => {
+      const update = jest.fn().mockResolvedValue(undefined);
+      programModel.findByPk.mockResolvedValueOnce({ id: 'p-1', ownerId: 'me' });
+      workoutModel.findOne.mockResolvedValueOnce({
+        id: 'w-1',
+        programId: 'p-1',
+      });
+      prescribedExerciseModel.findOne.mockResolvedValueOnce({
+        id: 'e-1',
+        exerciseId: 'ex-1',
+        supersetGroupId: null,
+        update,
+      });
+
+      await service.updateExercise(
+        'p-1',
+        'w-1',
+        'e-1',
+        { restAfterSeconds: 120 },
+        'me',
+      );
+
+      expect(prescribedSetModel.update).toHaveBeenCalledWith(
+        { restAfterSeconds: 120 },
+        { where: { prescribedExerciseId: 'e-1' }, transaction: fakeTx },
+      );
+      expect(update).toHaveBeenCalledWith({}, { transaction: fakeTx });
+    });
+
+    it('carries the rest onto the empty sets added with an exercise', async () => {
+      programModel.findByPk.mockResolvedValueOnce({ id: 'p-1', ownerId: 'me' });
+      workoutModel.findOne.mockResolvedValueOnce({
+        id: 'w-1',
+        programId: 'p-1',
+      });
+      exerciseModel.findByPk.mockResolvedValueOnce({
+        id: 'ex-1',
+        source: ExerciseSource.System,
+        visibility: ExerciseVisibility.Public,
+        ownerId: null,
+      });
+      prescribedExerciseModel.max.mockResolvedValueOnce(null);
+      prescribedExerciseModel.create.mockResolvedValueOnce({ id: 'e-new' });
+
+      await service.addExercise(
+        'p-1',
+        'w-1',
+        { exerciseId: 'ex-1', defaultSets: 2, restAfterSeconds: 90 },
+        'me',
+      );
+
+      const [rows] = prescribedSetModel.bulkCreate.mock.calls[0] as [
+        { restAfterSeconds: number | null }[],
+      ];
+      expect(rows.map((r) => r.restAfterSeconds)).toEqual([90, 90]);
+    });
+
+    it('copies the rest defaults with a duplicate', async () => {
+      programModel.findOne.mockResolvedValueOnce({
+        id: 'p-src',
+        ownerId: 'me',
+        source: 'USER',
+        name: 'Upper A',
+        defaultRestSeconds: 90,
+        workouts: [
+          {
+            name: 'Day 1',
+            weekIndex: 0,
+            dayIndex: 0,
+            sequenceNumber: 0,
+            defaultRestSeconds: 150,
+            exercises: [],
+          },
+        ],
+      });
+      programModel.create.mockResolvedValueOnce({ id: 'p-copy' });
+      workoutModel.create.mockResolvedValueOnce({ id: 'w-copy' });
+
+      await service.duplicateForUser('p-src', 'me');
+
+      expect(programModel.create).toHaveBeenCalledWith(
+        expect.objectContaining({ defaultRestSeconds: 90 }),
+        expect.anything(),
+      );
+      expect(workoutModel.create).toHaveBeenCalledWith(
+        expect.objectContaining({ defaultRestSeconds: 150 }),
+        expect.anything(),
+      );
+    });
+
+    it("copies a day's rest with copy-week", async () => {
+      programModel.findByPk.mockResolvedValueOnce({ id: 'p-1', ownerId: 'me' });
+      workoutModel.findAll
+        .mockResolvedValueOnce([
+          {
+            name: 'Day 1',
+            notes: null,
+            dayIndex: 0,
+            sequenceNumber: 0,
+            phase: null,
+            estimatedDurationMinutes: 45,
+            defaultRestSeconds: 120,
+            exercises: [],
+          },
+        ])
+        .mockResolvedValueOnce([]); // resequence
+      workoutModel.create.mockResolvedValueOnce({ id: 'w-new' });
+
+      await service.copyWeek('p-1', { fromWeekIndex: 0, toWeekIndex: 1 }, 'me');
+
+      expect(workoutModel.create).toHaveBeenCalledWith(
+        expect.objectContaining({ weekIndex: 1, defaultRestSeconds: 120 }),
+        { transaction: fakeTx },
+      );
+    });
+  });
+
+  describe('supersets in the builders', () => {
+    const slot = (fields: Record<string, unknown> = {}) => ({
+      id: 'e-a1',
+      exerciseId: 'ex-1',
+      supersetGroupId: 1,
+      update: jest.fn().mockResolvedValue(undefined),
+      destroy: jest.fn().mockResolvedValue(undefined),
+      ...fields,
+    });
+    const loadSlot = (row: ReturnType<typeof slot>) => {
+      programModel.findByPk.mockResolvedValueOnce({ id: 'p-1', ownerId: 'me' });
+      workoutModel.findOne.mockResolvedValueOnce({
+        id: 'w-1',
+        programId: 'p-1',
+      });
+      prescribedExerciseModel.findOne.mockResolvedValueOnce(row);
+    };
+
+    it('unlinks with null, and the partner left alone goes standalone too', async () => {
+      const row = slot();
+      loadSlot(row);
+      prescribedExerciseModel.findAll.mockResolvedValueOnce([{ id: 'e-a2' }]);
+
+      await service.updateExercise(
+        'p-1',
+        'w-1',
+        'e-a1',
+        { supersetGroupId: null },
+        'me',
+      );
+
+      expect(row.update).toHaveBeenCalledWith(
+        { supersetGroupId: null },
+        { transaction: fakeTx },
+      );
+      expect(prescribedExerciseModel.findAll).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { programWorkoutId: 'w-1', supersetGroupId: 1 },
+          transaction: fakeTx,
+        }),
+      );
+      expect(prescribedExerciseModel.update).toHaveBeenCalledWith(
+        { supersetGroupId: null },
+        { where: { id: 'e-a2' }, transaction: fakeTx },
+      );
+    });
+
+    it('links two exercises without touching any other group', async () => {
+      const row = slot({ supersetGroupId: null });
+      loadSlot(row);
+
+      await service.updateExercise(
+        'p-1',
+        'w-1',
+        'e-a1',
+        { supersetGroupId: 2 },
+        'me',
+      );
+
+      expect(row.update).toHaveBeenCalledWith(
+        { supersetGroupId: 2 },
+        { transaction: fakeTx },
+      );
+      expect(prescribedExerciseModel.findAll).not.toHaveBeenCalled();
+    });
+
+    it('removing one of a pair unlinks the other, in the same transaction', async () => {
+      const row = slot();
+      loadSlot(row);
+      prescribedExerciseModel.findAll.mockResolvedValueOnce([{ id: 'e-a2' }]);
+
+      await service.removeExercise('p-1', 'w-1', 'e-a1', 'me');
+
+      expect(row.destroy).toHaveBeenCalledWith({ transaction: fakeTx });
+      expect(prescribedExerciseModel.update).toHaveBeenCalledWith(
+        { supersetGroupId: null },
+        { where: { id: 'e-a2' }, transaction: fakeTx },
+      );
+    });
+
+    it('keeps a superset of three linked when one is removed', async () => {
+      loadSlot(slot());
+      prescribedExerciseModel.findAll.mockResolvedValueOnce([
+        { id: 'e-a2' },
+        { id: 'e-a3' },
+      ]);
+
+      await service.removeExercise('p-1', 'w-1', 'e-a1', 'me');
+
+      expect(prescribedExerciseModel.update).not.toHaveBeenCalled();
+    });
+
+    it('writes a superset the routine editor left with one exercise as standalone', async () => {
+      programModel.create.mockResolvedValueOnce({ id: 'p-new' });
+      workoutModel.create.mockResolvedValueOnce({ id: 'w-new' });
+      prescribedExerciseModel.create.mockResolvedValue({ id: 'e-x' });
+
+      await service.create(
+        {
+          name: 'Upper A',
+          isSingleWorkout: true,
+          exercises: [
+            { exerciseId: 'ex-1', supersetGroupId: 1 },
+            { exerciseId: 'ex-2', supersetGroupId: 1 },
+            { exerciseId: 'ex-3', supersetGroupId: 2 },
+          ],
+        },
+        'me',
+        false,
+      );
+
+      const groups = prescribedExerciseModel.create.mock.calls.map(
+        ([row]) => (row as { supersetGroupId: number | null }).supersetGroupId,
+      );
+      expect(groups).toEqual([1, 1, null]);
+      prescribedExerciseModel.create.mockReset();
+    });
+  });
+
+  describe('list — archived routines and programs', () => {
+    const statusOf = () =>
+      (
+        (programModel.findAndCountAll.mock.calls as unknown[][])[0][0] as {
+          where: Record<string, unknown>;
+        }
+      ).where['status'];
+
+    beforeEach(() => {
+      programModel.findAndCountAll.mockResolvedValue({ rows: [], count: 0 });
+      prescribedExerciseModel.findAll.mockResolvedValue([]);
+    });
+
+    it('keeps every status by default, as the web expects', async () => {
+      await service.list({ isSingleWorkout: true }, 'me');
+      expect(statusOf()).toBeUndefined();
+    });
+
+    it('leaves archived ones out where a routine is picked to start', async () => {
+      await service.list(
+        { isSingleWorkout: true, archived: ProgramArchivedFilter.Exclude },
+        'me',
+      );
+      expect(statusOf()).toEqual({ [Op.in]: ['DRAFT', 'PUBLISHED'] });
+    });
+
+    it('lists archived ones alone, to restore one', async () => {
+      await service.list(
+        { isSingleWorkout: true, archived: ProgramArchivedFilter.Only },
+        'me',
+      );
+      expect(statusOf()).toEqual({ [Op.in]: ['ARCHIVED'] });
+    });
+
+    it('narrows a status sent beside it', async () => {
+      await service.list(
+        { status: 'DRAFT', archived: ProgramArchivedFilter.Only },
+        'me',
+      );
+      expect(statusOf()).toEqual({ [Op.in]: [] });
+    });
+
+    it('keeps a lone status filter as it was', async () => {
+      await service.list({ status: 'ARCHIVED' }, 'me');
+      expect(statusOf()).toBe('ARCHIVED');
+    });
+  });
+
+  describe('archiving a routine', () => {
+    it('archives and restores through the status, like a coach program', async () => {
+      const update = jest.fn().mockResolvedValue(undefined);
+      programModel.findByPk.mockResolvedValue({
+        id: 'r-1',
+        ownerId: 'me',
+        source: 'USER',
+        isSingleWorkout: true,
+        update,
+      });
+
+      await service.update('r-1', { status: 'ARCHIVED' }, 'me');
+      await service.update('r-1', { status: 'DRAFT' }, 'me');
+
+      expect(
+        (update.mock.calls as unknown[][]).map(([fields]) => fields),
+      ).toEqual([{ status: 'ARCHIVED' }, { status: 'DRAFT' }]);
+      programModel.findByPk.mockReset();
     });
   });
 });

@@ -55,4 +55,15 @@ export class ListInstancesQueryDto extends PaginationDto {
   @IsOptional()
   @IsIn(['SCHEDULED', 'IN_PROGRESS', 'COMPLETED', 'CANCELLED'])
   status?: 'SCHEDULED' | 'IN_PROGRESS' | 'COMPLETED' | 'CANCELLED';
+
+  @ApiPropertyOptional({
+    enum: ['asc', 'desc'],
+    default: 'asc',
+    description:
+      'By start time. `desc` for a past list, so the first page is the ' +
+      'most recent sessions rather than the oldest in the window.',
+  })
+  @IsOptional()
+  @IsIn(['asc', 'desc'])
+  order?: 'asc' | 'desc';
 }

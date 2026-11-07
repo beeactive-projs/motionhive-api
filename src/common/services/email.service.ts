@@ -9,6 +9,7 @@ import {
   accountDeletionCompletedTemplate,
   accountDeletionScheduledTemplate,
   clientInvitationExistingUserTemplate,
+  clientInvitationImportedTemplate,
   clientInvitationNewUserTemplate,
   clientRequestAcceptedTemplate,
   clientRequestDeclinedTemplate,
@@ -394,6 +395,84 @@ export class EmailService {
     });
 
     await this.send(email, subject, html);
+  }
+
+  /**
+   * The invite an imported client list sends, one per person. Sent from
+   * the `notifications.client_invite_send` job, so unlike the other
+   * invite senders it reports the outcome instead of swallowing it: a
+   * failed send has to throw for the job to retry.
+   *
+   * With an account the button opens the request in the app (same link
+   * as `sendExistingUserClientInvitationEmail`); without one it is the
+   * signup link carrying the invite token.
+   */
+  async sendClientImportInvitationEmail(params: {
+    to: string;
+    recipientFirstName: string | null;
+    instructorName: string;
+    instructorAvatarUrl: string | null;
+    requestId: string;
+    /** Set for someone with no account yet; null when they have one. */
+    token: string | null;
+    message: string | undefined;
+    locale: Locale;
+  }): Promise<{ ok: true } | { ok: false; reason: string }> {
+    const { subject, html } = this.renderClientImportInvitation({
+      ...params,
+      hasAccount: !params.token,
+      link: params.token
+        ? `${this.frontendUrl}/auth/signup?token=${params.token}`
+        : `${this.frontendUrl}/profile?tab=coaches&requestId=${encodeURIComponent(params.requestId)}`,
+    });
+    return this.sendWithStatus(params.to, subject, html);
+  }
+
+  /**
+   * The same invite, rendered for the coach to look at before sending
+   * (`POST /clients/import/email-preview`). Always the no-account version,
+   * which is what most of an imported list gets; its button points at
+   * signup without a token, since nothing has been created yet.
+   */
+  previewClientImportInvitationEmail(params: {
+    recipientFirstName: string | null;
+    instructorName: string;
+    instructorAvatarUrl: string | null;
+    message: string | undefined;
+    locale: Locale;
+  }): { subject: string; html: string } {
+    return this.renderClientImportInvitation({
+      ...params,
+      hasAccount: false,
+      link: `${this.frontendUrl}/auth/signup`,
+    });
+  }
+
+  private renderClientImportInvitation(params: {
+    recipientFirstName: string | null;
+    instructorName: string;
+    instructorAvatarUrl: string | null;
+    link: string;
+    hasAccount: boolean;
+    message: string | undefined;
+    locale: Locale;
+  }): { subject: string; html: string } {
+    return {
+      subject: translate(
+        params.locale,
+        'email.client.invitationImported.subject',
+        { name: params.instructorName },
+      ),
+      html: clientInvitationImportedTemplate({
+        recipientFirstName: params.recipientFirstName,
+        instructorName: params.instructorName,
+        instructorAvatarUrl: params.instructorAvatarUrl,
+        link: params.link,
+        hasAccount: params.hasAccount,
+        message: params.message,
+        locale: params.locale,
+      }),
+    };
   }
 
   // =====================================================

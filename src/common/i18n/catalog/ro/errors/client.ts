@@ -33,5 +33,7 @@ export const client: Catalog['errors']['client'] = {
     'Nu poți retrimite o invitație care a fost deja {status, select, ACCEPTED {acceptată} DECLINED {refuzată} CANCELLED {anulată} other {folosită}}.',
   clientNotFound: 'Nu am găsit clientul.',
   notYourCoach: 'Nu faci parte dintre clienții acestui antrenor.',
+  importDailyLimit:
+    '{remaining, plural, =0 {Azi nu mai poți trimite invitații.} one {Azi mai poți trimite o singură invitație.} few {Azi mai poți trimite # invitații.} other {Azi mai poți trimite # de invitații.}} Importă mai puține persoane sau încearcă din nou mâine.',
   alreadyLeftCoach: 'Te-ai oprit deja din antrenamentele cu acest antrenor.',
 };

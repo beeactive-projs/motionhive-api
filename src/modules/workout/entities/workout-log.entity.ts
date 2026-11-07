@@ -14,7 +14,7 @@ import { AssignedWorkout } from './assigned-workout.entity';
 import { Program } from './program.entity';
 import { LoggedExercise } from './logged-exercise.entity';
 import { ProgramAssignment } from './program-assignment.entity';
-import { WorkoutLogStatus } from './workout.enums';
+import { WorkoutLogStatus, WorkoutVisibility } from './workout.enums';
 
 /**
  * One workout the client actually performed. Linked optionally to an
@@ -78,6 +78,40 @@ export class WorkoutLog extends Model {
 
   @Column({ type: DataType.INTEGER, allowNull: true })
   declare durationSeconds: number | null;
+
+  /**
+   * The line on the shared story card (migration 072). Not the private
+   * note: that one is never put on a card unless the person copies it.
+   */
+  @Column({ type: DataType.STRING(80), allowNull: true })
+  declare shareCaption: string | null;
+
+  /**
+   * The workout's one photo (migration 074): a file in the private bucket
+   * (its key, without `.jpg`), only ever served through the API (`WorkoutPhotoService`). Not sent to
+   * the apps; they get `hasPhoto` and `photoVersion`.
+   */
+  @Column({ type: DataType.STRING(255), allowNull: true })
+  declare photoPublicId: string | null;
+
+  /** Changes when the photo is replaced, so a cached copy can be told apart. */
+  @Column({ type: DataType.INTEGER, allowNull: true })
+  declare photoVersion: number | null;
+
+  /** Who besides the owner sees it (migration 073); see `WorkoutVisibility`. */
+  @Column({
+    type: DataType.ENUM(...Object.values(WorkoutVisibility)),
+    allowNull: false,
+    defaultValue: WorkoutVisibility.OnlyMe,
+  })
+  declare visibility: WorkoutVisibility;
+
+  /**
+   * When staff took it down after a report (migration 076). It stays in
+   * the owner's history, Only me, and cannot be made Public or shared.
+   */
+  @Column({ type: DataType.DATE, allowNull: true })
+  declare takenDownAt: Date | null;
 
   /** When the current pause began; null while the clock is running. */
   @Column({ type: DataType.DATE, allowNull: true })

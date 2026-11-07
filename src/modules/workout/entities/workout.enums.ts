@@ -68,6 +68,34 @@ export const WorkoutLogStatus = {
 export type WorkoutLogStatus =
   (typeof WorkoutLogStatus)[keyof typeof WorkoutLogStatus];
 
+/**
+ * Who besides the owner sees a workout (migration 073). The same three
+ * levels as the profile privacy settings (`ProfilePrivacyLevel`), so the
+ * app says them the same way everywhere. The coach whose plan a workout
+ * came from sees it whatever the level.
+ */
+export const WorkoutVisibility = {
+  OnlyMe: 'ONLY_ME',
+  CoachesOnly: 'COACHES_ONLY',
+  Public: 'PUBLIC',
+} as const;
+export type WorkoutVisibility =
+  (typeof WorkoutVisibility)[keyof typeof WorkoutVisibility];
+
+/**
+ * How a logged set's `restAfterSeconds` was measured (migration 079).
+ * TAP: the person ended the rest themselves, exact. ESTIMATED: worked out
+ * from when the next set was ticked. BREAK: they were away; no rest is
+ * stored. Null on sets from the older logger, whose `restAfterSeconds`
+ * was the planned rest, not the one taken.
+ */
+export const RestSource = {
+  Tap: 'TAP',
+  Estimated: 'ESTIMATED',
+  Break: 'BREAK',
+} as const;
+export type RestSource = (typeof RestSource)[keyof typeof RestSource];
+
 export const ExerciseBlockKind = {
   None: 'NONE',
   Superset: 'SUPERSET',

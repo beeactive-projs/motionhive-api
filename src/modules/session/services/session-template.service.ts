@@ -14,6 +14,7 @@ import {
   getOffset,
   PaginatedResponse,
 } from '../../../common/dto/pagination.dto';
+import { foldedContains } from '../../../common/utils/search.utils';
 import { detectMeetingProvider } from '../../../common/utils/meeting-provider.util';
 import { stripHtml } from '../../../common/utils/text.utils';
 import { apiError } from '../../../common/i18n';
@@ -265,10 +266,12 @@ export class SessionTemplateService {
     if (query.groupId) where['groupId'] = query.groupId;
 
     if (query.q) {
-      const term = `%${query.q.trim()}%`;
+      // Blind to accents and case, wildcards escaped (`foldedContains`).
+      const esc = (value: string) =>
+        this.templateModel.sequelize!.escape(value);
       where[Op.or as unknown as string] = [
-        { title: { [Op.iLike]: term } },
-        { description: { [Op.iLike]: term } },
+        foldedContains('"SessionTemplate"."title"', query.q, esc),
+        foldedContains('"SessionTemplate"."description"', query.q, esc),
       ];
     }
 

@@ -1,6 +1,10 @@
+import { BadRequestException } from '@nestjs/common';
+import type { MulterOptions } from '@nestjs/platform-express/multer/interfaces/multer-options.interface';
+import { apiError } from '../i18n';
+
 /**
- * Magic-byte signature check for the image formats Cloudinary accepts
- * for inline rendering on a post. Defense-in-depth against a client that
+ * Magic-byte signature check for the image formats the upload pipeline
+ * reads (`normaliseImage`). Defense-in-depth against a client that
  * spoofs `Content-Type: image/png` on a non-image payload.
  */
 export function isSupportedImage(buf: Buffer): boolean {
@@ -49,5 +53,106 @@ export function isSupportedImage(buf: Buffer): boolean {
     return true;
   }
 
+  // HEIC / HEIF / AVIF: an ISO media box, '....ftyp' then the brand. An
+  // iPhone photo on a Mac is usually HEIC, and the server converts it.
+  if (buf.toString('latin1', 4, 8) === 'ftyp') {
+    return ISO_IMAGE_BRANDS.has(buf.toString('latin1', 8, 12));
+  }
+
   return false;
+}
+
+/** `ftyp` brands of still images: HEIC/HEIF (and their sequences) and AVIF. */
+const ISO_IMAGE_BRANDS = new Set([
+  'heic',
+  'heix',
+  'heim',
+  'heis',
+  'hevc',
+  'hevx',
+  'hevm',
+  'hevs',
+  'mif1',
+  'msf1',
+  'avif',
+  'avis',
+]);
+
+/**
+ * JPEG segments that carry what the camera knew rather than the picture:
+ * APP1 (EXIF, with its GPS block, and XMP), APP13 (IPTC) and comments.
+ */
+const METADATA_MARKERS = new Set([0xe1, 0xed, 0xfe]);
+
+/**
+ * A copy of a JPEG without its metadata segments (`METADATA_MARKERS`), so
+ * a photo taken at home does not carry the home's coordinates. Colour
+ * segments (APP0 JFIF, APP2 ICC, APP14 Adobe) and the image data are kept
+ * byte for byte. Null for anything that is not a well-formed JPEG.
+ *
+ * The app already re-encodes photos, which drops all of this; this is the
+ * server not taking the client's word for it.
+ */
+export function stripJpegMetadata(buf: Buffer): Buffer | null {
+  if (buf.length < 4 || buf[0] !== 0xff || buf[1] !== 0xd8) return null;
+  const kept: Buffer[] = [buf.subarray(0, 2)];
+  let i = 2;
+  while (i + 1 < buf.length) {
+    if (buf[i] !== 0xff) return null;
+    const marker = buf[i + 1];
+    if (marker === 0xff) {
+      i += 1; // fill byte before a marker
+      continue;
+    }
+    if (marker === 0xd9) {
+      kept.push(buf.subarray(i, i + 2));
+      return Buffer.concat(kept);
+    }
+    if ((marker >= 0xd0 && marker <= 0xd7) || marker === 0x01) {
+      kept.push(buf.subarray(i, i + 2)); // markers with no length
+      i += 2;
+      continue;
+    }
+    if (i + 4 > buf.length) return null;
+    const end = i + 2 + buf.readUInt16BE(i + 2);
+    if (end > buf.length || end < i + 4) return null;
+    if (marker === 0xda) {
+      // Start of scan: everything from here is the image itself.
+      kept.push(buf.subarray(i));
+      return Buffer.concat(kept);
+    }
+    if (!METADATA_MARKERS.has(marker)) kept.push(buf.subarray(i, end));
+    i = end;
+  }
+  return null;
+}
+
+/** The largest image any upload route accepts. The apps check it too. */
+export const MAX_IMAGE_MB = 5;
+
+/**
+ * Multer options for every image upload route. With `fileSize` set,
+ * multer stops reading at the limit, so an oversized upload never sits
+ * whole in memory; checking `file.size` after the fact was too late for
+ * that. Multer then throws "File too large", which the exception filter
+ * words in the caller's language.
+ */
+export const IMAGE_UPLOAD_OPTIONS: MulterOptions = {
+  limits: { fileSize: MAX_IMAGE_MB * 1024 * 1024, files: 1 },
+};
+
+/**
+ * Refuses a missing file, or one whose bytes are not an image. The
+ * multipart `mimetype` is whatever the client wrote, so the magic bytes
+ * decide.
+ */
+export function assertImageFile(
+  file: Express.Multer.File | undefined,
+): asserts file is Express.Multer.File {
+  if (!file) {
+    throw new BadRequestException(apiError('common.noFile'));
+  }
+  if (!file.mimetype?.startsWith('image/') || !isSupportedImage(file.buffer)) {
+    throw new BadRequestException(apiError('common.imageOnly'));
+  }
 }

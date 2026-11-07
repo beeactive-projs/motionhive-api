@@ -9,7 +9,6 @@ import {
   UseInterceptors,
   UploadedFile,
   Request,
-  BadRequestException,
 } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
 import { ApiTags, ApiConsumes } from '@nestjs/swagger';
@@ -18,10 +17,14 @@ import { FileInterceptor } from '@nestjs/platform-express';
 import type { AuthenticatedRequest } from '../../common/types/authenticated-request';
 import { UserService } from './user.service';
 import { UpdateUserDto } from './dto/update-user.dto';
+import { UpdateWorkoutSettingsDto } from './dto/update-workout-settings.dto';
 import { SearchUsersQueryDto } from './dto/search-users.query.dto';
 import { ApiEndpoint } from '../../common/decorators/api-response.decorator';
 import { UserDocs } from '../../common/docs/user.docs';
-import { apiError } from '../../common/i18n';
+import {
+  assertImageFile,
+  IMAGE_UPLOAD_OPTIONS,
+} from '../../common/utils/image.utils';
 
 /**
  * User Controller
@@ -97,15 +100,36 @@ export class UserController {
     return UserService.toProfileDto(user, { slim: true });
   }
 
+  /** The workout logger settings, every key resolved to a value. */
+  @Get('me/workout-settings')
+  @ApiEndpoint(UserDocs.getWorkoutSettings)
+  getWorkoutSettings(@Request() req: AuthenticatedRequest) {
+    return this.userService.getWorkoutSettings(req.user.id);
+  }
+
+  /** Change any of the workout logger settings; answers with all of them. */
+  @Patch('me/workout-settings')
+  @Throttle({ default: { limit: 120, ttl: 3_600_000 } })
+  @ApiEndpoint({
+    ...UserDocs.updateWorkoutSettings,
+    body: UpdateWorkoutSettingsDto,
+  })
+  updateWorkoutSettings(
+    @Request() req: AuthenticatedRequest,
+    @Body() dto: UpdateWorkoutSettingsDto,
+  ) {
+    return this.userService.updateWorkoutSettings(req.user.id, dto);
+  }
+
   /**
    * Upload a new profile picture. Accepts a single image under the
-   * `file` form field. The server streams it to Cloudinary (folder
-   * `avatars/`), saves the secure URL on the user, and cleans up the
+   * `file` form field. The server stores it (folder
+   * `avatars/`), saves the public URL on the user, and cleans up the
    * previous asset. Returns the new avatar URL so the UI can swap the
    * image in place without refetching the whole profile.
    */
   @Post('me/avatar')
-  @UseInterceptors(FileInterceptor('file'))
+  @UseInterceptors(FileInterceptor('file', IMAGE_UPLOAD_OPTIONS))
   @ApiConsumes('multipart/form-data')
   @Throttle({ default: { limit: 20, ttl: 3_600_000 } })
   @ApiEndpoint({
@@ -120,20 +144,9 @@ export class UserController {
   })
   async uploadAvatar(
     @Request() req: AuthenticatedRequest,
-    @UploadedFile() file: Express.Multer.File,
+    @UploadedFile() file: Express.Multer.File | undefined,
   ) {
-    if (!file) {
-      throw new BadRequestException(apiError('common.noFile'));
-    }
-    if (!file.mimetype?.startsWith('image/')) {
-      throw new BadRequestException(apiError('common.imageOnly'));
-    }
-    const MAX_BYTES = 5 * 1024 * 1024;
-    if (file.size > MAX_BYTES) {
-      throw new BadRequestException(
-        apiError('common.fileTooLarge', { maxMb: 5 }),
-      );
-    }
+    assertImageFile(file);
     const user = await this.userService.uploadAvatar(req.user.id, file);
     return {
       avatarUrl: user.avatarUrl,

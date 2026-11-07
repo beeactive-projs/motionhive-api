@@ -719,6 +719,11 @@ export class AuthService {
       );
     }
 
+    // The iOS app's sign-in mints tokens for its own client; Android's and the
+    // web's carry the web client ID.
+    const iosClientId = this.configService.get<string>('GOOGLE_IOS_CLIENT_ID');
+    const audience = iosClientId ? [clientId, iosClientId] : clientId;
+
     const client = new OAuth2Client(clientId);
     let payload: {
       sub: string;
@@ -729,7 +734,7 @@ export class AuthService {
     try {
       const ticket = await client.verifyIdToken({
         idToken,
-        audience: clientId,
+        audience,
       });
       payload = ticket.getPayload() ?? null;
     } catch (err) {

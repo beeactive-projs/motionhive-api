@@ -10,7 +10,7 @@ import {
   MaxLength,
   Min,
 } from 'class-validator';
-import { ExerciseSetType } from '../entities/workout.enums';
+import { ExerciseSetType, RestSource } from '../entities/workout.enums';
 
 /**
  * Patch one logged set — what the client actually did.
@@ -62,11 +62,32 @@ export class LogSetDto {
   @Min(0)
   rir?: number;
 
-  @ApiPropertyOptional({ example: 90, minimum: 0 })
+  /** The rest actually taken after this set, in seconds. */
+  @ApiPropertyOptional({
+    example: 90,
+    minimum: 0,
+    nullable: true,
+    description:
+      'The rest actually taken after this set, in seconds. Ignored (stored ' +
+      'as null) when `restSource` is BREAK.',
+  })
   @IsOptional()
   @IsInt()
   @Min(0)
-  restAfterSeconds?: number;
+  restAfterSeconds?: number | null;
+
+  /** How the rest was measured. BREAK stores no rest. */
+  @ApiPropertyOptional({
+    enum: RestSource,
+    nullable: true,
+    description:
+      'TAP: the person ended the rest (exact). ESTIMATED: worked out from ' +
+      'the next tick. BREAK: they were away; `restAfterSeconds` is stored ' +
+      'as null. Null clears it.',
+  })
+  @IsOptional()
+  @IsEnum(RestSource)
+  restSource?: RestSource | null;
 
   @ApiPropertyOptional({ example: true })
   @IsOptional()

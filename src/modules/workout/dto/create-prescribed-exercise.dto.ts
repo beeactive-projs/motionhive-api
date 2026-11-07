@@ -20,13 +20,16 @@ export class CreatePrescribedExerciseDto {
   exerciseId: string;
 
   @ApiPropertyOptional({
+    nullable: true,
     description:
-      'Same value across exercises in the same workout = paired superset.',
+      'Same value across exercises in the same workout = one superset ' +
+      '(two or three exercises). Null unlinks it; a superset left with ' +
+      'one exercise is dissolved.',
   })
   @IsOptional()
   @IsInt()
   @Min(0)
-  supersetGroupId?: number;
+  supersetGroupId?: number | null;
 
   @ApiPropertyOptional({
     example: 'fff11111-2222-3333-4444-555566667777',
@@ -73,4 +76,24 @@ export class CreatePrescribedExerciseDto {
   @Min(1)
   @Max(30)
   defaultSets?: number;
+
+  /**
+   * Exercise-level rest. There is no column for it: it is written to
+   * every set of the exercise (on create, the `defaultSets` ones; on
+   * update, all of them, in one transaction).
+   */
+  @ApiPropertyOptional({
+    example: 120,
+    minimum: 0,
+    maximum: 600,
+    nullable: true,
+    description:
+      'Rest after each set, in seconds, written to every set of this ' +
+      'exercise. Null clears it on every set.',
+  })
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  @Max(600)
+  restAfterSeconds?: number | null;
 }

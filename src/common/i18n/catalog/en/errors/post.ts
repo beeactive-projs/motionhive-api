@@ -1,9 +1,6 @@
 export const post = {
   notFound: 'Post not found.',
   commentNotFound: 'Comment not found.',
-  noFile: 'No file provided.',
-  imageOnly: 'Only image files are accepted.',
-  imageTooLarge: 'File is larger than {maxMb} MB.',
   duplicateGroups: 'You picked the same group more than once.',
   groupsNotFound: 'One or more groups were not found.',
   cannotPostNotMember:

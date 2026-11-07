@@ -1,4 +1,8 @@
-import { BadRequestException, ForbiddenException } from '@nestjs/common';
+import {
+  NotFoundException,
+  BadRequestException,
+  ForbiddenException,
+} from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { getModelToken } from '@nestjs/sequelize';
 import { WINSTON_MODULE_NEST_PROVIDER } from 'nest-winston';
@@ -17,8 +21,9 @@ import { User } from '../user/entities/user.entity';
 import { ModerationDecision } from './dto/moderate-post.dto';
 import { SearchIndexService } from '../search/search-index.service';
 import { NotificationService } from '../notification/notification.service';
-import { CloudinaryService } from '../../common/services/cloudinary.service';
+import { MediaStorageService } from '../../common/services/media-storage.service';
 import { GroupService } from '../group/group.service';
+import { WorkoutLogService } from '../workout/workout-log.service';
 import { makeSilentLogger } from '../../../test/helpers/sequelize-mocks';
 
 interface PostModelMock {
@@ -76,7 +81,7 @@ describe('PostService', () => {
   let userModel: UserModelMock;
   let searchIndex: { upsertPost: jest.Mock; removeIfExists: jest.Mock };
   let notificationService: { notify: jest.Mock; notifyMany: jest.Mock };
-  let cloudinaryService: {
+  let mediaStorage: {
     isOwnedUrl: jest.Mock;
     assertOwnedUrls: jest.Mock;
     extractPublicId: jest.Mock;
@@ -86,6 +91,11 @@ describe('PostService', () => {
     deleteFolder: jest.Mock;
   };
   let groupService: { findMyGroupIds: jest.Mock };
+  // Ordinary posts carry no workout; the cases that do set it up themselves.
+  const workoutLogService = {
+    summariesForPosts: jest.fn().mockResolvedValue(new Map()),
+    assertShareable: jest.fn().mockResolvedValue(undefined),
+  };
 
   const tx = {
     commit: jest.fn().mockResolvedValue(undefined),
@@ -143,7 +153,7 @@ describe('PostService', () => {
       notify: jest.fn().mockResolvedValue(undefined),
       notifyMany: jest.fn().mockResolvedValue(undefined),
     };
-    cloudinaryService = {
+    mediaStorage = {
       isOwnedUrl: jest.fn().mockReturnValue(true),
       assertOwnedUrls: jest.fn(),
       extractPublicId: jest.fn().mockReturnValue('mock-id'),
@@ -176,8 +186,9 @@ describe('PostService', () => {
         { provide: getModelToken(User), useValue: userModel },
         { provide: SearchIndexService, useValue: searchIndex },
         { provide: NotificationService, useValue: notificationService },
-        { provide: CloudinaryService, useValue: cloudinaryService },
+        { provide: MediaStorageService, useValue: mediaStorage },
         { provide: GroupService, useValue: groupService },
+        { provide: WorkoutLogService, useValue: workoutLogService },
         { provide: WINSTON_MODULE_NEST_PROVIDER, useValue: makeSilentLogger() },
       ],
     }).compile();
@@ -235,6 +246,78 @@ describe('PostService', () => {
 
       expect(postModel.create).toHaveBeenCalledTimes(3);
       expect(result.posts).toHaveLength(3);
+    });
+
+    it('shares a finished workout into the group as a card', async () => {
+      groupModel.findAll.mockResolvedValue([
+        { id: 'g1', memberPostPolicy: MemberPostPolicy.OPEN },
+      ]);
+      memberModel.findAll.mockResolvedValue([
+        { groupId: 'g1', userId: authorId, role: GroupMemberRole.MEMBER },
+      ]);
+      postModel.create.mockResolvedValue({
+        id: 'post-1',
+        groupId: 'g1',
+        approvalState: PostApprovalState.APPROVED,
+        update: jest.fn().mockResolvedValue(undefined),
+      });
+      postModel.findByPk.mockResolvedValueOnce({
+        id: 'post-1',
+        authorId,
+        groupId: 'g1',
+        approvalState: PostApprovalState.APPROVED,
+        content: '',
+        mediaUrls: null,
+        workoutLogId: 'wl-1',
+        postedAt: new Date(),
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        author: null,
+      });
+      const card = {
+        id: 'wl-1',
+        name: 'Leg day',
+        completedAt: new Date(),
+        durationSeconds: 3134,
+        setsCompleted: 18,
+        recordCount: 1,
+        shareCaption: null,
+        onProfile: false,
+      };
+      workoutLogService.summariesForPosts.mockResolvedValueOnce(
+        new Map([['wl-1', card]]),
+      );
+
+      // No words needed: the card says enough.
+      const result = await service.createPost(authorId, {
+        content: '',
+        groupIds: ['g1'],
+        workoutLogId: 'wl-1',
+      });
+
+      expect(workoutLogService.assertShareable).toHaveBeenCalledWith(
+        'wl-1',
+        authorId,
+      );
+      expect(postModel.create).toHaveBeenCalledWith(
+        expect.objectContaining({ workoutLogId: 'wl-1', content: '' }),
+        expect.anything(),
+      );
+      expect(result.posts[0].workout).toEqual(card);
+    });
+
+    it("refuses someone else's workout before any post is made", async () => {
+      workoutLogService.assertShareable.mockRejectedValueOnce(
+        new NotFoundException(),
+      );
+      await expect(
+        service.createPost(authorId, {
+          content: 'look',
+          groupIds: ['g1'],
+          workoutLogId: 'wl-theirs',
+        }),
+      ).rejects.toBeInstanceOf(NotFoundException);
+      expect(postModel.create).not.toHaveBeenCalled();
     });
 
     it('staff post is APPROVED even when policy=DISABLED', async () => {
@@ -329,7 +412,7 @@ describe('PostService', () => {
     });
 
     it('rejects mediaUrls that fail Cloudinary whitelist before any DB read', async () => {
-      cloudinaryService.assertOwnedUrls.mockImplementationOnce(() => {
+      mediaStorage.assertOwnedUrls.mockImplementationOnce(() => {
         throw new BadRequestException('mediaUrls must be Cloudinary URLs');
       });
 
@@ -362,11 +445,13 @@ describe('PostService', () => {
       await service.createPost(authorId, {
         content: 'x',
         groupIds: ['g1'],
-        mediaUrls: ['https://res.cloudinary.com/c/image/upload/staging.png'],
+        mediaUrls: [
+          'https://img.motionhive.fit/motionhive/test/posts/staging.png',
+        ],
       });
 
-      expect(cloudinaryService.cloneByUrl).toHaveBeenCalledWith(
-        'https://res.cloudinary.com/c/image/upload/staging.png',
+      expect(mediaStorage.cloneByUrl).toHaveBeenCalledWith(
+        'https://img.motionhive.fit/motionhive/test/posts/staging.png',
         expect.objectContaining({
           resource: 'posts',
           userId: authorId,
@@ -375,11 +460,11 @@ describe('PostService', () => {
       );
       expect(updateSpy).toHaveBeenCalledWith({
         mediaUrls: [
-          'https://res.cloudinary.com/c/image/upload/staging.png#cloned',
+          'https://img.motionhive.fit/motionhive/test/posts/staging.png#cloned',
         ],
       });
-      expect(cloudinaryService.deleteByUrl).toHaveBeenCalledWith(
-        'https://res.cloudinary.com/c/image/upload/staging.png',
+      expect(mediaStorage.deleteByUrl).toHaveBeenCalledWith(
+        'https://img.motionhive.fit/motionhive/test/posts/staging.png',
       );
     });
   });
@@ -436,20 +521,20 @@ describe('PostService', () => {
         id: postId,
         authorId,
         mediaUrls: [
-          'https://res.cloudinary.com/c/image/upload/v1/a.png',
-          'https://res.cloudinary.com/c/image/upload/v1/b.png',
+          'https://img.motionhive.fit/motionhive/test/posts/a.png',
+          'https://img.motionhive.fit/motionhive/test/posts/b.png',
         ],
         update: jest.fn().mockResolvedValue(undefined),
       };
       postModel.findByPk.mockResolvedValue(post);
 
       await service.updatePost(authorId, postId, {
-        mediaUrls: ['https://res.cloudinary.com/c/image/upload/v1/b.png'],
+        mediaUrls: ['https://img.motionhive.fit/motionhive/test/posts/b.png'],
       });
 
-      expect(cloudinaryService.deleteByUrl).toHaveBeenCalledTimes(1);
-      expect(cloudinaryService.deleteByUrl).toHaveBeenCalledWith(
-        'https://res.cloudinary.com/c/image/upload/v1/a.png',
+      expect(mediaStorage.deleteByUrl).toHaveBeenCalledTimes(1);
+      expect(mediaStorage.deleteByUrl).toHaveBeenCalledWith(
+        'https://img.motionhive.fit/motionhive/test/posts/a.png',
       );
     });
 
@@ -476,7 +561,7 @@ describe('PostService', () => {
         authorId,
         groupId: 'g1',
         deletedAt: null,
-        mediaUrls: ['https://res.cloudinary.com/c/image/upload/v1/a.png'],
+        mediaUrls: ['https://img.motionhive.fit/motionhive/test/posts/a.png'],
         update: jest.fn().mockResolvedValue(undefined),
         destroy: jest.fn().mockResolvedValue(undefined),
         ...overrides,
@@ -492,7 +577,7 @@ describe('PostService', () => {
       const result = await service.deletePost(authorId, postId);
 
       expect(result).toEqual({ deleted: true });
-      expect(cloudinaryService.deleteFolder).not.toHaveBeenCalled();
+      expect(mediaStorage.deleteFolder).not.toHaveBeenCalled();
     });
 
     it('author can delete own post — tombstones, cascades, purges Cloudinary folder', async () => {
@@ -515,7 +600,7 @@ describe('PostService', () => {
         expect.anything(),
       );
       expect(post.destroy).toHaveBeenCalled();
-      expect(cloudinaryService.deleteFolder).toHaveBeenCalledWith(
+      expect(mediaStorage.deleteFolder).toHaveBeenCalledWith(
         `motionhive/development/posts/${authorId}/${postId}`,
       );
     });
@@ -588,7 +673,7 @@ describe('PostService', () => {
         authorId: 'author-1',
         groupId: 'g1',
         approvalState: PostApprovalState.PENDING,
-        mediaUrls: ['https://res.cloudinary.com/c/image/upload/v1/a.png'],
+        mediaUrls: ['https://img.motionhive.fit/motionhive/test/posts/a.png'],
         update: jest.fn().mockResolvedValue(undefined),
         destroy: jest.fn().mockResolvedValue(undefined),
       };
@@ -605,7 +690,7 @@ describe('PostService', () => {
       });
 
       expect(post.destroy).toHaveBeenCalled();
-      expect(cloudinaryService.deleteFolder).toHaveBeenCalled();
+      expect(mediaStorage.deleteFolder).toHaveBeenCalled();
       expect(notificationService.notify).toHaveBeenCalledWith(
         expect.objectContaining({ type: 'POST_REJECTED' }),
       );

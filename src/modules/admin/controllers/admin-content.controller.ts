@@ -1,13 +1,17 @@
 import {
+  Body,
   Controller,
   Delete,
   Get,
   Param,
   ParseUUIDPipe,
+  Patch,
   Query,
   Request,
+  Res,
   UseGuards,
 } from '@nestjs/common';
+import type { Response } from 'express';
 import { AuthGuard } from '@nestjs/passport';
 import { ApiTags } from '@nestjs/swagger';
 import { ApiEndpoint } from '../../../common/decorators/api-response.decorator';
@@ -18,6 +22,11 @@ import { RolesGuard } from '../../../common/guards/roles.guard';
 import type { AuthenticatedRequest } from '../../../common/types/authenticated-request';
 import { AdminContentService } from '../services/admin-content.service';
 import { AdminListDto } from '../dto/admin-list.dto';
+import {
+  ListWorkoutReportsDto,
+  ResolveWorkoutReportDto,
+} from '../../workout/dto/resolve-workout-report.dto';
+import { sendPrivateImage } from '../../workout/workout-photo.http';
 
 /** Content moderation. Read ADMIN/SUPPORT+; delete ADMIN/SUPER_ADMIN. */
 @ApiTags('Admin — Content')
@@ -42,6 +51,43 @@ export class AdminContentController {
     @Param('id', ParseUUIDPipe) id: string,
   ) {
     return this.content.deletePost(req.user.id, id, req.ip ?? null);
+  }
+
+  @Get('workout-reports')
+  @ApiEndpoint(AdminDocs.listWorkoutReports)
+  workoutReports(@Query() q: ListWorkoutReportsDto) {
+    return this.content.listWorkoutReports(q);
+  }
+
+  @Patch('workout-reports/:id')
+  @Roles('ADMIN', 'SUPER_ADMIN')
+  @ApiEndpoint(AdminDocs.resolveWorkoutReport)
+  resolveWorkoutReport(
+    @Request() req: AuthenticatedRequest,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: ResolveWorkoutReportDto,
+  ) {
+    return this.content.resolveWorkoutReport(
+      req.user.id,
+      id,
+      dto,
+      req.ip ?? null,
+    );
+  }
+
+  @Get('workout-reports/:id/photo')
+  @ApiEndpoint(AdminDocs.workoutReportPhoto)
+  async workoutReportPhoto(
+    @Request() req: AuthenticatedRequest,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Res() res: Response,
+  ) {
+    const jpeg = await this.content.workoutReportPhoto(
+      req.user.id,
+      id,
+      req.ip ?? null,
+    );
+    sendPrivateImage(res, jpeg);
   }
 
   @Get('reviews')

@@ -10,6 +10,7 @@ import { getModelToken } from '@nestjs/sequelize';
 import { Sequelize } from 'sequelize-typescript';
 import { WINSTON_MODULE_NEST_PROVIDER } from 'nest-winston';
 
+import { ClientImportService } from './client-import.service';
 import { ClientService } from './client.service';
 import { ClientDirection } from './dto/list-clients.dto';
 import {
@@ -31,6 +32,7 @@ import {
   makeSilentLogger,
   type ModelMock,
 } from '../../../test/helpers/sequelize-mocks';
+import { foldedLike } from '../../../test/helpers/folded-search';
 
 /**
  * Smoke coverage for the client/instructor relationship state machine
@@ -54,13 +56,17 @@ describe('ClientService', () => {
     sendClientRequestAcceptedEmail: jest.Mock;
     sendClientRequestDeclinedEmail: jest.Mock;
     sendClientCollaborationEndedEmail: jest.Mock;
+    sendClientInvitationEmail: jest.Mock;
   };
   let notificationService: { notify: jest.Mock };
+  let clientImportService: { requeueInviteEmail: jest.Mock };
 
   const sequelizeMock = {
     transaction: jest.fn((cb: (tx: unknown) => unknown) =>
       Promise.resolve(cb({})),
     ),
+    // The folded client search quotes its term with it.
+    escape: (value: string) => `'${value.replace(/'/g, "''")}'`,
   };
 
   beforeEach(async () => {
@@ -77,8 +83,12 @@ describe('ClientService', () => {
       sendClientRequestAcceptedEmail: jest.fn().mockResolvedValue(undefined),
       sendClientRequestDeclinedEmail: jest.fn().mockResolvedValue(undefined),
       sendClientCollaborationEndedEmail: jest.fn().mockResolvedValue(undefined),
+      sendClientInvitationEmail: jest.fn().mockResolvedValue(undefined),
     };
     notificationService = { notify: jest.fn().mockResolvedValue(undefined) };
+    clientImportService = {
+      requeueInviteEmail: jest.fn().mockResolvedValue(undefined),
+    };
 
     // Default: User.findByPk returns a generic profile so the email +
     // notification side-effects can run without crashing.
@@ -108,6 +118,7 @@ describe('ClientService', () => {
         { provide: RoleService, useValue: roleService },
         { provide: EmailService, useValue: emailService },
         { provide: NotificationService, useValue: notificationService },
+        { provide: ClientImportService, useValue: clientImportService },
         { provide: WINSTON_MODULE_NEST_PROVIDER, useValue: makeSilentLogger() },
       ],
     }).compile();
@@ -314,6 +325,51 @@ describe('ClientService', () => {
       ).rejects.toBeInstanceOf(BadRequestException);
     });
 
+    it("carries an imported invite's coach note into the new relationship", async () => {
+      clientRequestModel.findByPk.mockResolvedValue(
+        pendingRequest({
+          fromUserId: 'coach-1',
+          type: ClientRequestType.INSTRUCTOR_TO_CLIENT,
+          coachNote: 'Knee injury in 2025',
+        }),
+      );
+      instructorClientModel.findOne.mockResolvedValue(null);
+      instructorClientModel.create.mockResolvedValue(undefined);
+
+      await service.acceptRequest('r-1', 'recipient-1');
+
+      expect(instructorClientModel.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          instructorId: 'coach-1',
+          clientId: 'recipient-1',
+          notes: 'Knee injury in 2025',
+        }),
+        expect.any(Object),
+      );
+    });
+
+    it("never overwrites a returning client's notes with the imported one", async () => {
+      clientRequestModel.findByPk.mockResolvedValue(
+        pendingRequest({
+          fromUserId: 'coach-1',
+          type: ClientRequestType.INSTRUCTOR_TO_CLIENT,
+          coachNote: 'From the sheet',
+        }),
+      );
+      const existing = {
+        notes: 'Written in the app',
+        update: jest.fn().mockResolvedValue(undefined),
+      };
+      instructorClientModel.findOne.mockResolvedValue(existing);
+
+      await service.acceptRequest('r-1', 'recipient-1');
+
+      expect(existing.update).toHaveBeenCalledWith(
+        expect.not.objectContaining({ notes: expect.anything() }),
+        expect.any(Object),
+      );
+    });
+
     it('flips the request and creates an ACTIVE relationship', async () => {
       const request = pendingRequest();
       clientRequestModel.findByPk.mockResolvedValue(request);
@@ -377,6 +433,46 @@ describe('ClientService', () => {
   // =====================================================================
   // declineRequest
   // =====================================================================
+  describe('resendInvitation', () => {
+    function sentInvite(overrides: Record<string, unknown> = {}) {
+      return {
+        id: 'r-1',
+        fromUserId: 'coach-1',
+        toUserId: null,
+        invitedEmail: 'ana@x.com',
+        type: ClientRequestType.INSTRUCTOR_TO_CLIENT,
+        status: ClientRequestStatus.PENDING,
+        token: 'old',
+        message: null,
+        emailStatus: null,
+        update: jest.fn().mockResolvedValue(undefined),
+        ...overrides,
+      };
+    }
+
+    it('sends a hand-typed invite straight away, as before', async () => {
+      clientRequestModel.findOne.mockResolvedValue(sentInvite());
+
+      await service.resendInvitation('coach-1', 'r-1');
+
+      expect(emailService.sendClientInvitationEmail).toHaveBeenCalled();
+      expect(clientImportService.requeueInviteEmail).not.toHaveBeenCalled();
+    });
+
+    it('puts an imported invite back on the queue so its status tracks the resend', async () => {
+      const request = sentInvite({ emailStatus: 'FAILED' });
+      clientRequestModel.findOne.mockResolvedValue(request);
+
+      await service.resendInvitation('coach-1', 'r-1');
+
+      expect(clientImportService.requeueInviteEmail).toHaveBeenCalledWith(
+        request,
+        expect.any(String),
+      );
+      expect(emailService.sendClientInvitationEmail).not.toHaveBeenCalled();
+    });
+  });
+
   describe('declineRequest', () => {
     it('only the recipient can decline (403 otherwise)', async () => {
       clientRequestModel.findByPk.mockResolvedValue({
@@ -536,21 +632,75 @@ describe('ClientService', () => {
         // "1 pending" over a list of incoming requests that was empty.
         clientRequestModel.count
           .mockResolvedValueOnce(1) // outgoing
-          .mockResolvedValueOnce(0); // incoming
+          .mockResolvedValueOnce(0) // incoming
+          .mockResolvedValueOnce(0); // invitations
 
         await expect(
           service.getPendingRequestsCount('inst-1'),
-        ).resolves.toEqual({ count: 1, incoming: 0, outgoing: 1 });
+        ).resolves.toEqual({
+          count: 1,
+          incoming: 0,
+          outgoing: 1,
+          invitations: 0,
+        });
       });
 
       it('keeps `count` meaning both directions so existing callers are unaffected', async () => {
         clientRequestModel.count
           .mockResolvedValueOnce(2)
-          .mockResolvedValueOnce(3);
+          .mockResolvedValueOnce(3)
+          .mockResolvedValueOnce(4);
 
         await expect(
           service.getPendingRequestsCount('inst-1'),
-        ).resolves.toEqual({ count: 5, incoming: 3, outgoing: 2 });
+        ).resolves.toEqual({
+          count: 5,
+          incoming: 3,
+          outgoing: 2,
+          invitations: 4,
+        });
+      });
+
+      it("counts a trainee's coach invitations apart from a coach's requests", async () => {
+        // Anna has one coach waiting on her answer and nothing as a coach.
+        clientRequestModel.count
+          .mockResolvedValueOnce(0) // outgoing
+          .mockResolvedValueOnce(0) // incoming
+          .mockResolvedValueOnce(1); // invitations
+
+        await expect(
+          service.getPendingRequestsCount('anna-1'),
+        ).resolves.toEqual({
+          count: 0,
+          incoming: 0,
+          outgoing: 0,
+          invitations: 1,
+        });
+
+        // Every count is the caller's own, which is what lets any signed-in
+        // account ask; and an invitation is never counted as `incoming`,
+        // the coach's Clients-tab number.
+        const wheres = clientRequestModel.count.mock.calls.map(
+          ([options]: [{ where: Record<string, unknown> }]) => options.where,
+        );
+        expect(wheres).toEqual([
+          expect.objectContaining({
+            fromUserId: 'anna-1',
+            type: ClientRequestType.INSTRUCTOR_TO_CLIENT,
+            status: ClientRequestStatus.PENDING,
+          }),
+          expect.objectContaining({
+            toUserId: 'anna-1',
+            type: ClientRequestType.CLIENT_TO_INSTRUCTOR,
+            status: ClientRequestStatus.PENDING,
+          }),
+          expect.objectContaining({
+            toUserId: 'anna-1',
+            type: ClientRequestType.INSTRUCTOR_TO_CLIENT,
+            status: ClientRequestStatus.PENDING,
+          }),
+        ]);
+        for (const where of wheres) expect(where).toHaveProperty('expiresAt');
       });
     });
 
@@ -601,6 +751,34 @@ describe('ClientService', () => {
         const directions = where[Object.getOwnPropertySymbols(where)[0]];
         expect(directions).toHaveLength(2);
       });
+
+      it('searches the pending rows blind to accents too', async () => {
+        const invite = (id: string, firstName: string) => ({
+          id,
+          type: ClientRequestType.INSTRUCTOR_TO_CLIENT,
+          toUser: {
+            id: `u-${id}`,
+            firstName,
+            lastName: 'Pop',
+            email: `${id}@x.com`,
+          },
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        });
+        clientRequestModel.findAll.mockResolvedValue([
+          invite('r-1', 'Ștefan'),
+          invite('r-2', 'Maria'),
+        ]);
+
+        const page = await service.getMyClients('inst-1', {
+          status: InstructorClientStatus.PENDING,
+          search: 'stefan',
+        });
+
+        expect(page.items.map((row) => row.client?.firstName)).toEqual([
+          'Ștefan',
+        ]);
+      });
     });
 
     describe('search', () => {
@@ -618,6 +796,29 @@ describe('ClientService', () => {
         const and =
           include.where[Object.getOwnPropertySymbols(include.where)[0]];
         expect(and).toHaveLength(2);
+      });
+
+      it('matches blind to accents and takes a typed % literally', async () => {
+        await service.getMyClients('inst-1', {
+          status: InstructorClientStatus.ACTIVE,
+          search: 'Ștefan 50%',
+        });
+
+        const include =
+          instructorClientModel.findAndCountAll.mock.calls[0][0].include[0];
+        const and = include.where[
+          Object.getOwnPropertySymbols(include.where)[0]
+        ] as Array<Record<symbol, Array<{ val: string }>>>;
+        const sql = and.map((token) =>
+          token[Object.getOwnPropertySymbols(token)[0]].map((c) => c.val),
+        );
+        expect(sql[0][1]).toBe(
+          foldedLike(
+            `concat_ws(' ', "client"."first_name", "client"."last_name")`,
+            'Stefan',
+          ),
+        );
+        expect(sql[1][0]).toBe(foldedLike('"client"."email"', '50%'));
       });
 
       it('leaves the join alone when there is no term to search for', async () => {

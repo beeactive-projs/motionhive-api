@@ -29,5 +29,7 @@ export const client = {
     'Cannot resend an invitation that has already been {status, select, ACCEPTED {accepted} DECLINED {declined} CANCELLED {cancelled} other {answered}}.',
   clientNotFound: 'Client relationship not found.',
   notYourCoach: 'You are not a client of this coach.',
+  importDailyLimit:
+    '{remaining, plural, =0 {You cannot send more invitations today.} one {You can send # more invitation today.} other {You can send # more invitations today.}} Import fewer people or try again tomorrow.',
   alreadyLeftCoach: 'You have already stopped training with this coach.',
 };

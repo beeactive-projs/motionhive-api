@@ -1,5 +1,4 @@
 import {
-  BadRequestException,
   Body,
   Controller,
   Delete,
@@ -22,9 +21,11 @@ import type { AuthenticatedRequest } from '../../common/types/authenticated-requ
 import { ApiEndpoint } from '../../common/decorators/api-response.decorator';
 import { PostDocs } from '../../common/docs/post.docs';
 import { PaginationDto } from '../../common/dto/pagination.dto';
-import { CloudinaryService } from '../../common/services/cloudinary.service';
-import { isSupportedImage } from '../../common/utils/image.utils';
-import { apiError } from '../../common/i18n';
+import { MediaStorageService } from '../../common/services/media-storage.service';
+import {
+  assertImageFile,
+  IMAGE_UPLOAD_OPTIONS,
+} from '../../common/utils/image.utils';
 import { PostService } from './post.service';
 import { CreatePostDto } from './dto/create-post.dto';
 import { UpdatePostDto } from './dto/update-post.dto';
@@ -38,7 +39,7 @@ import { ToggleReactionDto } from './dto/toggle-reaction.dto';
 export class PostController {
   constructor(
     private readonly postService: PostService,
-    private readonly cloudinaryService: CloudinaryService,
+    private readonly mediaStorage: MediaStorageService,
   ) {}
 
   // =====================================================
@@ -46,34 +47,16 @@ export class PostController {
   // =====================================================
 
   @Post('upload-image')
-  @UseInterceptors(FileInterceptor('file'))
+  @UseInterceptors(FileInterceptor('file', IMAGE_UPLOAD_OPTIONS))
   @ApiConsumes('multipart/form-data')
   @Throttle({ default: { limit: 30, ttl: 3_600_000 } })
   @ApiEndpoint(PostDocs.uploadImage)
   async uploadImage(
     @Request() req: AuthenticatedRequest,
-    @UploadedFile() file: Express.Multer.File,
+    @UploadedFile() file: Express.Multer.File | undefined,
   ): Promise<{ url: string; publicId: string }> {
-    if (!file) {
-      throw new BadRequestException(apiError('post.noFile'));
-    }
-    // mimetype comes from the multipart header — trivially spoofable.
-    // Sniff the magic bytes too so we reject e.g. an .exe relabelled as
-    // image/png. Cloudinary itself also rejects non-images, but this fails
-    // fast and keeps malformed payloads out of the upload pipeline.
-    if (
-      !file.mimetype?.startsWith('image/') ||
-      !isSupportedImage(file.buffer)
-    ) {
-      throw new BadRequestException(apiError('post.imageOnly'));
-    }
-    const MAX_MB = 5;
-    if (file.size > MAX_MB * 1024 * 1024) {
-      throw new BadRequestException(
-        apiError('post.imageTooLarge', { maxMb: MAX_MB }),
-      );
-    }
-    return this.cloudinaryService.uploadImage(file, {
+    assertImageFile(file);
+    return this.mediaStorage.uploadImage(file, {
       resource: 'posts',
       userId: req.user.id,
     });

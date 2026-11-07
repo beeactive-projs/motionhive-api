@@ -55,6 +55,7 @@ const MSG = {
   preview: 'Ne vedem la 18:00?',
   suppressEmail: false,
   hidePreviewInEmail: false,
+  muted: false,
 };
 
 export const NOTIFICATION_SAMPLES: NotificationSample[] = [
@@ -777,6 +778,39 @@ export const NOTIFICATION_SAMPLES: NotificationSample[] = [
         clientName: 'Ana Pop',
         programName: 'Forță 8 săptămâni',
         workoutsCompleted: 24,
+      }),
+  },
+  {
+    audience: 'client',
+    variant: 'sexual content',
+    build: () =>
+      workout.workoutTakenDownForOwner({
+        ownerId: U,
+        workoutLogId: 'l-1',
+        workoutName: 'Ziua 1: Picioare',
+        category: 'SEXUAL',
+      }),
+  },
+  {
+    audience: 'client',
+    variant: 'other reason',
+    build: () =>
+      workout.workoutTakenDownForOwner({
+        ownerId: U,
+        workoutLogId: 'l-1',
+        workoutName: 'Ziua 1: Picioare',
+        category: 'OTHER',
+      }),
+  },
+
+  {
+    audience: 'client',
+    variant: 'typical',
+    build: () =>
+      workout.workoutAutoSavedForOwner({
+        ownerId: U,
+        workoutLogId: 'l-1',
+        workoutName: 'Ziua 1: Picioare',
       }),
   },
 

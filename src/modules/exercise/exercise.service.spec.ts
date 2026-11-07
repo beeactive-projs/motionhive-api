@@ -5,6 +5,7 @@ import {
 } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { getModelToken } from '@nestjs/sequelize';
+import { Op } from 'sequelize';
 import { Sequelize } from 'sequelize-typescript';
 import { WINSTON_MODULE_NEST_PROVIDER } from 'nest-winston';
 
@@ -23,7 +24,11 @@ import {
   MuscleRole,
 } from './entities/exercise.enums';
 import { SearchIndexService } from '../search/search-index.service';
+import { ExerciseSearchService } from './exercise-search.service';
+import { ExerciseSortKey } from './dto/list-exercises.query.dto';
+import { buildSearchPlan } from './search/exercise-search';
 import { NotificationService } from '../notification/notification.service';
+import { MediaStorageService } from '../../common/services/media-storage.service';
 import {
   fakeTx,
   makeSilentLogger,
@@ -69,8 +74,18 @@ describe('ExerciseService (smoke — not exhaustive)', () => {
     upsertExercise: jest.fn().mockResolvedValue(undefined),
     removeIfExists: jest.fn().mockResolvedValue(undefined),
   };
+  const exerciseSearch = {
+    plan: jest.fn().mockResolvedValue(null),
+    personalScores: jest.fn().mockResolvedValue(new Map()),
+  };
   const notificationService = {
     notify: jest.fn().mockResolvedValue(undefined),
+  };
+  const mediaStorage = {
+    uploadImage: jest.fn().mockResolvedValue({
+      url: 'https://img.motionhive.fit/motionhive/test/exercises/me/pic.jpg',
+      publicId: 'motionhive/test/exercises/me/pic',
+    }),
   };
 
   const meInstructor = {
@@ -103,7 +118,9 @@ describe('ExerciseService (smoke — not exhaustive)', () => {
         { provide: getModelToken(User), useValue: userModel },
         { provide: Sequelize, useValue: sequelize },
         { provide: SearchIndexService, useValue: searchIndex },
+        { provide: ExerciseSearchService, useValue: exerciseSearch },
         { provide: NotificationService, useValue: notificationService },
+        { provide: MediaStorageService, useValue: mediaStorage },
         { provide: WINSTON_MODULE_NEST_PROVIDER, useValue: makeSilentLogger() },
       ],
     }).compile();
@@ -516,6 +533,306 @@ describe('ExerciseService (smoke — not exhaustive)', () => {
         expect.objectContaining({ slug: 'tempo-squat-3' }),
         expect.anything(),
       );
+    });
+  });
+
+  // ─── Own exercises for everyone (workouts round 2) ───────────────
+
+  describe('own exercises for someone who is not a coach', () => {
+    const meClient = {
+      userId: 'me',
+      isInstructor: false,
+      locale: 'en',
+    } as const;
+
+    const created = {
+      id: 'own-1',
+      ownerId: 'me',
+      source: ExerciseSource.User,
+      visibility: ExerciseVisibility.Private,
+    };
+
+    it('creates a USER exercise, always private, with no muscles needed', async () => {
+      exerciseModel.findOne.mockResolvedValueOnce(null); // slug free
+      exerciseModel.create.mockResolvedValueOnce(created);
+      exerciseModel.findByPk.mockResolvedValueOnce(created); // reloadDetail
+
+      await service.create(
+        {
+          name: 'Cable thing at my gym',
+          kind: ExerciseKind.Strength,
+          // Sent, but someone's own exercise is private by rule.
+          visibility: ExerciseVisibility.Public,
+        },
+        'me',
+        false,
+      );
+
+      expect(exerciseModel.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          source: ExerciseSource.User,
+          ownerId: 'me',
+          visibility: ExerciseVisibility.Private,
+        }),
+        { transaction: fakeTx },
+      );
+      expect(exerciseMuscleModel.bulkCreate).not.toHaveBeenCalled();
+    });
+
+    it('takes the muscle chips when they are picked', async () => {
+      exerciseModel.findOne.mockResolvedValueOnce(null);
+      exerciseModel.create.mockResolvedValueOnce(created);
+      exerciseModel.findByPk.mockResolvedValueOnce(created);
+
+      await service.create(
+        {
+          name: 'Cable thing',
+          kind: ExerciseKind.Strength,
+          muscles: [{ muscleId: 'm-chest', role: MuscleRole.Primary }],
+        },
+        'me',
+        false,
+      );
+
+      expect(exerciseMuscleModel.bulkCreate).toHaveBeenCalledWith(
+        [
+          {
+            exerciseId: 'own-1',
+            muscleId: 'm-chest',
+            role: MuscleRole.Primary,
+          },
+        ],
+        { transaction: fakeTx },
+      );
+    });
+
+    it('still asks a coach for a primary muscle', async () => {
+      await expect(
+        service.create(
+          { name: 'Coach thing', kind: ExerciseKind.Strength },
+          'coach-1',
+          true,
+        ),
+      ).rejects.toThrow(BadRequestException);
+      expect(exerciseModel.create).not.toHaveBeenCalled();
+    });
+
+    it('keeps an own exercise private on edit, whatever is sent', async () => {
+      const update = jest.fn().mockResolvedValue(undefined);
+      exerciseModel.findByPk
+        .mockResolvedValueOnce({ ...created, name: 'Cable thing', update })
+        .mockResolvedValueOnce(created); // reloadDetail
+
+      await service.update(
+        'own-1',
+        { visibility: ExerciseVisibility.Public, isUnilateral: true },
+        meClient,
+      );
+
+      const [fields] = update.mock.calls[0] as [Record<string, unknown>];
+      expect(fields).toEqual({ isUnilateral: true });
+    });
+
+    it("lets nobody else edit or delete someone's own exercise", async () => {
+      exerciseModel.findByPk.mockResolvedValue({ ...created, ownerId: 'u-2' });
+
+      await expect(
+        service.update('own-1', { name: 'Mine now' }, meClient),
+      ).rejects.toThrow(NotFoundException);
+      await expect(service.softDelete('own-1', meClient)).rejects.toThrow(
+        NotFoundException,
+      );
+      exerciseModel.findByPk.mockReset();
+    });
+
+    it('lets the owner delete it (soft, so its history stays)', async () => {
+      const destroy = jest.fn().mockResolvedValue(undefined);
+      exerciseModel.findByPk.mockResolvedValueOnce({
+        ...created,
+        forkedFromId: null,
+        destroy,
+      });
+
+      await service.softDelete('own-1', meClient);
+
+      expect(destroy).toHaveBeenCalledWith({ transaction: fakeTx });
+    });
+
+    describe('the list', () => {
+      const conditions = (): unknown[] => {
+        const [{ where }] = exerciseModel.findAndCountAll.mock.calls[0] as [
+          { where: Record<symbol, unknown[]> },
+        ];
+        return where[Op.and];
+      };
+
+      beforeEach(() => {
+        exerciseModel.findAndCountAll.mockResolvedValue({ rows: [], count: 0 });
+      });
+
+      it('answers "mine" with what they made', async () => {
+        await service.list({ ownership: 'mine' }, meClient);
+
+        expect(conditions()).toContainEqual({ ownerId: 'me' });
+      });
+
+      it('shows their own beside ours and the public ones under "all"', async () => {
+        await service.list({}, meClient);
+
+        expect(conditions()).toContainEqual({
+          [Op.or]: [
+            { source: ExerciseSource.System },
+            { visibility: ExerciseVisibility.Public },
+            { ownerId: 'me' },
+          ],
+        });
+      });
+    });
+  });
+
+  describe('list order', () => {
+    const taxonomy = { muscles: [], equipment: [] };
+    const orderSql = (): string =>
+      JSON.stringify(
+        (exerciseModel.findAndCountAll.mock.calls[0] as [{ order: unknown }])[0]
+          .order,
+      );
+    const candidate = (id: string, name: string, popularity: number) => ({
+      id,
+      name,
+      localeName: name,
+      searchName: name.toLowerCase(),
+      popularity,
+      primaryMuscleIds: [],
+      secondaryMuscleIds: [],
+      equipmentIds: [],
+    });
+
+    beforeEach(() => {
+      exerciseModel.findAndCountAll.mockResolvedValue({ rows: [], count: 0 });
+      exerciseSearch.plan.mockResolvedValue(null);
+      exerciseSearch.personalScores.mockResolvedValue(new Map());
+    });
+
+    it('browses by what people use most when nothing is typed', async () => {
+      exerciseSearch.personalScores.mockResolvedValueOnce(
+        new Map([['e-1', 0.8]]),
+      );
+
+      await service.list({}, meInstructor);
+
+      expect(exerciseSearch.personalScores).toHaveBeenCalledWith('me');
+      expect(orderSql()).toContain('popularity_score');
+      expect(orderSql()).toContain('{\\"e-1\\":0.8}');
+    });
+
+    it('keeps A to Z for sort=name with nothing typed', async () => {
+      await service.list({ sort: ExerciseSortKey.Name }, meInstructor);
+
+      expect(exerciseSearch.personalScores).not.toHaveBeenCalled();
+      expect(orderSql()).not.toContain('popularity_score');
+    });
+
+    it.each([ExerciseSortKey.Relevance, ExerciseSortKey.Name])(
+      'ranks a search best match first (sort=%s), then pages the ranking',
+      async (sort) => {
+        exerciseSearch.plan.mockResolvedValueOnce(
+          buildSearchPlan('deadlift', taxonomy),
+        );
+        exerciseModel.findAll.mockImplementation((options: { raw?: boolean }) =>
+          Promise.resolve(
+            options.raw
+              ? [
+                  candidate('axle', 'Axle Deadlift', 0),
+                  candidate('plain', 'Deadlift', 0.5),
+                  candidate('barbell', 'Barbell Deadlift', 0.5),
+                ]
+              : [{ id: 'plain' }, { id: 'barbell' }],
+          ),
+        );
+
+        const result = await service.list(
+          { search: 'deadlift', sort, page: 1, limit: 2 },
+          meInstructor,
+        );
+
+        expect(exerciseModel.findAndCountAll).not.toHaveBeenCalled();
+        expect(result.items.map((row: { id: string }) => row.id)).toEqual([
+          'plain',
+          'barbell',
+        ]);
+        expect(result.total).toBe(3);
+      },
+    );
+
+    it('keeps the asked-for order while searching with sort=newest', async () => {
+      exerciseSearch.plan.mockResolvedValueOnce(
+        buildSearchPlan('deadlift', taxonomy),
+      );
+
+      await service.list(
+        { search: 'deadlift', sort: ExerciseSortKey.Newest },
+        meInstructor,
+      );
+
+      expect(exerciseModel.findAndCountAll).toHaveBeenCalled();
+      expect(orderSql()).toContain('createdAt');
+    });
+  });
+  describe('the picture', () => {
+    const file = {
+      buffer: Buffer.from('x'),
+      mimetype: 'image/jpeg',
+    } as Express.Multer.File;
+    const own = {
+      id: 'own-1',
+      ownerId: 'me',
+      source: ExerciseSource.User,
+    };
+
+    it("puts it in the owner's folder and on the exercise", async () => {
+      const update = jest.fn().mockResolvedValue(undefined);
+      exerciseModel.findByPk
+        .mockResolvedValueOnce({ ...own, update })
+        .mockResolvedValueOnce(own); // reloadDetail
+
+      await service.setImage('own-1', file, meInstructor);
+
+      expect(mediaStorage.uploadImage).toHaveBeenCalledWith(file, {
+        resource: 'exercises',
+        userId: 'me',
+      });
+      expect(update).toHaveBeenCalledWith({
+        thumbnailUrl:
+          'https://img.motionhive.fit/motionhive/test/exercises/me/pic.jpg',
+      });
+    });
+
+    it('takes it off', async () => {
+      const update = jest.fn().mockResolvedValue(undefined);
+      exerciseModel.findByPk
+        .mockResolvedValueOnce({ ...own, update })
+        .mockResolvedValueOnce(own);
+
+      await service.removeImage('own-1', meInstructor);
+
+      expect(update).toHaveBeenCalledWith({ thumbnailUrl: null });
+    });
+
+    it("never touches ours or someone else's, and uploads nothing then", async () => {
+      exerciseModel.findByPk.mockResolvedValueOnce({ ...own, ownerId: 'u-2' });
+      await expect(
+        service.setImage('own-1', file, meInstructor),
+      ).rejects.toThrow(NotFoundException);
+      exerciseModel.findByPk.mockResolvedValueOnce({
+        ...own,
+        ownerId: 'me',
+        source: ExerciseSource.System,
+      });
+      await expect(service.removeImage('own-1', meInstructor)).rejects.toThrow(
+        NotFoundException,
+      );
+      expect(mediaStorage.uploadImage).not.toHaveBeenCalled();
     });
   });
 });

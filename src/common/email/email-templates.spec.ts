@@ -288,6 +288,20 @@ describe('escaping', () => {
         }),
     ],
     [
+      'client/invitation-imported',
+      (locale) =>
+        templates.clientInvitationImportedTemplate({
+          recipientFirstName: HOSTILE,
+          instructorName: HOSTILE,
+          // personCard puts the URL straight into src="…".
+          instructorAvatarUrl: HOSTILE,
+          link: LINK,
+          hasAccount: false,
+          message: HOSTILE,
+          locale,
+        }),
+    ],
+    [
       'client/request-to-instructor',
       (locale) =>
         templates.clientRequestToInstructorTemplate({

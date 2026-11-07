@@ -29,6 +29,24 @@ export const client: Catalog['email']['client'] = {
     security:
       'Dacă nu te așteptai la această invitație, poți ignora emailul sau o poți refuza din contul tău.',
   },
+  invitationImported: {
+    subject: '{name} te-a adăugat printre clienții săi pe MotionHive',
+    preheader: '{name} te invită să vă antrenați împreună pe MotionHive.',
+    eyebrow: 'INVITAȚIE',
+    greeting: '{recipient, select, null {Salut,} other {Salut, {recipient},}}',
+    heading: '{name} te-a invitat pe MotionHive',
+    personRole: 'Antrenor',
+    bodyNew:
+      'Te-a adăugat printre clienții săi. Fă-ți cont și sunteți conectați imediat, cu programele, sesiunile și mesajele într-un singur loc.',
+    bodyExisting:
+      'Te-a adăugat printre clienții săi. Acceptă cererea și ai programele, sesiunile și mesajele într-un singur loc.',
+    messageQuote: '„{message}”',
+    messageLine: 'Mesaj: „{message}”',
+    ctaNew: 'Fă-ți cont',
+    ctaExisting: 'Vezi cererea',
+    expiry: 'Invitația este valabilă 30 de zile.',
+    why: 'Primești acest email pentru că {name} ți-a adăugat adresa în lista sa de clienți. Dacă nu știi cine este, poți ignora acest email.',
+  },
   requestToInstructor: {
     subject: '{name} vrea să se antreneze sub îndrumarea ta',
     preheader: '{name} vrea să se antreneze sub îndrumarea ta',

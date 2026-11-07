@@ -37,6 +37,30 @@ export const client = {
     security:
       "If you weren't expecting this, you can safely ignore the email or decline from your account.",
   },
+  /**
+   * `sendClientImportInvitationEmail`: a coach imported their client list.
+   * The reader already knows the coach, so it reads as "your coach is
+   * here", not a cold invite. `…New` / `…Existing` split on whether the
+   * reader has an account; the coach is never told which.
+   */
+  invitationImported: {
+    subject: '{name} added you as a client on MotionHive',
+    preheader: '{name} invited you to train together on MotionHive.',
+    eyebrow: 'INVITATION',
+    greeting: '{recipient, select, null {Hi,} other {Hi {recipient},}}',
+    heading: '{name} invited you to MotionHive',
+    personRole: 'Coach',
+    bodyNew:
+      "You're on their client list. Create your account and you're connected straight away, with your programs, sessions and messages in one place.",
+    bodyExisting:
+      "You're on their client list. Accept the request and your programs, sessions and messages are all in one place.",
+    messageQuote: '"{message}"',
+    messageLine: 'Message: "{message}"',
+    ctaNew: 'Create your account',
+    ctaExisting: 'Review the request',
+    expiry: 'The invitation is valid for 30 days.',
+    why: "You are getting this because {name} added your email address to their client list. If you don't know them, you can ignore this email.",
+  },
   /** `sendClientRequestToInstructorEmail`: a user asks a coach to take them on. */
   requestToInstructor: {
     subject: '{name} wants to work with you on MotionHive',

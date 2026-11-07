@@ -9,10 +9,10 @@ import { bucketKey } from './sessions.scheduler';
  * Cron triggers for the `workouts` queue. Enqueue only — no DB work,
  * no `setTimeout`. Skip-on-no-Redis is preserved (enqueue no-ops + logs).
  *
- * Auto-skip runs first (2:00) and auto-complete second (2:30) so a
- * workout skipped today can complete its assignment in the same nightly
- * pass. Both are idempotent, so the ordering is a nicety, not a
- * correctness requirement.
+ * Auto-skip runs first (2:00), stale open workouts close next (2:15) and
+ * auto-complete last (2:30), so a workout skipped or closed tonight can
+ * complete its assignment in the same nightly pass. All are idempotent,
+ * so the ordering is a nicety, not a correctness requirement.
  */
 @Injectable()
 export class WorkoutsScheduler {
@@ -32,6 +32,17 @@ export class WorkoutsScheduler {
     );
   }
 
+  // 02:15 — after auto-skip, before auto-complete.
+  @Cron('0 15 2 * * *')
+  async closeStaleWorkouts(): Promise<void> {
+    const runKey = bucketKey(24 * 60 * 60_000);
+    await this.jobs.enqueue(
+      'workouts.close_stale_workouts',
+      { runKey },
+      { jobId: `workouts.close_stale_workouts-${runKey}` },
+    );
+  }
+
   // 02:30 — after auto-skip, so a same-day skip can complete the plan.
   @Cron('0 30 2 * * *')
   async autoCompleteAssignments(): Promise<void> {
@@ -40,6 +51,17 @@ export class WorkoutsScheduler {
       'workouts.auto_complete_assignments',
       { runKey },
       { jobId: `workouts.auto_complete_assignments-${runKey}` },
+    );
+  }
+
+  // 02:45 — after tonight's closes, so their workouts count.
+  @Cron('0 45 2 * * *')
+  async recomputeExercisePopularity(): Promise<void> {
+    const runKey = bucketKey(24 * 60 * 60_000);
+    await this.jobs.enqueue(
+      'workouts.recompute_exercise_popularity',
+      { runKey },
+      { jobId: `workouts.recompute_exercise_popularity-${runKey}` },
     );
   }
 }

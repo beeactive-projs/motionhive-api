@@ -6,7 +6,9 @@ import { Op, QueryTypes } from 'sequelize';
 import { Sequelize } from 'sequelize-typescript';
 
 import { toLocale } from '../../common/i18n';
-import { CloudinaryService } from '../../common/services/cloudinary.service';
+import { MediaStorageService } from '../../common/services/media-storage.service';
+import { WORKOUT_PHOTO_RESOURCE } from '../workout/workout-photo.service';
+import { EXERCISE_IMAGE_RESOURCE } from '../exercise/exercise.service';
 import { escapeLikeWildcards } from '../../common/utils/search.utils';
 import { EmailService } from '../../common/services/email.service';
 import { MessagingService } from '../messaging/messaging.service';
@@ -48,12 +50,19 @@ export function erasedEmail(userId: string): string {
  * logs keep RESTRICT / NO ACTION keys to it. It stays as an empty, inactive
  * husk with no name, address, photo or sign-in.
  *
- * Replacements: :id, :email (their real address), :erasedEmail, :now.
+ * Replacements: :id, :email (their real address), :erasedEmail, :now,
+ * :exerciseImages (a LIKE pattern for their exercise pictures' folder).
  */
 const ERASURE_STATEMENTS: ReadonlyArray<readonly [string, string]> = [
   // ── What they did and planned ──
   // Cascades to logged exercises and sets.
   ['workout logs', `DELETE FROM workout_log WHERE user_id = :id`],
+  // Reports against their workouts go with the workouts (ON DELETE
+  // CASCADE); the ones they filed hold their notes about someone else.
+  [
+    'workout reports they filed',
+    `DELETE FROM workout_report WHERE reporter_id = :id`,
+  ],
   ['personal records', `DELETE FROM one_rep_max WHERE user_id = :id`],
   // Plans assigned to them, by a coach or themselves; cascades to the copies.
   ['assigned plans', `DELETE FROM program_assignment WHERE client_id = :id`],
@@ -62,6 +71,19 @@ const ERASURE_STATEMENTS: ReadonlyArray<readonly [string, string]> = [
   [
     'own programs',
     `DELETE FROM program WHERE owner_id = :id AND source <> 'SYSTEM'`,
+  ],
+  // Their exercises stay (a coach's sit in clients' plans), but the pictures
+  // in their folder are deleted after the commit, so every link to one goes
+  // first: on the exercise, and the copies in workouts others logged with it.
+  [
+    'exercise pictures',
+    `UPDATE exercise SET thumbnail_url = NULL
+      WHERE owner_id = :id AND thumbnail_url LIKE :exerciseImages`,
+  ],
+  [
+    'exercise picture copies',
+    `UPDATE logged_exercise SET exercise_thumbnail_url_snapshot = NULL
+      WHERE exercise_thumbnail_url_snapshot LIKE :exerciseImages`,
   ],
 
   // ── People they trained with ──
@@ -189,7 +211,7 @@ export class AccountErasureService {
     private readonly windDownService: AccountWindDownService,
     private readonly messagingService: MessagingService,
     private readonly stripeService: StripeService,
-    private readonly cloudinaryService: CloudinaryService,
+    private readonly mediaStorage: MediaStorageService,
     private readonly emailService: EmailService,
     private readonly sequelize: Sequelize,
     @Inject(WINSTON_MODULE_NEST_PROVIDER)
@@ -300,6 +322,7 @@ export class AccountErasureService {
         email: user.email,
         erasedEmail: erasedEmail(user.id),
         now,
+        exerciseImages: `%/${escapeLikeWildcards(this.mediaStorage.buildUserFolder(EXERCISE_IMAGE_RESOURCE, user.id))}/%`,
       };
       for (const [, sql] of ERASURE_STATEMENTS) {
         await this.sequelize.query(sql, {
@@ -334,8 +357,17 @@ export class AccountErasureService {
 
     // Best effort, after the commit: the files hold no link to anyone once
     // the rows above are gone.
-    await this.cloudinaryService.deleteFolder(
-      this.cloudinaryService.buildUserFolder('avatars', user.id),
+    await this.mediaStorage.deleteFolder(
+      this.mediaStorage.buildUserFolder('avatars', user.id),
+    );
+    await this.mediaStorage.deleteFolder(
+      this.mediaStorage.buildUserFolder(EXERCISE_IMAGE_RESOURCE, user.id),
+    );
+    // Workout photos are private assets, which a prefix delete only
+    // reaches when told their type.
+    await this.mediaStorage.deleteFolder(
+      this.mediaStorage.buildPrivateFolder(WORKOUT_PHOTO_RESOURCE, user.id),
+      'private',
     );
 
     await this.emailService.sendAccountDeletionCompletedEmail(

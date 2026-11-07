@@ -23,7 +23,8 @@ export const BlogDocs = {
               title: '5 Daily Habits That Will Transform Your Fitness Routine',
               excerpt: 'Small, consistent habits compound over time...',
               category: 'Tips',
-              coverImage: 'https://res.cloudinary.com/...',
+              coverImage:
+                'https://img.motionhive.fit/motionhive/production/...',
               authorName: 'Sarah Johnson',
               authorInitials: 'SJ',
               authorRole: 'Certified Trainer',
@@ -71,7 +72,7 @@ export const BlogDocs = {
           excerpt: 'Small, consistent habits compound over time...',
           content: '<h2>Introduction</h2><p>Small, consistent habits...</p>',
           category: 'Tips',
-          coverImage: 'https://res.cloudinary.com/...',
+          coverImage: 'https://img.motionhive.fit/motionhive/production/...',
           authorName: 'Sarah Johnson',
           authorInitials: 'SJ',
           authorRole: 'Certified Trainer',
@@ -175,17 +176,17 @@ export const BlogDocs = {
   } as ApiEndpointOptions,
 
   uploadImage: {
-    summary: 'Upload an image to Cloudinary',
+    summary: 'Upload an image',
     description:
       'Upload an image for use in blog posts (cover image or inline). ' +
-      'Returns the Cloudinary URL. Requires WRITER, ADMIN, or SUPER_ADMIN.',
+      'Returns the public URL. Requires WRITER, ADMIN, or SUPER_ADMIN.',
     auth: true,
     responses: [
       {
         status: 201,
         description: 'Image uploaded',
         example: {
-          url: 'https://res.cloudinary.com/dom4dfr1q/image/upload/...',
+          url: 'https://img.motionhive.fit/motionhive/production/blog/...',
           publicId: 'motionhive/blog/abc123',
         },
       },

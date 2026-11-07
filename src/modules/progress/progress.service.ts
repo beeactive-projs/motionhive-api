@@ -10,6 +10,18 @@ import { Exercise } from '../exercise/entities/exercise.entity';
 import { CoachAccessService } from '../workout/coach-access.service';
 import { OneRepMaxSource } from '../workout/entities/workout.enums';
 import { estimateOneRepMaxEpley } from '../workout/one-rep-max.estimate';
+import { streakFromWeeks } from '../workout/training-streak';
+import {
+  COUNTED_SET_SQL,
+  NO_VOLUME,
+  VOLUME_SUMS_SQL,
+  type VolumeSumsRow,
+  type VolumeUnit,
+  addVolume,
+  volumeIn,
+  volumeTotalsFromRow,
+  volumeUnitFor,
+} from '../workout/volume';
 import { ProgressRange } from './dto/progress-range.enum';
 import { RosterWindow } from './dto/roster.query.dto';
 
@@ -31,11 +43,16 @@ export interface ProgressOverview {
   /** Same metrics for the preceding window, so the UI can show movement. */
   previous: { workouts: number; volumeKg: number };
   streak: { currentWeeks: number; bestWeeks: number };
-  /** Oldest first. One entry per ISO week in the window. */
+  /**
+   * Oldest first. One entry per ISO week of the window that has a
+   * workout (weeks without one are left out). Volume excludes warm-ups;
+   * minutes are the workouts' recorded durations.
+   */
   weeklyVolume: Array<{
     weekStart: string;
     volumeKg: number;
     workouts: number;
+    minutes: number;
   }>;
   /** Oldest first, one per day, for the consistency grid. */
   dailyActivity: Array<{ date: string; workouts: number }>;
@@ -70,22 +87,54 @@ export interface ExerciseHistory {
     topReps: number | null;
     bestDurationSeconds: number | null;
     bestDistanceMeters: number | null;
+    /**
+     * The session's volume over its completed sets, warm-ups excluded,
+     * in `volumeUnit`: kg × reps for a loaded exercise, total reps for a
+     * bodyweight one, total seconds for a hold, total metres for a
+     * distance. The unit is chosen once for the exercise (its kind, then
+     * what its sessions filled), so every session is in the same one.
+     */
+    volume: number;
+    volumeUnit: VolumeUnit;
   }>;
 }
+
+/**
+ * One exercise the person has trained, for the Progress list: what it is,
+ * how often, and the top set of its latest sessions (newest first, up to
+ * TRAINED_RECENT_SESSIONS) so the app can draw its trend.
+ */
+export interface TrainedExercise {
+  exerciseId: string;
+  exerciseName: string;
+  kind: string;
+  sessionCount: number;
+  lastPerformedAt: Date;
+  recent: Array<{
+    workoutLogId: string;
+    performedAt: Date;
+    topWeightKg: number | null;
+    topReps: number | null;
+    bestDurationSeconds: number | null;
+    bestDistanceMeters: number | null;
+  }>;
+}
+
+/** Sessions per exercise the Progress list draws its trend from. */
+const TRAINED_RECENT_SESSIONS = 6;
 
 /**
  * Whose logs a progress read covers, and which of them.
  *
  *   assignmentIds === null → every completed log of `userId`: the
- *     trainee reading their own progress, or a coach the client shares
- *     off-plan training with.
- *   assignmentIds = [...]  → only logs started from one of these
- *     assignments: a coach whose client has not shared off-plan work.
- *     Freestyle sessions, self-scheduled plans and other coaches' plans
- *     all fall outside it. Empty means nothing is visible.
+ *     trainee reading their own progress.
+ *   assignmentIds = [...]  → a coach: logs started from one of these
+ *     assignments (their own plans), plus any the client set to
+ *     COACHES_ONLY or PUBLIC. Everything else (private freestyle,
+ *     self-scheduled plans, other coaches' plans) stays out.
  *
- * The allow-list comes from CoachAccessService, the same rule the
- * coach's log history uses, so the numbers and the logs behind them
+ * The rule is CoachAccessService's (`isReadableByCoach`), the same one
+ * the coach's log history uses, so the numbers and the logs behind them
  * cannot disagree.
  */
 interface LogScope {
@@ -101,6 +150,78 @@ interface OneRepMaxPoint {
 
 /** How many recent records the overview shows. */
 const RECENT_RECORDS_LIMIT = 10;
+
+/** How far back the coach's activity feed reaches, in days. */
+const ACTIVITY_DAYS = 14;
+
+// ── Coach reads across clients ───────────────────────────────────────
+// SQL pieces the roster and the activity feed share, so "who", "may the
+// coach read it" and "was it a record" mean the same in both. Each binds
+// `:instructorId`; the one-client form binds `:clientId` too.
+
+/** The coach's ACTIVE clients, or the one a page asks about. */
+function coachClientsCte(oneClient: boolean): string {
+  return `
+      clients AS (
+        SELECT ic.client_id
+        FROM instructor_client ic
+        -- A deleted account is off the roster, so off its totals too.
+        JOIN "user" u ON u.id = ic.client_id AND u.deleted_at IS NULL
+        WHERE ic.instructor_id = :instructorId
+          AND ic.status = 'ACTIVE'
+          ${oneClient ? 'AND ic.client_id = :clientId' : ''}
+      )`;
+}
+
+/**
+ * `isReadableByCoach` on a workout_log alias: one from the coach's own
+ * plans, or one the client shared with coaches. `alias` is always a
+ * literal from this file, never input.
+ */
+function readableByCoach(alias: string): string {
+  return `(
+            ${alias}.visibility IN ('COACHES_ONLY', 'PUBLIC')
+            OR ${alias}.program_assignment_id IN (
+              SELECT pa.id
+              FROM program_assignment pa
+              WHERE pa.instructor_id = :instructorId
+                AND pa.deleted_at IS NULL
+            )
+          )`;
+}
+
+/**
+ * The clients' estimated-1RM rows that beat an earlier one. A first time
+ * on an exercise beat nothing, so it is no record: History's rule
+ * (`WorkoutLogService._countSessionPrs`), in SQL.
+ */
+const CLIENT_RECORDS_CTE = `
+      records AS (
+        SELECT x.user_id, x.recorded_at
+        FROM (
+          SELECT
+            orm.user_id,
+            orm.source,
+            orm.recorded_at,
+            MIN(orm.recorded_at) OVER (
+              PARTITION BY orm.user_id, orm.exercise_id
+            ) AS first_at
+          FROM one_rep_max orm
+          WHERE orm.user_id IN (SELECT client_id FROM clients)
+        ) x
+        WHERE x.source = 'ESTIMATED_EPLEY'
+          AND x.recorded_at > x.first_at
+      )`;
+
+/** Records set inside one workout, from `records`, as History counts them. */
+function sessionRecords(alias: string): string {
+  return `(
+          SELECT COUNT(*)
+          FROM records r
+          WHERE r.user_id = ${alias}.user_id
+            AND r.recorded_at BETWEEN ${alias}.started_at AND ${alias}.completed_at
+        )`;
+}
 
 export interface RosterClient {
   clientId: string;
@@ -143,7 +264,28 @@ export interface RosterSummary {
     needsAttention: number;
     /** Mean adherence across clients who had work due. */
     adherencePercent: number | null;
+    /**
+     * Finished workouts the coach may read, in the window and in the one
+     * before it, planned or the client's own.
+     */
+    workouts: number;
+    previousWorkouts: number;
+    /** Records set in the window's workouts. */
+    records: number;
   };
+}
+
+/** One finished workout in the coach's activity feed. */
+export interface CoachActivityItem {
+  workoutLogId: string;
+  clientId: string;
+  name: string;
+  avatarUrl: string | null;
+  handle: string | null;
+  workoutName: string;
+  completedAt: string;
+  durationSeconds: number | null;
+  recordCount: number;
 }
 
 /**
@@ -154,10 +296,13 @@ export interface RosterSummary {
  * `one_rep_max`, which the completion flow already writes.
  *
  * **Volume rule.** Volume is Σ(reps × weight) over completed sets that
- * carry a load. Bodyweight and cardio sets have no weight, so they
- * contribute nothing rather than zero-inflating the number. That keeps
- * the figure comparable week to week, which is the only thing it is for.
- * Sets are counted separately so a bodyweight-only week still shows work.
+ * carry a load and are not warm-ups (`workout/volume.ts`, the one
+ * definition). Bodyweight and cardio sets have no weight, so they
+ * contribute nothing to the kilograms rather than zero-inflating the
+ * number. That keeps the figure comparable week to week, which is the
+ * only thing it is for. Sets are counted separately so a bodyweight-only
+ * week still shows work. One exercise's history is the exception: there
+ * its volume is in the exercise's own unit (reps, seconds, metres).
  */
 @Injectable()
 export class ProgressService {
@@ -219,6 +364,28 @@ export class ProgressService {
     return this._exerciseHistory(scope, exerciseId);
   }
 
+  /**
+   * Every exercise the caller has trained, most recently trained first:
+   * the Progress tab's list, which lifts, holds and runs alike, where the
+   * records list only had exercises with a weight.
+   */
+  async trainedExercises(
+    userId: string,
+    locale: Locale,
+  ): Promise<TrainedExercise[]> {
+    return this._trainedExercises({ userId, assignmentIds: null }, locale);
+  }
+
+  /** The same list for a coach, scoped like `overviewForCoach`. */
+  async trainedExercisesForCoach(
+    instructorId: string,
+    clientId: string,
+    locale: Locale,
+  ): Promise<TrainedExercise[]> {
+    const scope = await this._coachScope(instructorId, clientId);
+    return this._trainedExercises(scope, locale);
+  }
+
   private async _coachScope(
     instructorId: string,
     clientId: string,
@@ -260,7 +427,7 @@ export class ProgressService {
       range,
       totals,
       previous: { workouts: previous.workouts, volumeKg: previous.volumeKg },
-      streak: this._streakFromWeeks(weeks),
+      streak: streakFromWeeks(weeks),
       weeklyVolume: weekly,
       dailyActivity: daily,
       records,
@@ -272,6 +439,10 @@ export class ProgressService {
     scope: LogScope,
     exerciseId: string,
   ): Promise<ExerciseHistory> {
+    // No visibility check here on purpose: the sessions below are the
+    // scoped person's own logs, so a client's PRIVATE own exercise opens
+    // for the coach the scope lets in. A deleted exercise (paranoid) still
+    // has its history: deleting a used exercise keeps what was logged.
     const exercise = await this.exerciseModel.findByPk(exerciseId, {
       attributes: [
         'id',
@@ -281,20 +452,23 @@ export class ProgressService {
         'thumbnailUrl',
         'translations',
       ],
+      paranoid: false,
     });
     if (!exercise) throw new NotFoundException(apiError('exercise.notFound'));
 
     const scoped = this._scopeFilter(scope, 'wl.program_assignment_id');
-    const sessions = await this.sequelize.query<{
-      workoutLogId: string;
-      performedAt: Date;
-      workoutName: string;
-      setCount: string;
-      topWeightKg: string | null;
-      topReps: number | null;
-      bestDurationSeconds: number | null;
-      bestDistanceMeters: number | null;
-    }>(
+    const sessions = await this.sequelize.query<
+      {
+        workoutLogId: string;
+        performedAt: Date;
+        workoutName: string;
+        setCount: string;
+        topWeightKg: string | null;
+        topReps: number | null;
+        bestDurationSeconds: number | null;
+        bestDistanceMeters: number | null;
+      } & VolumeSumsRow
+    >(
       `
       SELECT
         wl.id                                    AS "workoutLogId",
@@ -306,7 +480,9 @@ export class ProgressService {
         (ARRAY_AGG(ls.reps ORDER BY ls.weight_kg DESC NULLS LAST, ls.reps DESC))[1]
                                                  AS "topReps",
         MAX(ls.duration_seconds)                 AS "bestDurationSeconds",
-        MAX(ls.distance_meters)                  AS "bestDistanceMeters"
+        MAX(ls.distance_meters)                  AS "bestDistanceMeters",
+        -- The volume's four sums, warm-ups out; the unit is picked below.
+        ${VOLUME_SUMS_SQL}
       FROM logged_set ls
       JOIN logged_exercise le ON le.id = ls.logged_exercise_id
       JOIN workout_log wl     ON wl.id = le.workout_log_id
@@ -325,10 +501,18 @@ export class ProgressService {
       },
     );
 
+    // One unit for the whole history, so the chart compares like with
+    // like: the exercise's kind, then what its sessions actually filled.
+    const totals = sessions.map((s) => volumeTotalsFromRow(s));
+    const volumeUnit = volumeUnitFor(
+      exercise.kind,
+      totals.reduce(addVolume, NO_VOLUME),
+    );
+
     return {
       exercise,
       oneRepMaxSeries: await this._oneRepMaxSeries(scope, exerciseId),
-      sessions: sessions.map((s) => ({
+      sessions: sessions.map((s, i) => ({
         workoutLogId: s.workoutLogId,
         performedAt: s.performedAt,
         workoutName: s.workoutName,
@@ -337,8 +521,114 @@ export class ProgressService {
         topReps: s.topReps,
         bestDurationSeconds: s.bestDurationSeconds,
         bestDistanceMeters: s.bestDistanceMeters,
+        volume: volumeIn(volumeUnit, totals[i]),
+        volumeUnit,
       })),
     };
+  }
+
+  /**
+   * One row per exercise from the per-session top sets (the same top set
+   * `_exerciseHistory` names: the heaviest set's reps, the longest hold,
+   * the furthest distance), keeping each exercise's latest sessions.
+   */
+  private async _trainedExercises(
+    scope: LogScope,
+    locale: Locale,
+  ): Promise<TrainedExercise[]> {
+    const scoped = this._scopeFilter(scope, 'wl.program_assignment_id');
+    const rows = await this.sequelize.query<{
+      exerciseId: string;
+      exerciseName: string;
+      kind: string;
+      sessionCount: string;
+      lastPerformedAt: Date;
+      recent: Array<{
+        workoutLogId: string;
+        performedAt: string;
+        topWeightKg: string | number | null;
+        topReps: number | null;
+        bestDurationSeconds: number | null;
+        bestDistanceMeters: number | null;
+      }>;
+    }>(
+      `
+      WITH sessions AS (
+        SELECT
+          le.exercise_id,
+          wl.id                                    AS workout_log_id,
+          COALESCE(wl.completed_at, wl.started_at) AS performed_at,
+          MAX(ls.weight_kg)                        AS top_weight_kg,
+          (ARRAY_AGG(ls.reps ORDER BY ls.weight_kg DESC NULLS LAST, ls.reps DESC))[1]
+                                                   AS top_reps,
+          MAX(ls.duration_seconds)                 AS best_duration_seconds,
+          MAX(ls.distance_meters)                  AS best_distance_meters
+        FROM logged_set ls
+        JOIN logged_exercise le ON le.id = ls.logged_exercise_id
+        JOIN workout_log wl     ON wl.id = le.workout_log_id
+        WHERE wl.user_id = :userId
+          AND le.exercise_id IS NOT NULL
+          AND ls.is_completed = TRUE
+          AND wl.status = 'COMPLETED'
+          ${scoped.sql}
+        GROUP BY le.exercise_id, wl.id, wl.completed_at, wl.started_at
+      ),
+      ranked AS (
+        SELECT
+          s.*,
+          ROW_NUMBER() OVER (PARTITION BY s.exercise_id ORDER BY s.performed_at DESC) AS rn,
+          COUNT(*)     OVER (PARTITION BY s.exercise_id)                              AS session_count
+        FROM sessions s
+      )
+      SELECT
+        r.exercise_id                                         AS "exerciseId",
+        COALESCE(e.translations -> :locale ->> 'name', e.name) AS "exerciseName",
+        e.kind                                                AS "kind",
+        r.session_count                                       AS "sessionCount",
+        MAX(r.performed_at)                                   AS "lastPerformedAt",
+        JSON_AGG(
+          JSON_BUILD_OBJECT(
+            'workoutLogId', r.workout_log_id,
+            'performedAt', r.performed_at,
+            'topWeightKg', r.top_weight_kg,
+            'topReps', r.top_reps,
+            'bestDurationSeconds', r.best_duration_seconds,
+            'bestDistanceMeters', r.best_distance_meters
+          ) ORDER BY r.performed_at DESC
+        )                                                     AS "recent"
+      FROM ranked r
+      JOIN exercise e ON e.id = r.exercise_id
+      WHERE r.rn <= :recentSessions
+      GROUP BY r.exercise_id, e.id, r.session_count
+      ORDER BY "lastPerformedAt" DESC
+      LIMIT 200
+      `,
+      {
+        replacements: {
+          userId: scope.userId,
+          locale,
+          recentSessions: TRAINED_RECENT_SESSIONS,
+          ...scoped.params,
+        },
+        type: QueryTypes.SELECT,
+      },
+    );
+
+    return rows.map((row) => ({
+      exerciseId: row.exerciseId,
+      exerciseName: row.exerciseName,
+      kind: row.kind,
+      sessionCount: Number(row.sessionCount),
+      lastPerformedAt: row.lastPerformedAt,
+      recent: row.recent.map((s) => ({
+        workoutLogId: s.workoutLogId,
+        performedAt: new Date(s.performedAt),
+        topWeightKg: s.topWeightKg == null ? null : Number(s.topWeightKg),
+        topReps: s.topReps,
+        bestDurationSeconds: s.bestDurationSeconds,
+        bestDistanceMeters: s.bestDistanceMeters,
+      })),
+    }));
   }
 
   /**
@@ -356,6 +646,7 @@ export class ProgressService {
     instructorId: string,
     window: RosterWindow,
     today: string,
+    clientId?: string,
   ): Promise<RosterSummary> {
     const days = window === RosterWindow.OneWeek ? 7 : 28;
 
@@ -374,12 +665,7 @@ export class ProgressService {
       activePlans: string;
     }>(
       `
-      WITH clients AS (
-        SELECT ic.client_id
-        FROM instructor_client ic
-        WHERE ic.instructor_id = :instructorId
-          AND ic.status = 'ACTIVE'
-      ),
+      WITH ${coachClientsCte(!!clientId)},
       -- Scheduled work in the window, and in the one before it, so a
       -- drop can be detected rather than just a low number.
       windowed AS (
@@ -411,15 +697,26 @@ export class ProgressService {
         FROM program_assignment pa
         JOIN assigned_workout aw ON aw.program_assignment_id = pa.id
         WHERE pa.instructor_id = :instructorId
+          AND pa.client_id IN (SELECT client_id FROM clients)
           AND pa.deleted_at IS NULL
-          AND aw.scheduled_date IS NOT NULL
+          -- Both windows and nothing older: every count above is inside it.
+          AND aw.scheduled_date > (:today::date - (:days::int * 2))
+          AND aw.scheduled_date <= :today::date
         GROUP BY pa.client_id
       ),
+      -- Only these clients' logs: unscoped, this took the latest workout
+      -- of every person on the platform on each read.
+      -- And only the workouts the coach may read (\`isReadableByCoach\`):
+      -- one from their own plans, or one the client shared with coaches.
+      -- A private workout must not date "last workout" or count as
+      -- training on the coach's Home.
       last_seen AS (
-        SELECT user_id, MAX(COALESCE(completed_at, started_at)) AS last_at
-        FROM workout_log
-        WHERE status = 'COMPLETED'
-        GROUP BY user_id
+        SELECT wl.user_id, MAX(COALESCE(wl.completed_at, wl.started_at)) AS last_at
+        FROM workout_log wl
+        WHERE wl.status = 'COMPLETED'
+          AND wl.user_id IN (SELECT client_id FROM clients)
+          AND ${readableByCoach('wl')}
+        GROUP BY wl.user_id
       ),
       plan_counts AS (
         SELECT client_id, COUNT(*) AS active_plans
@@ -450,7 +747,12 @@ export class ProgressService {
       WHERE u.deleted_at IS NULL
       `,
       {
-        replacements: { instructorId, days, today },
+        replacements: {
+          instructorId,
+          days,
+          today,
+          ...(clientId ? { clientId } : {}),
+        },
         type: QueryTypes.SELECT,
       },
     );
@@ -474,6 +776,10 @@ export class ProgressService {
       return (a.adherencePercent ?? 101) - (b.adherencePercent ?? 101);
     });
 
+    const activity = clients.length
+      ? await this._rosterActivity(instructorId, days, today, clientId)
+      : { workouts: 0, previousWorkouts: 0, records: 0 };
+
     return {
       window,
       clients,
@@ -481,8 +787,137 @@ export class ProgressService {
         clients: clients.length,
         needsAttention: clients.filter((c) => c.attention !== null).length,
         adherencePercent: mean,
+        ...activity,
       },
     };
+  }
+
+  /**
+   * How much the coach's clients trained, as the coach may see it: their
+   * finished workouts in the window and the one before (planned or their
+   * own, under `isReadableByCoach`), and the records set in the window.
+   * Days are the server's, like the roster's window.
+   */
+  private async _rosterActivity(
+    instructorId: string,
+    days: number,
+    today: string,
+    clientId?: string,
+  ): Promise<{ workouts: number; previousWorkouts: number; records: number }> {
+    const [row] = await this.sequelize.query<{
+      workouts: string | null;
+      previousWorkouts: string | null;
+      records: string | null;
+    }>(
+      `
+      WITH ${coachClientsCte(!!clientId)},
+      ${CLIENT_RECORDS_CTE},
+      logs AS (
+        SELECT
+          wl.user_id,
+          wl.started_at,
+          wl.completed_at,
+          wl.completed_at::date > (:today::date - :days::int) AS in_window
+        FROM workout_log wl
+        WHERE wl.status = 'COMPLETED'
+          AND wl.completed_at IS NOT NULL
+          AND wl.user_id IN (SELECT client_id FROM clients)
+          AND ${readableByCoach('wl')}
+          AND wl.completed_at::date > (:today::date - (:days::int * 2))
+          AND wl.completed_at::date <= :today::date
+      )
+      SELECT
+        COUNT(*) FILTER (WHERE in_window)     AS "workouts",
+        COUNT(*) FILTER (WHERE NOT in_window) AS "previousWorkouts",
+        COALESCE(SUM(${sessionRecords('logs')}) FILTER (WHERE in_window), 0) AS "records"
+      FROM logs
+      `,
+      {
+        replacements: {
+          instructorId,
+          days,
+          today,
+          ...(clientId ? { clientId } : {}),
+        },
+        type: QueryTypes.SELECT,
+      },
+    );
+
+    return {
+      workouts: Number(row?.workouts ?? 0),
+      previousWorkouts: Number(row?.previousWorkouts ?? 0),
+      records: Number(row?.records ?? 0),
+    };
+  }
+
+  /**
+   * The coach Home's "Hive activity": their clients' latest finished
+   * workouts across everyone, newest first, each with the records it set.
+   * Only ACTIVE relationships and only what the coach may read
+   * (`isReadableByCoach`), so a private workout never appears here even as
+   * a line. Bounded to the last two weeks: older news is the client page's.
+   */
+  async activity(
+    instructorId: string,
+    limit: number,
+  ): Promise<CoachActivityItem[]> {
+    const rows = await this.sequelize.query<{
+      workoutLogId: string;
+      clientId: string;
+      firstName: string | null;
+      lastName: string | null;
+      avatarUrl: string | null;
+      handle: string | null;
+      workoutName: string;
+      completedAt: Date;
+      durationSeconds: number | null;
+      recordCount: string;
+    }>(
+      `
+      WITH ${coachClientsCte(false)},
+      ${CLIENT_RECORDS_CTE}
+      SELECT
+        wl.id               AS "workoutLogId",
+        wl.user_id          AS "clientId",
+        u.first_name        AS "firstName",
+        u.last_name         AS "lastName",
+        u.avatar_url        AS "avatarUrl",
+        u.handle            AS "handle",
+        wl.name             AS "workoutName",
+        wl.completed_at     AS "completedAt",
+        wl.duration_seconds AS "durationSeconds",
+        ${sessionRecords('wl')} AS "recordCount"
+      FROM workout_log wl
+      JOIN "user" u ON u.id = wl.user_id
+      WHERE wl.status = 'COMPLETED'
+        AND wl.completed_at IS NOT NULL
+        AND wl.completed_at >= NOW() - (:activityDays || ' days')::INTERVAL
+        AND wl.user_id IN (SELECT client_id FROM clients)
+        AND u.deleted_at IS NULL
+        AND ${readableByCoach('wl')}
+      ORDER BY wl.completed_at DESC
+      LIMIT :limit
+      `,
+      {
+        replacements: { instructorId, limit, activityDays: ACTIVITY_DAYS },
+        type: QueryTypes.SELECT,
+      },
+    );
+
+    return rows.map((r) => ({
+      workoutLogId: r.workoutLogId,
+      clientId: r.clientId,
+      name:
+        [r.firstName, r.lastName].filter(Boolean).join(' ') ||
+        r.handle ||
+        'Client',
+      avatarUrl: r.avatarUrl,
+      handle: r.handle,
+      workoutName: r.workoutName,
+      completedAt: new Date(r.completedAt).toISOString(),
+      durationSeconds: r.durationSeconds,
+      recordCount: Number(r.recordCount),
+    }));
   }
 
   private _toRosterClient(
@@ -598,11 +1033,15 @@ export class ProgressService {
     column: string,
   ): { sql: string; params: { assignmentIds?: string[] } } {
     if (scope.assignmentIds === null) return { sql: '', params: {} };
+    // The visibility column sits on the same table as the assignment one.
+    // Named levels, as in `isReadableByCoach`: private unless shared.
+    const visibility = column.replace(/program_assignment_id$/, 'visibility');
+    const shared = `${visibility} IN ('COACHES_ONLY', 'PUBLIC')`;
     if (scope.assignmentIds.length === 0) {
-      return { sql: 'AND FALSE', params: {} };
+      return { sql: `AND ${shared}`, params: {} };
     }
     return {
-      sql: `AND ${column} IN (:assignmentIds)`,
+      sql: `AND (${column} IN (:assignmentIds) OR ${shared})`,
       params: { assignmentIds: scope.assignmentIds },
     };
   }
@@ -628,9 +1067,10 @@ export class ProgressService {
       ),
       sets AS (
         SELECT
-          -- Load-bearing sets only; see the volume rule on this class.
+          -- Load-bearing working sets only; see the volume rule on this class.
           COALESCE(SUM(ls.reps * ls.weight_kg)
-                   FILTER (WHERE ls.weight_kg IS NOT NULL), 0) AS volume_kg,
+                   FILTER (WHERE ls.weight_kg IS NOT NULL
+                             AND ls.set_type <> 'WARMUP'), 0) AS volume_kg,
           COUNT(ls.id)                                         AS sets_completed
         FROM windowed w
         JOIN logged_exercise le ON le.workout_log_id = w.id AND le.is_skipped = FALSE
@@ -661,28 +1101,49 @@ export class ProgressService {
     };
   }
 
+  /**
+   * Per ISO week: the workouts, their volume (working sets, see the
+   * volume rule) and their recorded time. The volume is summed per log
+   * first, so joining the sets cannot multiply a workout's duration.
+   */
   private async _weeklyVolume(scope: LogScope, days: number) {
     const scoped = this._scopeFilter(scope, 'wl.program_assignment_id');
     const rows = await this.sequelize.query<{
       weekStart: Date;
       volumeKg: string | null;
       workouts: string;
+      weekSeconds: string | null;
     }>(
       `
+      WITH logs AS (
+        SELECT
+          wl.id,
+          wl.duration_seconds,
+          DATE_TRUNC('week', COALESCE(wl.completed_at, wl.started_at))::DATE AS week_start
+        FROM workout_log wl
+        WHERE wl.user_id = :userId
+          AND wl.status = 'COMPLETED'
+          AND COALESCE(wl.completed_at, wl.started_at) >= NOW() - (:days || ' days')::INTERVAL
+          ${scoped.sql}
+      ),
+      log_volume AS (
+        SELECT le.workout_log_id, SUM(ls.reps * ls.weight_kg) AS volume_kg
+        FROM logs l
+        JOIN logged_exercise le ON le.workout_log_id = l.id AND le.is_skipped = FALSE
+        JOIN logged_set ls      ON ls.logged_exercise_id = le.id
+        WHERE ${COUNTED_SET_SQL}
+          AND ls.weight_kg IS NOT NULL
+        GROUP BY le.workout_log_id
+      )
       SELECT
-        DATE_TRUNC('week', COALESCE(wl.completed_at, wl.started_at))::DATE AS "weekStart",
-        COALESCE(SUM(ls.reps * ls.weight_kg)
-                 FILTER (WHERE ls.weight_kg IS NOT NULL), 0)              AS "volumeKg",
-        COUNT(DISTINCT wl.id)                                             AS "workouts"
-      FROM workout_log wl
-      LEFT JOIN logged_exercise le ON le.workout_log_id = wl.id AND le.is_skipped = FALSE
-      LEFT JOIN logged_set ls      ON ls.logged_exercise_id = le.id AND ls.is_completed = TRUE
-      WHERE wl.user_id = :userId
-        AND wl.status = 'COMPLETED'
-        AND COALESCE(wl.completed_at, wl.started_at) >= NOW() - (:days || ' days')::INTERVAL
-        ${scoped.sql}
-      GROUP BY 1
-      ORDER BY 1 ASC
+        l.week_start                              AS "weekStart",
+        COALESCE(SUM(v.volume_kg), 0)             AS "volumeKg",
+        COUNT(*)                                  AS "workouts",
+        COALESCE(SUM(l.duration_seconds), 0)      AS "weekSeconds"
+      FROM logs l
+      LEFT JOIN log_volume v ON v.workout_log_id = l.id
+      GROUP BY l.week_start
+      ORDER BY l.week_start ASC
       `,
       {
         replacements: { userId: scope.userId, days, ...scoped.params },
@@ -694,6 +1155,7 @@ export class ProgressService {
       weekStart: this._isoDate(r.weekStart),
       volumeKg: Math.round(Number(r.volumeKg ?? 0)),
       workouts: Number(r.workouts),
+      minutes: Math.round(Number(r.weekSeconds ?? 0) / 60),
     }));
   }
 
@@ -742,55 +1204,6 @@ export class ProgressService {
       },
     );
     return rows.map((r) => this._isoDate(r.weekStart));
-  }
-
-  /**
-   * Current streak counts back from this week or last week. Allowing
-   * last week means someone who trains Mon-Fri does not watch their
-   * streak die every Sunday before they have had a chance to train.
-   */
-  private _streakFromWeeks(weeks: string[]): {
-    currentWeeks: number;
-    bestWeeks: number;
-  } {
-    if (!weeks.length) return { currentWeeks: 0, bestWeeks: 0 };
-
-    const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
-    const asTime = (d: string) => new Date(`${d}T00:00:00Z`).getTime();
-    const times = weeks.map(asTime);
-
-    // Longest run of consecutive weeks anywhere in the history.
-    let best = 1;
-    let run = 1;
-    for (let i = 1; i < times.length; i++) {
-      if (times[i - 1] - times[i] === WEEK_MS) {
-        run += 1;
-        best = Math.max(best, run);
-      } else {
-        run = 1;
-      }
-    }
-
-    const now = new Date();
-    const day = now.getUTCDay();
-    // Postgres DATE_TRUNC('week') is Monday-based; match it.
-    const daysSinceMonday = (day + 6) % 7;
-    const thisWeek = Date.UTC(
-      now.getUTCFullYear(),
-      now.getUTCMonth(),
-      now.getUTCDate() - daysSinceMonday,
-    );
-
-    let current = 0;
-    if (times[0] === thisWeek || times[0] === thisWeek - WEEK_MS) {
-      current = 1;
-      for (let i = 1; i < times.length; i++) {
-        if (times[i - 1] - times[i] === WEEK_MS) current += 1;
-        else break;
-      }
-    }
-
-    return { currentWeeks: current, bestWeeks: best };
   }
 
   private async _lifetimeWorkouts(scope: LogScope): Promise<number> {
@@ -1009,28 +1422,53 @@ export class ProgressService {
       weightKg: string;
     }>(
       `
-      -- The heaviest completed set per session, exercise and rep count.
-      -- At a fixed rep count the estimate only grows with the load, so
-      -- these are the only sets that can be a session's best; the
-      -- estimate itself is taken in code by the shared function.
+      -- Each visible session's best set per exercise, ranked by the exact
+      -- Epley product (the value itself is taken in code by the shared
+      -- function), and only the sessions that beat every earlier one.
+      -- Rounding can only make fewer sessions records, never more, so
+      -- this is every record the loop below keeps and usually far fewer
+      -- rows than sessions: the database reads the history, the app gets
+      -- the records.
+      WITH best AS (
+        SELECT DISTINCT ON (wl.id, le.exercise_id)
+          wl.id                                    AS workout_log_id,
+          le.exercise_id,
+          COALESCE(wl.completed_at, wl.started_at) AS performed_at,
+          ls.reps,
+          ls.weight_kg,
+          ls.weight_kg * (30 + ls.reps)            AS strength
+        FROM workout_log wl
+        JOIN logged_exercise le ON le.workout_log_id = wl.id
+        JOIN logged_set ls      ON ls.logged_exercise_id = le.id AND ls.is_completed = TRUE
+        WHERE wl.user_id = :userId
+          AND wl.status = 'COMPLETED'
+          AND le.exercise_id IS NOT NULL
+          ${exerciseId ? 'AND le.exercise_id = :exerciseId' : ''}
+          -- The sets the estimate covers; it returns nothing for others.
+          AND ls.reps BETWEEN 1 AND 12
+          AND ls.weight_kg > 0
+          ${scoped.sql}
+        ORDER BY wl.id, le.exercise_id, strength DESC
+      ),
+      running AS (
+        SELECT
+          best.*,
+          MAX(strength) OVER (
+            PARTITION BY exercise_id
+            ORDER BY performed_at, workout_log_id
+            ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
+          ) AS prior_strength
+        FROM best
+      )
       SELECT
-        wl.id                                    AS "workoutLogId",
-        le.exercise_id                           AS "exerciseId",
-        COALESCE(wl.completed_at, wl.started_at) AS "performedAt",
-        ls.reps                                  AS "reps",
-        MAX(ls.weight_kg)                        AS "weightKg"
-      FROM workout_log wl
-      JOIN logged_exercise le ON le.workout_log_id = wl.id
-      JOIN logged_set ls      ON ls.logged_exercise_id = le.id AND ls.is_completed = TRUE
-      WHERE wl.user_id = :userId
-        AND wl.status = 'COMPLETED'
-        AND le.exercise_id IS NOT NULL
-        ${exerciseId ? 'AND le.exercise_id = :exerciseId' : ''}
-        AND ls.reps IS NOT NULL
-        AND ls.weight_kg IS NOT NULL
-        ${scoped.sql}
-      GROUP BY wl.id, le.exercise_id, wl.completed_at, wl.started_at, ls.reps
-      ORDER BY "performedAt" ASC, wl.id ASC
+        workout_log_id AS "workoutLogId",
+        exercise_id    AS "exerciseId",
+        performed_at   AS "performedAt",
+        reps           AS "reps",
+        weight_kg      AS "weightKg"
+      FROM running
+      WHERE prior_strength IS NULL OR strength > prior_strength
+      ORDER BY performed_at ASC, workout_log_id ASC
       `,
       {
         replacements: {
@@ -1043,7 +1481,8 @@ export class ProgressService {
     );
 
     // Best estimate per (exercise, session). Rows arrive in session
-    // order, so insertion order is session order too.
+    // order, one per session and exercise, so insertion order is session
+    // order too.
     const sessionBest = new Map<
       string,
       { exerciseId: string; recordedAt: Date; best: number }

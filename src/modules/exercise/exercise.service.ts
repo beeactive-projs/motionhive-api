@@ -18,11 +18,8 @@ import {
 } from 'sequelize';
 import { Sequelize } from 'sequelize-typescript';
 import { apiError, Locale } from '../../common/i18n';
-import {
-  escapeLikeWildcards,
-  normalizeSearchTerm,
-} from '../../common/utils/search.utils';
 import { assertOwned } from '../../common/utils/ownership.utils';
+import { MediaStorageService } from '../../common/services/media-storage.service';
 import {
   buildPaginatedResponse,
   getOffset,
@@ -51,6 +48,14 @@ import {
   ListExercisesQueryDto,
 } from './dto/list-exercises.query.dto';
 import { exerciseForkedForOwner } from './notifications';
+import { ExerciseSearchService } from './exercise-search.service';
+import {
+  ExerciseSearchPlan,
+  RANKING_WEIGHTS,
+  RankCandidate,
+  rankExercises,
+  searchWhereSql,
+} from './search/exercise-search';
 import type { PrincipalContext } from '../../common/decorators/principal.decorator';
 
 interface ListResultMeta {
@@ -63,6 +68,8 @@ interface ListResultMeta {
 }
 
 const MAX_PRIMARY_MUSCLES = 3;
+/** Most matches one search ranks; beyond it only the most used are kept. */
+const RANKED_CANDIDATE_CAP = 3000;
 const SLUG_MAX = 80;
 const SLUG_RETRY_LIMIT = 50;
 
@@ -77,6 +84,9 @@ const EXERCISE_OWNER_ATTRIBUTES = [
   'avatarUrl',
   'handle',
 ] as const;
+
+/** The storage folder for exercise pictures, per owner; account erasure deletes it. */
+export const EXERCISE_IMAGE_RESOURCE = 'exercises';
 
 @Injectable()
 export class ExerciseService {
@@ -93,7 +103,9 @@ export class ExerciseService {
     @InjectModel(User) private readonly userModel: typeof User,
     private readonly sequelize: Sequelize,
     private readonly searchIndex: SearchIndexService,
+    private readonly exerciseSearch: ExerciseSearchService,
     private readonly notificationService: NotificationService,
+    private readonly mediaStorage: MediaStorageService,
     @Inject(WINSTON_MODULE_NEST_PROVIDER)
     private readonly logger: LoggerService,
   ) {}
@@ -131,37 +143,47 @@ export class ExerciseService {
    * Ownership filter semantics:
    *   - `all`           → SYSTEM ∪ mine ∪ public-from-others
    *   - `system`        → SYSTEM only
-   *   - `mine`          → owner_id = me (any visibility); instructor-only
+   *   - `mine`          → owner_id = me (any visibility), for every role:
+   *                       someone who is not a coach owns the exercises
+   *                       they made (source USER, always PRIVATE)
    *   - `public-others` → visibility=PUBLIC ∧ owner_id ≠ me ∧ source ≠ SYSTEM
    *
    * For client (`USER`) callers, the catalog browse gate is enforced
-   * upstream in `assertClientCanBrowse`; here we silently drop the
-   * `mine` slice (clients never author exercises).
+   * upstream in `assertClientCanBrowse`.
    */
   async list(filter: ListExercisesQueryDto, principal: PrincipalContext) {
-    const where = this.buildListWhere(filter, principal);
-    const order = this.buildOrder(
-      filter.sort ?? ExerciseSortKey.Name,
-      principal.locale,
-      filter.search,
-    );
+    const sort = filter.sort ?? ExerciseSortKey.Relevance;
+    const plan = await this.exerciseSearch.plan(filter.search);
+    const where = this.buildListWhere(filter, principal, plan);
 
     const page = filter.page ?? 1;
     const limit = filter.limit ?? 20;
 
-    const { rows, count } = await this.exerciseModel.findAndCountAll({
-      where,
-      include: this.buildListIncludes(),
-      order,
-      offset: getOffset(page, limit),
-      limit,
-      distinct: true,
-      subQuery: false,
-    });
+    // Page the exercises alone, then load the includes for that page. The
+    // includes are to-many (primary muscles, equipment): paged in one join,
+    // LIMIT counted joined rows, so an exercise with two pieces of
+    // equipment took two slots and the page came back short. The filters
+    // and sorts read "Exercise" columns only (muscle and equipment go
+    // through EXISTS), so the id query needs no joins.
+    const { ids, count } =
+      plan &&
+      (sort === ExerciseSortKey.Relevance || sort === ExerciseSortKey.Name)
+        ? await this.rankedPage(where, plan, principal, page, limit)
+        : await this.orderedPage(where, sort, principal, page, limit);
+    const loaded = ids.length
+      ? await this.exerciseModel.findAll({
+          where: { id: { [Op.in]: ids } },
+          include: this.buildListIncludes(),
+        })
+      : [];
+    const byId = new Map(loaded.map((row) => [row.id, row]));
+    const rows = ids
+      .map((id) => byId.get(id))
+      .filter((row): row is Exercise => row !== undefined);
 
     const meta: ListResultMeta = {};
     if (filter.withFacets) {
-      meta.facets = await this.computeFacets(filter, principal);
+      meta.facets = await this.computeFacets(filter, principal, plan);
     }
 
     return {
@@ -195,8 +217,19 @@ export class ExerciseService {
   // Create
   // ────────────────────────────────────────────────────────────────────
 
-  async create(dto: CreateExerciseDto, ownerId: string): Promise<Exercise> {
-    this.validateMuscleRoles(dto.muscles);
+  /**
+   * @param isInstructor a coach authors an INSTRUCTOR exercise, PRIVATE or
+   * PUBLIC, with at least one primary muscle. Anyone else authors a USER
+   * one for their own training: always PRIVATE, muscles optional (the
+   * form's chips). Ownership is the boundary either way.
+   */
+  async create(
+    dto: CreateExerciseDto,
+    ownerId: string,
+    isInstructor = true,
+  ): Promise<Exercise> {
+    const muscles = dto.muscles ?? [];
+    this.validateMuscleRoles(muscles, { requirePrimary: isInstructor });
     const slug = await this.allocateSlug(dto.name, ownerId);
 
     const created = await this.sequelize.transaction(async (tx) => {
@@ -213,9 +246,14 @@ export class ExerciseService {
           force: dto.force ?? null,
           metValue: dto.metValue ?? null,
           isUnilateral: dto.isUnilateral ?? false,
-          source: ExerciseSource.Instructor,
+          source: isInstructor
+            ? ExerciseSource.Instructor
+            : ExerciseSource.User,
           ownerId,
-          visibility: dto.visibility ?? ExerciseVisibility.Private,
+          // A USER exercise is private by rule (a CHECK backs it).
+          visibility: isInstructor
+            ? (dto.visibility ?? ExerciseVisibility.Private)
+            : ExerciseVisibility.Private,
           forkedFromId: null,
           mediaKind: dto.youtubeUrl
             ? ExerciseMediaKind.Youtube
@@ -227,7 +265,9 @@ export class ExerciseService {
         { transaction: tx },
       );
 
-      await this.attachMuscles(exercise.id, dto.muscles, tx);
+      if (muscles.length) {
+        await this.attachMuscles(exercise.id, muscles, tx);
+      }
       if (dto.equipmentIds?.length) {
         await this.attachEquipment(exercise.id, dto.equipmentIds, tx);
       }
@@ -261,9 +301,13 @@ export class ExerciseService {
       throw new NotFoundException(apiError('exercise.notFound'));
     }
 
+    // Someone's own (USER) exercise: muscles optional, and it stays
+    // PRIVATE whatever is sent, since a CHECK refuses anything else.
+    const isUserOwn = exercise.source === ExerciseSource.User;
     if (dto.muscles) {
-      this.validateMuscleRoles(dto.muscles);
+      this.validateMuscleRoles(dto.muscles, { requirePrimary: !isUserOwn });
     }
+    const visibility = isUserOwn ? undefined : dto.visibility;
 
     let slug = exercise.slug;
     if (dto.name && dto.name.trim() !== exercise.name) {
@@ -291,7 +335,7 @@ export class ExerciseService {
           ...(dto.isUnilateral !== undefined && {
             isUnilateral: dto.isUnilateral,
           }),
-          ...(dto.visibility !== undefined && { visibility: dto.visibility }),
+          ...(visibility !== undefined && { visibility }),
           ...(dto.youtubeUrl !== undefined && {
             youtubeUrl: dto.youtubeUrl || null,
             mediaKind: dto.youtubeUrl
@@ -307,7 +351,9 @@ export class ExerciseService {
           where: { exerciseId: exercise.id },
           transaction: tx,
         });
-        await this.attachMuscles(exercise.id, dto.muscles, tx);
+        if (dto.muscles.length) {
+          await this.attachMuscles(exercise.id, dto.muscles, tx);
+        }
       }
 
       if (dto.equipmentIds) {
@@ -323,6 +369,59 @@ export class ExerciseService {
 
     await this.indexExercise(exercise.id, 'update');
     return this.reloadDetail(exercise.id);
+  }
+
+  // ────────────────────────────────────────────────────────────────────
+  // Picture (own and coaches' exercises)
+  // ────────────────────────────────────────────────────────────────────
+
+  /**
+   * Sets the exercise's picture: a public image in the owner's
+   * folder, shown wherever the exercise is (list, picker, logger). Public on
+   * purpose: a coach's exercise is seen by their clients, and the link is
+   * not guessable. Account erasure deletes the folder.
+   *
+   * The picture it replaces stays stored: workouts logged with it keep its
+   * link (`exercise_thumbnail_url_snapshot`) and still show it.
+   */
+  async setImage(
+    id: string,
+    file: Express.Multer.File,
+    principal: PrincipalContext,
+  ): Promise<Exercise> {
+    const exercise = await this.ownedCustom(id, principal);
+    const { url } = await this.mediaStorage.uploadImage(file, {
+      resource: EXERCISE_IMAGE_RESOURCE,
+      userId: principal.userId,
+    });
+    await exercise.update({ thumbnailUrl: url });
+    return this.reloadDetail(exercise.id);
+  }
+
+  /** Takes the picture off; the exercise shows its kind's tile again. */
+  async removeImage(
+    id: string,
+    principal: PrincipalContext,
+  ): Promise<Exercise> {
+    const exercise = await this.ownedCustom(id, principal);
+    await exercise.update({ thumbnailUrl: null });
+    return this.reloadDetail(exercise.id);
+  }
+
+  /** The caller's own (USER or coach-made) exercise; ours and others' read as not found. */
+  private async ownedCustom(
+    id: string,
+    principal: PrincipalContext,
+  ): Promise<Exercise> {
+    const exercise = await this.exerciseModel.findByPk(id);
+    assertOwned(exercise, principal.userId, (e) => e.ownerId, {
+      notFoundMessage: apiError('exercise.notFound'),
+      onMismatch: 'hide',
+    });
+    if (exercise.source === ExerciseSource.System) {
+      throw new NotFoundException(apiError('exercise.notFound'));
+    }
+    return exercise;
   }
 
   // ────────────────────────────────────────────────────────────────────
@@ -512,6 +611,7 @@ export class ExerciseService {
   private buildListWhere(
     filter: ListExercisesQueryDto,
     principal: PrincipalContext,
+    plan: ExerciseSearchPlan | null,
   ): WhereOptions<Exercise> {
     const ownership = filter.ownership ?? ExerciseOwnershipFilter.All;
     const conds: WhereOptions<Exercise>[] = [{ deletedAt: null }];
@@ -522,12 +622,9 @@ export class ExerciseService {
         conds.push({ source: ExerciseSource.System });
         break;
       case ExerciseOwnershipFilter.Mine:
-        if (!principal.isInstructor) {
-          // Clients can't have "mine" exercises — return nothing.
-          conds.push(literal('1 = 0') as unknown as WhereOptions<Exercise>);
-        } else {
-          conds.push({ ownerId: principal.userId });
-        }
+        // Everyone can own exercises: a coach's, or the USER ones someone
+        // made for their own training.
+        conds.push({ ownerId: principal.userId });
         break;
       case ExerciseOwnershipFilter.PublicOthers:
         conds.push({
@@ -551,29 +648,26 @@ export class ExerciseService {
             ],
           });
         } else {
-          // Clients: SYSTEM OR PUBLIC custom — never PRIVATE.
+          // Clients: SYSTEM, PUBLIC custom, and their own (always
+          // PRIVATE). Never someone else's PRIVATE row.
           conds.push({
             [Op.or]: [
               { source: ExerciseSource.System },
               { visibility: ExerciseVisibility.Public },
+              { ownerId: principal.userId },
             ],
           });
         }
         break;
     }
 
-    const term = this.searchTerm(filter.search);
-    if (term) {
-      // `search_name` holds the English name and every translated one,
-      // lowercased and without diacritics (migration 063), so "squats"
-      // finds "Genuflexiuni cu haltera" whatever language the reader is in.
-      // A contains match, or a close match (`<%`, word similarity) that
-      // forgives plurals and a missing letter.
-      const pattern = this.sequelize.escape(`%${escapeLikeWildcards(term)}%`);
-      const word = this.sequelize.escape(term);
+    if (plan) {
+      // Words of any of the names (`search_name` holds every language,
+      // migrations 063 and 080), muscles, equipment, shorthand: see
+      // `search/exercise-search.ts`.
       conds.push(
         literal(
-          `("Exercise".search_name LIKE ${pattern} OR ${word} <% "Exercise".search_name)`,
+          searchWhereSql(plan, (value) => this.sequelize.escape(value)),
         ) as unknown as WhereOptions<Exercise>,
       );
     }
@@ -620,15 +714,103 @@ export class ExerciseService {
     return { [Op.and]: conds };
   }
 
-  /** Lowercase, no diacritics, single spaces: matches `search_name`. */
-  private searchTerm(search: string | undefined): string {
-    return search ? normalizeSearchTerm(search).toLowerCase() : '';
+  /**
+   * One page of a search, best match first. Every match is scored in code
+   * (`rankExercises`): how well the words matched, how much the exercise is
+   * the searcher's own, how much everyone uses it. A search matches a small
+   * slice of the library, so reading all of its matches is cheap; past
+   * `RANKED_CANDIDATE_CAP` (a query of a letter or two in a huge library)
+   * only the most used ones are ranked.
+   */
+  private async rankedPage(
+    where: WhereOptions<Exercise>,
+    plan: ExerciseSearchPlan,
+    principal: PrincipalContext,
+    page: number,
+    limit: number,
+  ): Promise<{ ids: string[]; count: number }> {
+    const locale = this.sequelize.escape(principal.locale);
+    const [candidates, personal] = await Promise.all([
+      this.exerciseModel.findAll({
+        where,
+        attributes: [
+          'id',
+          'name',
+          [
+            literal(
+              `COALESCE("Exercise".translations -> ${locale} ->> 'name', "Exercise".name)`,
+            ),
+            'localeName',
+          ],
+          [literal('"Exercise".search_name'), 'searchName'],
+          [literal('"Exercise".popularity_score'), 'popularity'],
+          [
+            literal(
+              `ARRAY(SELECT em.muscle_id::text FROM exercise_muscle em WHERE em.exercise_id = "Exercise".id AND em.role = 'PRIMARY')`,
+            ),
+            'primaryMuscleIds',
+          ],
+          [
+            literal(
+              `ARRAY(SELECT em.muscle_id::text FROM exercise_muscle em WHERE em.exercise_id = "Exercise".id AND em.role = 'SECONDARY')`,
+            ),
+            'secondaryMuscleIds',
+          ],
+          [
+            literal(
+              `ARRAY(SELECT ee.equipment_id::text FROM exercise_equipment ee WHERE ee.exercise_id = "Exercise".id)`,
+            ),
+            'equipmentIds',
+          ],
+        ],
+        order: [
+          [literal('"Exercise".popularity_score'), 'DESC'],
+          ['id', 'ASC'],
+        ],
+        limit: RANKED_CANDIDATE_CAP,
+        raw: true,
+      }) as unknown as Promise<RankCandidate[]>,
+      this.exerciseSearch.personalScores(principal.userId),
+    ]);
+
+    const ranked = rankExercises(
+      plan,
+      candidates.map((row) => ({
+        ...row,
+        popularity: Number(row.popularity) || 0,
+      })),
+      personal,
+    );
+    const offset = getOffset(page, limit);
+    return { ids: ranked.slice(offset, offset + limit), count: ranked.length };
+  }
+
+  /** One page in a fixed order, paged by the database. */
+  private async orderedPage(
+    where: WhereOptions<Exercise>,
+    sort: ExerciseSortKey,
+    principal: PrincipalContext,
+    page: number,
+    limit: number,
+  ): Promise<{ ids: string[]; count: number }> {
+    const personal =
+      sort === ExerciseSortKey.Relevance
+        ? await this.exerciseSearch.personalScores(principal.userId)
+        : null;
+    const { rows, count } = await this.exerciseModel.findAndCountAll({
+      where,
+      attributes: ['id'],
+      order: this.buildOrder(sort, principal.locale, personal),
+      offset: getOffset(page, limit),
+      limit,
+    });
+    return { ids: rows.map((row) => row.id), count };
   }
 
   private buildOrder(
     sort: ExerciseSortKey,
     locale: Locale,
-    search: string | undefined,
+    personal: ReadonlyMap<string, number> | null,
   ): Order {
     // The name the reader sees, folded, so Romanian names sort where a
     // Romanian expects them ("Împins" with the I's, not after Z).
@@ -650,20 +832,26 @@ export class ExerciseService {
         // falls back to a seq scan. Acceptable — list queries always pair
         // this sort with `ownership='public-others'` from the UI.
         return [['forkCount', 'DESC'], ...byName];
-      case ExerciseSortKey.Name:
-      default: {
-        // While searching, the best match leads: names that contain what
-        // was typed, then close matches by how close, then A to Z.
-        const term = this.searchTerm(search);
-        if (!term) return byName;
-        const pattern = this.sequelize.escape(`%${escapeLikeWildcards(term)}%`);
-        const word = this.sequelize.escape(term);
+      case ExerciseSortKey.Relevance: {
+        // Nothing typed: what this person and everyone use most, the same
+        // weights as a search's ranking. The person's scores ride along as
+        // one escaped JSON object keyed by exercise id.
+        const mine = this.sequelize.escape(
+          JSON.stringify(Object.fromEntries(personal ?? [])),
+        );
         return [
-          [literal(`("Exercise".search_name LIKE ${pattern})`), 'DESC'],
-          [literal(`word_similarity(${word}, "Exercise".search_name)`), 'DESC'],
+          [
+            literal(
+              `(${RANKING_WEIGHTS.personal} * COALESCE((${mine}::jsonb ->> "Exercise".id::text)::real, 0) + ${RANKING_WEIGHTS.popularity} * "Exercise".popularity_score)`,
+            ),
+            'DESC',
+          ],
           ...byName,
         ];
       }
+      case ExerciseSortKey.Name:
+      default:
+        return byName;
     }
   }
 
@@ -713,10 +901,11 @@ export class ExerciseService {
   private async computeFacets(
     filter: ListExercisesQueryDto,
     principal: PrincipalContext,
+    plan: ExerciseSearchPlan | null,
   ) {
     const without = (key: keyof ListExercisesQueryDto) => {
       const next = { ...filter, [key]: undefined } as ListExercisesQueryDto;
-      return this.buildListWhere(next, principal);
+      return this.buildListWhere(next, principal, plan);
     };
 
     const [kindRows, muscleRows, equipmentRows, levelRows] = await Promise.all([
@@ -794,11 +983,17 @@ export class ExerciseService {
     return exercise.ownerId === principal.userId;
   }
 
+  /**
+   * `requirePrimary`: a coach's exercise names at least one primary
+   * muscle; someone's own (USER) one may have none, since the form's
+   * muscle chips are optional.
+   */
   private validateMuscleRoles(
     muscles: { muscleId: string; role: MuscleRole }[],
+    { requirePrimary = true }: { requirePrimary?: boolean } = {},
   ): void {
     const primaries = muscles.filter((m) => m.role === MuscleRole.Primary);
-    if (primaries.length === 0) {
+    if (requirePrimary && primaries.length === 0) {
       throw new BadRequestException(apiError('exercise.primaryMuscleRequired'));
     }
     if (primaries.length > MAX_PRIMARY_MUSCLES) {

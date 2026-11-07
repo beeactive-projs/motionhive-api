@@ -5,7 +5,9 @@ import { WINSTON_MODULE_NEST_PROVIDER } from 'nest-winston';
 
 import { Exercise } from '../exercise/entities/exercise.entity';
 import { CoachAccessService } from '../workout/coach-access.service';
+import { streakFromWeeks } from '../workout/training-streak';
 import { ProgressService } from './progress.service';
+import { RosterWindow } from './dto/roster.query.dto';
 import { makeSilentLogger } from '../../../test/helpers/sequelize-mocks';
 
 /**
@@ -18,18 +20,11 @@ import { makeSilentLogger } from '../../../test/helpers/sequelize-mocks';
  */
 describe('ProgressService — streaks', () => {
   let service: ProgressService;
-  // Reaching into the private helper on purpose: it is the unit under
-  // test, and going through `overview()` would mean mocking six queries
-  // to assert on arithmetic.
-  const streak = (weeks: string[]) =>
-    (
-      service as unknown as {
-        _streakFromWeeks(w: string[]): {
-          currentWeeks: number;
-          bestWeeks: number;
-        };
-      }
-    )._streakFromWeeks(weeks);
+  let query: jest.Mock;
+  // The pure helper the overview (and the workout summary) call; going
+  // through `overview()` would mean mocking six queries to assert on
+  // arithmetic.
+  const streak = (weeks: string[]) => streakFromWeeks(weeks);
 
   /** Monday of the current week, then N weeks back, as ISO dates. */
   const mondayOffsetWeeks = (n: number): string => {
@@ -44,6 +39,7 @@ describe('ProgressService — streaks', () => {
   };
 
   beforeEach(async () => {
+    query = jest.fn();
     const module = await Test.createTestingModule({
       providers: [
         ProgressService,
@@ -52,7 +48,7 @@ describe('ProgressService — streaks', () => {
           provide: CoachAccessService,
           useValue: { readableAssignmentIds: jest.fn() },
         },
-        { provide: Sequelize, useValue: { query: jest.fn() } },
+        { provide: Sequelize, useValue: { query } },
         { provide: WINSTON_MODULE_NEST_PROVIDER, useValue: makeSilentLogger() },
       ],
     }).compile();
@@ -122,6 +118,272 @@ describe('ProgressService — streaks', () => {
       expect(
         reason({ adherencePercent: null, previousAdherencePercent: null }),
       ).toBeNull();
+    });
+  });
+
+  // ─── roster: how much it reads ───────────────────────────────────
+
+  describe('roster — scope', () => {
+    const run = async (clientId?: string) => {
+      query.mockResolvedValue([]);
+      await service.roster(
+        'coach-1',
+        RosterWindow.FourWeeks,
+        '2026-10-29',
+        clientId,
+      );
+      const [sql, options] = query.mock.calls[0] as [
+        string,
+        { replacements: Record<string, unknown> },
+      ];
+      return { sql, replacements: options.replacements };
+    };
+
+    it("narrows to one client's row when a page asks about one person", async () => {
+      const { sql, replacements } = await run('client-1');
+      expect(sql).toContain('AND ic.client_id = :clientId');
+      expect(replacements.clientId).toBe('client-1');
+    });
+
+    it('reads the whole roster when no client is named', async () => {
+      const { sql, replacements } = await run();
+      expect(sql).not.toContain(':clientId');
+      expect(replacements).not.toHaveProperty('clientId');
+    });
+
+    it("reads only the coach's own clients' workouts for last seen", async () => {
+      const { sql } = await run();
+      const lastSeen = sql.slice(
+        sql.indexOf('last_seen AS'),
+        sql.indexOf('plan_counts AS'),
+      );
+      expect(lastSeen).toContain('user_id IN (SELECT client_id FROM clients)');
+    });
+
+    // A private workout said "trained 2 days ago" on the coach's Home
+    // while the log itself stayed closed to them.
+    it('dates last seen only from workouts the coach may read', async () => {
+      const { sql } = await run();
+      const lastSeen = sql.slice(
+        sql.indexOf('last_seen AS'),
+        sql.indexOf('plan_counts AS'),
+      );
+      expect(lastSeen).toContain("wl.visibility IN ('COACHES_ONLY', 'PUBLIC')");
+      expect(lastSeen).toContain('pa.instructor_id = :instructorId');
+      expect(lastSeen).toContain('pa.deleted_at IS NULL');
+      expect(lastSeen).not.toContain('ONLY_ME');
+    });
+
+    it('asks for no activity totals when there is nobody to count', async () => {
+      await run();
+      expect(query).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  // ─── roster: how much the clients trained ────────────────────────
+
+  describe('roster — activity totals', () => {
+    const clientRow = {
+      clientId: 'client-1',
+      firstName: 'Anna',
+      lastName: 'Popescu',
+      avatarUrl: null,
+      handle: null,
+      due: '3',
+      completed: '2',
+      skipped: '0',
+      prevDue: '3',
+      prevCompleted: '2',
+      lastWorkoutAt: new Date('2026-10-28T16:20:00Z'),
+      activePlans: '1',
+    };
+
+    it('adds workouts, the window before and records to the totals', async () => {
+      query
+        .mockResolvedValueOnce([clientRow])
+        .mockResolvedValueOnce([
+          { workouts: '5', previousWorkouts: '3', records: '2' },
+        ]);
+      const roster = await service.roster(
+        'coach-1',
+        RosterWindow.OneWeek,
+        '2026-10-31',
+      );
+      expect(roster.totals).toMatchObject({
+        clients: 1,
+        workouts: 5,
+        previousWorkouts: 3,
+        records: 2,
+      });
+    });
+
+    it('counts only what the coach may read, in both windows', async () => {
+      query
+        .mockResolvedValueOnce([clientRow])
+        .mockResolvedValueOnce([
+          { workouts: '0', previousWorkouts: '0', records: '0' },
+        ]);
+      await service.roster(
+        'coach-1',
+        RosterWindow.OneWeek,
+        '2026-10-31',
+        'client-1',
+      );
+      const [sql, options] = query.mock.calls[1] as [
+        string,
+        { replacements: Record<string, unknown> },
+      ];
+      expect(sql).toContain("wl.visibility IN ('COACHES_ONLY', 'PUBLIC')");
+      expect(sql).toContain('pa.instructor_id = :instructorId');
+      expect(sql).toContain('AND ic.client_id = :clientId');
+      expect(sql).toContain("x.source = 'ESTIMATED_EPLEY'");
+      expect(sql).toContain('x.recorded_at > x.first_at');
+      expect(options.replacements).toMatchObject({
+        days: 7,
+        today: '2026-10-31',
+        clientId: 'client-1',
+      });
+    });
+  });
+
+  // ─── the coach's activity feed ───────────────────────────────────
+
+  describe('activity', () => {
+    it("reads only active clients' workouts the coach may read, newest first", async () => {
+      query.mockResolvedValue([]);
+      await service.activity('coach-1', 5);
+      const [sql, options] = query.mock.calls[0] as [
+        string,
+        { replacements: Record<string, unknown> },
+      ];
+      expect(sql).toContain("ic.status = 'ACTIVE'");
+      expect(sql).toContain("wl.visibility IN ('COACHES_ONLY', 'PUBLIC')");
+      expect(sql).toContain('pa.deleted_at IS NULL');
+      expect(sql).toContain('ORDER BY wl.completed_at DESC');
+      expect(sql).toContain('LIMIT :limit');
+      expect(options.replacements).toMatchObject({
+        instructorId: 'coach-1',
+        limit: 5,
+      });
+    });
+
+    it('counts a first time on an exercise as no record', async () => {
+      query.mockResolvedValue([]);
+      await service.activity('coach-1', 5);
+      const [sql] = query.mock.calls[0] as [string];
+      expect(sql).toContain('PARTITION BY orm.user_id, orm.exercise_id');
+      expect(sql).toContain('x.recorded_at > x.first_at');
+      expect(sql).toContain('BETWEEN wl.started_at AND wl.completed_at');
+    });
+
+    it('names the client and turns the counts into numbers', async () => {
+      query.mockResolvedValue([
+        {
+          workoutLogId: 'log-1',
+          clientId: 'client-1',
+          firstName: 'Anna',
+          lastName: 'Popescu',
+          avatarUrl: null,
+          handle: 'anna',
+          workoutName: 'Upper A',
+          completedAt: new Date('2026-10-28T16:20:00Z'),
+          durationSeconds: 3120,
+          recordCount: '2',
+        },
+      ]);
+      const [item] = await service.activity('coach-1', 5);
+      expect(item).toEqual({
+        workoutLogId: 'log-1',
+        clientId: 'client-1',
+        name: 'Anna Popescu',
+        avatarUrl: null,
+        handle: 'anna',
+        workoutName: 'Upper A',
+        completedAt: '2026-10-28T16:20:00.000Z',
+        durationSeconds: 3120,
+        recordCount: 2,
+      });
+    });
+  });
+
+  // ─── the Progress list: every exercise trained ───────────────────
+  describe('trained exercises', () => {
+    const row = {
+      exerciseId: 'ex-1',
+      exerciseName: 'Împins la piept',
+      kind: 'STRENGTH',
+      sessionCount: '7',
+      lastPerformedAt: new Date('2026-10-28T16:20:00Z'),
+      recent: [
+        {
+          workoutLogId: 'log-2',
+          performedAt: '2026-10-28T16:20:00Z',
+          topWeightKg: '62.50',
+          topReps: 7,
+          bestDurationSeconds: null,
+          bestDistanceMeters: null,
+        },
+      ],
+    };
+
+    it("reads the caller's completed sets, one row per exercise, in their language", async () => {
+      query.mockResolvedValue([row]);
+      const [item] = await service.trainedExercises('user-1', 'ro');
+      const [sql, options] = query.mock.calls[0] as [
+        string,
+        { replacements: Record<string, unknown> },
+      ];
+      expect(sql).toContain("wl.status = 'COMPLETED'");
+      expect(sql).toContain('ls.is_completed = TRUE');
+      expect(sql).toContain('r.rn <= :recentSessions');
+      expect(sql).not.toContain('visibility');
+      expect(options.replacements).toMatchObject({
+        userId: 'user-1',
+        locale: 'ro',
+        recentSessions: 6,
+      });
+      expect(item).toEqual({
+        exerciseId: 'ex-1',
+        exerciseName: 'Împins la piept',
+        kind: 'STRENGTH',
+        sessionCount: 7,
+        lastPerformedAt: row.lastPerformedAt,
+        recent: [
+          {
+            workoutLogId: 'log-2',
+            performedAt: new Date('2026-10-28T16:20:00Z'),
+            topWeightKg: 62.5,
+            topReps: 7,
+            bestDurationSeconds: null,
+            bestDistanceMeters: null,
+          },
+        ],
+      });
+    });
+
+    it('gives a coach only the workouts they may read', async () => {
+      const access = (
+        service as unknown as {
+          coachAccess: { readableAssignmentIds: jest.Mock };
+        }
+      ).coachAccess;
+      access.readableAssignmentIds.mockResolvedValue(['pa-1']);
+      query.mockResolvedValue([]);
+      await service.trainedExercisesForCoach('coach-1', 'client-1', 'en');
+      const [sql, options] = query.mock.calls[0] as [
+        string,
+        { replacements: Record<string, unknown> },
+      ];
+      expect(access.readableAssignmentIds).toHaveBeenCalledWith(
+        'coach-1',
+        'client-1',
+      );
+      expect(sql).toContain('wl.program_assignment_id IN (:assignmentIds)');
+      expect(sql).toContain("wl.visibility IN ('COACHES_ONLY', 'PUBLIC')");
+      expect(options.replacements).toMatchObject({
+        userId: 'client-1',
+        assignmentIds: ['pa-1'],
+      });
     });
   });
 

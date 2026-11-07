@@ -14,10 +14,7 @@ import {
   QueryTypes,
   Transaction,
   UniqueConstraintError,
-  col,
-  fn,
   literal,
-  where as whereFn,
 } from 'sequelize';
 import { Sequelize } from 'sequelize-typescript';
 import { User } from './entities/user.entity';
@@ -28,10 +25,16 @@ import {
 import * as bcrypt from 'bcrypt';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
+import { UpdateWorkoutSettingsDto } from './dto/update-workout-settings.dto';
+import {
+  resolveWorkoutSettings,
+  type StoredWorkoutSettings,
+  type WorkoutSettings,
+} from './workout-settings';
 import { CryptoService } from '../../common/services';
 import { apiError } from '../../common/i18n';
-import { escapeLikeWildcards } from '../../common/utils/search.utils';
-import { CloudinaryService } from '../../common/services/cloudinary.service';
+import { foldedContains } from '../../common/utils/search.utils';
+import { MediaStorageService } from '../../common/services/media-storage.service';
 import { InstructorProfile } from '../profile/entities/instructor-profile.entity';
 import { GroupMember } from '../group/entities/group-member.entity';
 import { SessionParticipant } from '../session/entities/session-participant.entity';
@@ -93,7 +96,7 @@ export class UserService {
     private readonly sequelize: Sequelize,
     private readonly configService: ConfigService,
     private readonly cryptoService: CryptoService,
-    private readonly cloudinaryService: CloudinaryService,
+    private readonly mediaStorage: MediaStorageService,
     @Inject(WINSTON_MODULE_NEST_PROVIDER)
     private readonly logger: LoggerService,
     private readonly searchIndexService: SearchIndexService,
@@ -109,6 +112,54 @@ export class UserService {
 
   async findById(id: string): Promise<User | null> {
     return this.userModel.findByPk(id);
+  }
+
+  /** The person's workout logger settings, every key resolved. */
+  async getWorkoutSettings(userId: string): Promise<WorkoutSettings> {
+    const user = await this.userModel.findByPk(userId, {
+      attributes: ['id', 'workoutSettings'],
+    });
+    if (!user) throw new NotFoundException(apiError('user.notFound'));
+    return resolveWorkoutSettings(user.workoutSettings);
+  }
+
+  /**
+   * Merge the keys sent into `workout_settings`. Read, merge and write
+   * under a row lock, so two quick toggles cannot drop each other's key
+   * (same as the privacy settings). A key sent as null goes back to its
+   * default. Answers with every key resolved.
+   */
+  async updateWorkoutSettings(
+    userId: string,
+    dto: UpdateWorkoutSettingsDto,
+  ): Promise<WorkoutSettings> {
+    const entries = Object.entries(dto).filter(
+      ([, value]) => value !== undefined,
+    ) as [keyof WorkoutSettings, number | boolean | null][];
+    if (entries.length === 0) return this.getWorkoutSettings(userId);
+
+    return this.sequelize.transaction(async (tx) => {
+      const user = await this.userModel.findByPk(userId, {
+        attributes: ['id', 'workoutSettings'],
+        transaction: tx,
+        lock: tx.LOCK.UPDATE,
+      });
+      if (!user) throw new NotFoundException(apiError('user.notFound'));
+
+      const merged: Record<string, number | boolean> = {
+        ...(user.workoutSettings ?? {}),
+      };
+      for (const [key, value] of entries) {
+        if (value === null) delete merged[key];
+        else merged[key] = value;
+      }
+      // JSONB is not dirty-tracked on mutation: assign a fresh object.
+      await user.update(
+        { workoutSettings: merged as StoredWorkoutSettings },
+        { transaction: tx },
+      );
+      return resolveWorkoutSettings(merged as StoredWorkoutSettings);
+    });
   }
 
   /**
@@ -255,27 +306,22 @@ export class UserService {
       }
     }
 
-    // One token matches if it appears in any searchable column. `handle` is
-    // in the list because the result row displays it: searching what you
-    // were just shown used to return nobody. The concatenated full name
-    // catches "elena dum" as a single token too.
-    const fullName = fn(
-      'concat_ws',
-      ' ',
-      col('User.first_name'),
-      col('User.last_name'),
-    );
-    const tokenMatches = tokens.map((token) => {
-      const like = `%${escapeLikeWildcards(token)}%`;
-      return {
-        [Op.or]: [
-          { firstName: { [Op.iLike]: like } },
-          { lastName: { [Op.iLike]: like } },
-          { handle: { [Op.iLike]: like } },
-          whereFn(fullName, { [Op.iLike]: like }),
-        ],
-      };
-    });
+    // One token matches if it appears in the full name or the handle.
+    // `handle` is in because the result row displays it: searching what
+    // you were just shown used to return nobody. The full name covers the
+    // first and last names on their own and catches "elena dum" as a
+    // single token. Both are folded, so "stefan" finds "Ștefan".
+    const esc = (value: string) => this.sequelize.escape(value);
+    const tokenMatches = tokens.map((token) => ({
+      [Op.or]: [
+        foldedContains(
+          `concat_ws(' ', "User"."first_name", "User"."last_name")`,
+          token,
+          esc,
+        ),
+        foldedContains('"User"."handle"', token, esc),
+      ],
+    }));
 
     const where: Record<string, unknown> = {
       isActive: true,
@@ -627,12 +673,11 @@ export class UserService {
   /**
    * Upload a new profile picture for the given user.
    *
-   * Stores the image in Cloudinary under the `avatars/` folder, saves
-   * the secure URL + public_id on the user row, and DELETES the
-   * previous Cloudinary asset (if any) so we don't leak storage on
-   * every re-upload. Cleanup runs after the DB write — if Cloudinary
-   * fails to delete the old asset we log and move on rather than
-   * undoing the user-visible change.
+   * Stores the image in the person's `avatars/` folder, saves the
+   * public URL + storage key on the user row, and DELETES the previous
+   * file (if any) so we don't leak storage on every re-upload. Cleanup
+   * runs after the DB write: if storage fails to delete the old file we
+   * log and move on rather than undoing the user-visible change.
    */
   async uploadAvatar(userId: string, file: Express.Multer.File): Promise<User> {
     const user = await this.findById(userId);
@@ -641,7 +686,7 @@ export class UserService {
     }
 
     const previousPublicId = user.avatarPublicId;
-    const { url, publicId } = await this.cloudinaryService.uploadImage(file, {
+    const { url, publicId } = await this.mediaStorage.uploadImage(file, {
       resource: 'avatars',
       userId,
     });
@@ -651,7 +696,7 @@ export class UserService {
 
     if (previousPublicId && previousPublicId !== publicId) {
       try {
-        await this.cloudinaryService.deleteImage(previousPublicId);
+        await this.mediaStorage.deleteImage(previousPublicId);
       } catch (err) {
         // Non-fatal — the new avatar is already live; the old asset
         // just lingers. A periodic sweeper can clean orphans later.

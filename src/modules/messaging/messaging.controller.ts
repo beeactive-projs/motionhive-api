@@ -40,6 +40,7 @@ import { MessagingService } from './messaging.service';
  *   PATCH  /messaging/conversations/:id/unread     mark-as-unread (a flag; mark-read clears it)
  *   PATCH  /messaging/conversations/:id/mute       mute / unmute
  *   POST   /messaging/conversations/:id/leave      soft-leave (groups only; DMs 400)
+ *   DELETE /messaging/conversations/:id            delete for me (hides history up to now)
  *   DELETE /messaging/messages/:id                 sender soft-deletes own
  *   GET    /messaging/unread-count                 global badge count
  *
@@ -183,6 +184,16 @@ export class MessagingController {
   ) {
     await this.messagingService.leave(req.user.id, id);
     return { ok: true };
+  }
+
+  // DELETE /messaging/conversations/:id
+  @Delete('conversations/:id')
+  @ApiEndpoint(MessagingDocs.clearConversation)
+  clearConversation(
+    @Request() req: AuthenticatedRequest,
+    @Param('id', ParseUUIDPipe) id: string,
+  ) {
+    return this.messagingService.clearConversation(req.user.id, id);
   }
 
   // DELETE /messaging/messages/:id

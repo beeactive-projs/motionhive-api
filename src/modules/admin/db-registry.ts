@@ -14,6 +14,7 @@ import { StripeAccount } from '../payment/entities/stripe-account.entity';
 import { Dispute } from '../payment/entities/dispute.entity';
 import { WebhookEvent } from '../payment/entities/webhook-event.entity';
 import { MessageReport } from '../messaging/entities/message-report.entity';
+import { WorkoutReport } from '../workout/entities/workout-report.entity';
 import { Notification } from '../notification/entities/notification.entity';
 
 export interface DbBrowserEntry {
@@ -77,6 +78,11 @@ export const DB_BROWSER_REGISTRY: Record<string, DbBrowserEntry> = {
   message_report: {
     model: MessageReport,
     label: 'Message reports',
+    redact: [],
+  },
+  workout_report: {
+    model: WorkoutReport,
+    label: 'Workout reports',
     redact: [],
   },
   notification: { model: Notification, label: 'Notifications', redact: [] },

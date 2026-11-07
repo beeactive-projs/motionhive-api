@@ -64,7 +64,8 @@ export const envValidationSchema = Joi.object({
   APNS_PRIVATE_KEY: Joi.string().optional(),
   // Sandbox by default. A token minted by a development build is
   // rejected outright by the production host, so this must match the
-  // build that registered the device.
+  // build that registered the device: 'true' wherever TestFlight or
+  // App Store builds connect (the dev API serves TestFlight).
   APNS_PRODUCTION: Joi.string().valid('true', 'false').default('false'),
 
   // Firebase Cloud Messaging, for Android. Optional on the same terms
@@ -95,8 +96,9 @@ export const envValidationSchema = Joi.object({
     otherwise: Joi.optional(),
   }),
 
-  // Public marketing site origin (no trailing slash). Used ONLY for the blog
-  // sitemap's absolute URLs. Deliberately separate from FRONTEND_URL, which
+  // Public marketing site origin (no trailing slash): the blog sitemap's
+  // absolute URLs and the legal links in every email footer. The dev API
+  // sets the dev site. Deliberately separate from FRONTEND_URL, which
   // points at the authenticated app (`app.`) for CORS, emails and redirects;
   // blog articles live on the marketing site and `app.` redirects to login.
   PUBLIC_SITE_URL: Joi.string().uri().default('https://www.motionhive.fit'),
@@ -119,11 +121,30 @@ export const envValidationSchema = Joi.object({
 
   // OAuth (optional – required only when using social login)
   GOOGLE_CLIENT_ID: Joi.string().optional(),
+  // The mobile app's iOS OAuth client, whose ID tokens are accepted too.
+  GOOGLE_IOS_CLIENT_ID: Joi.string().optional(),
   GOOGLE_CLIENT_SECRET: Joi.string().optional(),
   FACEBOOK_APP_ID: Joi.string().optional(),
   FACEBOOK_APP_SECRET: Joi.string().optional(),
 
-  // Cloudinary (optional – for image uploads)
+  // Picture storage: Cloudflare R2 (S3 API). Optional; without them the
+  // app boots and uploads answer with an error. One public and one
+  // private bucket per environment; MEDIA_PUBLIC_URL is the public
+  // bucket's custom domain (https://img.motionhive.fit in production).
+  R2_ENDPOINT: Joi.string()
+    .uri({ scheme: ['https'] })
+    .optional(),
+  R2_ACCESS_KEY_ID: Joi.string().optional(),
+  R2_SECRET_ACCESS_KEY: Joi.string().optional(),
+  R2_PUBLIC_BUCKET: Joi.string().optional(),
+  R2_PRIVATE_BUCKET: Joi.string().optional(),
+  MEDIA_PUBLIC_URL: Joi.string()
+    .uri({ scheme: ['https'] })
+    .optional(),
+
+  // Cloudinary: the old picture host. Only the cloud name is still read,
+  // so links into our old account are recognised until the move script
+  // has rewritten them; the keys are used by that script alone.
   CLOUDINARY_CLOUD_NAME: Joi.string().optional(),
   CLOUDINARY_API_KEY: Joi.string().optional(),
   CLOUDINARY_API_SECRET: Joi.string().optional(),
