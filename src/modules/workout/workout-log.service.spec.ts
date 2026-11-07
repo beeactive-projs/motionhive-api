@@ -1350,6 +1350,36 @@ describe('WorkoutLogService (smoke — not exhaustive)', () => {
       expect(args.pausedSeconds).toBeLessThanOrEqual(121);
     });
 
+    it('ends the pause when Continue was tapped, saved later', async () => {
+      const pausedAt = new Date(Date.now() - 10 * 60_000);
+      const log = openLog({ pausedAt, pausedSeconds: 30 });
+      logModel.findByPk.mockResolvedValueOnce(log);
+      const tapped = new Date(pausedAt.getTime() + 4 * 60_000);
+      await service.resume('wl-1', 'me', tapped.toISOString());
+      expect(log.update).toHaveBeenCalledWith({
+        pausedAt: null,
+        pausedSeconds: 30 + 4 * 60,
+      });
+    });
+
+    it('holds a sent time inside the pause', async () => {
+      const pausedAt = new Date(Date.now() - 60_000);
+      const early = openLog({ pausedAt, pausedSeconds: 0 });
+      logModel.findByPk.mockResolvedValueOnce(early);
+      await service.resume('wl-1', 'me', '2020-01-01T00:00:00.000Z');
+      expect(early.update).toHaveBeenCalledWith({
+        pausedAt: null,
+        pausedSeconds: 0,
+      });
+
+      const late = openLog({ pausedAt, pausedSeconds: 0 });
+      logModel.findByPk.mockResolvedValueOnce(late);
+      await service.resume('wl-1', 'me', '2099-01-01T00:00:00.000Z');
+      const args = late.update.mock.calls[0][0] as { pausedSeconds: number };
+      expect(args.pausedSeconds).toBeGreaterThanOrEqual(59);
+      expect(args.pausedSeconds).toBeLessThanOrEqual(61);
+    });
+
     it('does nothing when resuming a running workout', async () => {
       const log = openLog();
       logModel.findByPk.mockResolvedValueOnce(log);
@@ -3311,6 +3341,54 @@ describe('WorkoutLogService (smoke — not exhaustive)', () => {
         restAfterSeconds: null,
         restSource: 'BREAK',
       });
+    });
+
+    it('stamps a tick at the moment it was tapped, held inside the workout', async () => {
+      const startedAt = new Date(Date.now() - 30 * 60_000);
+      const tapped = new Date(Date.now() - 5 * 60_000);
+      const cases: Array<[string, number]> = [
+        [tapped.toISOString(), tapped.getTime()],
+        ['2020-01-01T00:00:00.000Z', startedAt.getTime()],
+      ];
+      for (const [sent, expected] of cases) {
+        const set = setRow();
+        logModel.findByPk.mockResolvedValueOnce({ ...live, startedAt });
+        loggedSetModel.findByPk.mockResolvedValueOnce(set);
+
+        await service.logSet(
+          'wl-1',
+          'ls-1',
+          { isCompleted: true, reps: 8, completedAt: sent },
+          'me',
+        );
+
+        expect(set.update).toHaveBeenCalledWith({
+          reps: 8,
+          isCompleted: true,
+          completedAt: new Date(expected),
+        });
+      }
+    });
+
+    it('stamps a tick now when no time is sent, and never one in the future', async () => {
+      const startedAt = new Date(Date.now() - 30 * 60_000);
+      for (const sent of [undefined, '2099-01-01T00:00:00.000Z']) {
+        const set = setRow();
+        logModel.findByPk.mockResolvedValueOnce({ ...live, startedAt });
+        loggedSetModel.findByPk.mockResolvedValueOnce(set);
+        const before = Date.now();
+
+        await service.logSet(
+          'wl-1',
+          'ls-1',
+          { isCompleted: true, completedAt: sent },
+          'me',
+        );
+
+        const args = set.update.mock.calls[0][0] as { completedAt: Date };
+        expect(args.completedAt.getTime()).toBeGreaterThanOrEqual(before);
+        expect(args.completedAt.getTime()).toBeLessThanOrEqual(Date.now());
+      }
     });
 
     it('clears the source when sent null', async () => {

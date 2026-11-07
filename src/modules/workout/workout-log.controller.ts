@@ -42,6 +42,7 @@ import { AddLogSetDto } from './dto/add-log-set.dto';
 import { CompleteWorkoutDto } from './dto/complete-workout.dto';
 import { LogSetDto } from './dto/log-set.dto';
 import { PauseGapDto } from './dto/pause-gap.dto';
+import { ResumeWorkoutDto } from './dto/resume-workout.dto';
 import { RemoveLogSetsDto } from './dto/remove-log-sets.dto';
 import { RecordOneRepMaxDto } from './dto/record-one-rep-max.dto';
 import { SetWorkoutDurationDto } from './dto/set-workout-duration.dto';
@@ -256,11 +257,13 @@ export class WorkoutLogController {
 
   @Post('workout-logs/:id/resume')
   @HttpCode(200)
+  @ApiEndpoint({ ...WorkoutLogDocs.resume, body: ResumeWorkoutDto })
   async resume(
     @Request() req: AuthenticatedRequest,
     @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: ResumeWorkoutDto,
   ) {
-    return this.workoutLogService.resume(id, req.user.id);
+    return this.workoutLogService.resume(id, req.user.id, dto.at);
   }
 
   /**

@@ -985,6 +985,14 @@ export class WorkoutLogService {
     if (!set || set.exercise?.workoutLogId !== workoutLogId) {
       throw new NotFoundException(apiError('workout.setNotFound'));
     }
+    let completedAt: Date | null = null;
+    if (dto.isCompleted) {
+      completedAt = this._heldBetween(
+        dto.completedAt,
+        log.startedAt,
+        new Date(),
+      );
+    }
     await set.update({
       ...(dto.setType !== undefined && { setType: dto.setType }),
       ...(dto.reps !== undefined && { reps: dto.reps ?? null }),
@@ -1007,7 +1015,7 @@ export class WorkoutLogService {
       ...(dto.restSource === RestSource.Break && { restAfterSeconds: null }),
       ...(dto.isCompleted !== undefined && {
         isCompleted: dto.isCompleted,
-        completedAt: dto.isCompleted ? new Date() : null,
+        completedAt,
       }),
       ...(dto.notes !== undefined && { notes: dto.notes?.trim() || null }),
     });
@@ -1381,8 +1389,17 @@ export class WorkoutLogService {
     return log;
   }
 
-  /** Start the clock again, folding the pause into `pausedSeconds`. */
-  async resume(workoutLogId: string, userId: string): Promise<WorkoutLog> {
+  /**
+   * Start the clock again, folding the pause into `pausedSeconds`. The
+   * pause ends now, or at `at` when Continue was tapped on the lock screen
+   * and the app saves it later.
+   * @Arguments workoutLogId, userId, at?
+   */
+  async resume(
+    workoutLogId: string,
+    userId: string,
+    at?: string,
+  ): Promise<WorkoutLog> {
     const log = await this._loadOwnedLog(workoutLogId, userId);
     if (log.status !== WorkoutLogStatus.InProgress) {
       throw new BadRequestException(
@@ -1390,12 +1407,32 @@ export class WorkoutLogService {
       );
     }
     if (log.pausedAt) {
+      const end = this._heldBetween(at, log.pausedAt, new Date());
       await log.update({
         pausedAt: null,
-        pausedSeconds: this._pausedSecondsAt(log, new Date()),
+        pausedSeconds: this._pausedSecondsAt(log, end),
       });
     }
     return log;
+  }
+
+  /**
+   * A moment the app sent for an earlier tap, held between `from` and
+   * `to` (a phone clock can be off); `to` when none was sent.
+   */
+  private _heldBetween(
+    sent: string | undefined,
+    from: Date | null,
+    to: Date,
+  ): Date {
+    if (!sent) {
+      return to;
+    }
+    let time = Math.min(new Date(sent).getTime(), to.getTime());
+    if (from) {
+      time = Math.max(time, from.getTime());
+    }
+    return new Date(time);
   }
 
   /**

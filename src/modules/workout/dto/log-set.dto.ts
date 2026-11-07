@@ -3,6 +3,7 @@ import {
   IsBoolean,
   IsEnum,
   IsInt,
+  IsISO8601,
   IsNumber,
   IsOptional,
   IsString,
@@ -93,6 +94,18 @@ export class LogSetDto {
   @IsOptional()
   @IsBoolean()
   isCompleted?: boolean;
+
+  /** When the set was ticked, if not now: a tap on the lock screen, saved later. */
+  @ApiPropertyOptional({
+    example: '2026-11-07T17:42:10.000Z',
+    description:
+      'With `isCompleted: true`, the moment the set was ticked, when the ' +
+      'app saves it later (the ✓ on the lock screen). Held between the ' +
+      'workout start and now. Without it, now.',
+  })
+  @IsOptional()
+  @IsISO8601({ strict: true })
+  completedAt?: string;
 
   @ApiPropertyOptional({ maxLength: 2000 })
   @IsOptional()
