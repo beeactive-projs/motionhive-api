@@ -31,6 +31,7 @@ import {
 } from '../entities/session.enums';
 import { DiscoverSessionsQueryDto } from '../dto/discover-sessions.dto';
 import { SessionAccessService } from './session-access.service';
+import { categoryIdsOrNullSql } from '../../onboarding/category-sql';
 
 /**
  * Public discover + redacted-public detail.
@@ -99,12 +100,8 @@ const PUBLIC_TEMPLATE_FIELDS = [
  * of ids over the `template` include alias.
  */
 const TEMPLATE_CATEGORY_IDS_SQL = `COALESCE(
-  (SELECT json_agg(gc.category_id ORDER BY c.kind, c.display_order)
-     FROM group_category gc JOIN category c ON c.id = gc.category_id
-    WHERE gc.group_id = "template"."group_id"),
-  (SELECT json_agg(cc.category_id ORDER BY c.kind, c.display_order)
-     FROM coach_category cc JOIN category c ON c.id = cc.category_id
-    WHERE cc.user_id = "template"."instructor_id"),
+  ${categoryIdsOrNullSql('group', '"template"."group_id"')},
+  ${categoryIdsOrNullSql('coach', '"template"."instructor_id"')},
   '[]'::json
 )`;
 

@@ -1,5 +1,7 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
-import { IsISO8601, IsOptional } from 'class-validator';
+import { IsOptional } from 'class-validator';
+
+import { IsInstant } from '../../../common/validators/instant.validator';
 
 /**
  * `POST /workout-logs/:id/resume`: the clock starts again. Usually now;
@@ -14,6 +16,6 @@ export class ResumeWorkoutDto {
       'pause and now.',
   })
   @IsOptional()
-  @IsISO8601({ strict: true })
+  @IsInstant()
   at?: string;
 }

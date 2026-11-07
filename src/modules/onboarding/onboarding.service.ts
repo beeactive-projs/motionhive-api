@@ -18,7 +18,8 @@ import { RoleService } from '../role/role.service';
 import type { UpdateUserDto } from '../user/dto/update-user.dto';
 import { User } from '../user/entities/user.entity';
 import { UserService } from '../user/user.service';
-import { CategoryPicker, CategoryService, foldWord } from './category.service';
+import { foldText } from '../../common/utils/search.utils';
+import { CategoryPicker, CategoryService } from './category.service';
 import type { AnswerRoleDto } from './dto/answer-role.dto';
 import type { SetCoachCategoriesDto } from './dto/set-coach-categories.dto';
 import type { SetCoachDetailsDto } from './dto/set-coach-details.dto';
@@ -135,7 +136,7 @@ export class OnboardingService {
     const becomesCoach =
       dto.role === OnboardingRole.Coach && !roleNames.includes('INSTRUCTOR');
 
-    await this.sequelize.transaction(async (tx) => {
+    await this.personTransaction(userId, async (tx) => {
       if (becomesCoach) {
         await this.makeCoach(userId, tx);
       }
@@ -173,7 +174,7 @@ export class OnboardingService {
       dto.categoryIds,
     );
 
-    await this.sequelize.transaction(async (tx) => {
+    await this.personTransaction(userId, async (tx) => {
       await this.replaceInterests(userId, kindIds, dto.categoryIds, tx);
       await this.markSteps(
         userId,
@@ -196,7 +197,7 @@ export class OnboardingService {
       dto.goalIds,
     );
 
-    await this.sequelize.transaction(async (tx) => {
+    await this.personTransaction(userId, async (tx) => {
       const user = await this.userModel.findByPk(userId, { transaction: tx });
       if (!user) {
         throw new NotFoundException(apiError('user.notFound'));
@@ -236,12 +237,12 @@ export class OnboardingService {
       dto.categoryIds,
     );
 
-    const specializations = await this.mergedSpecializations(
-      userId,
-      dto.otherSpecializations ?? [],
-    );
-
-    await this.sequelize.transaction(async (tx) => {
+    await this.personTransaction(userId, async (tx) => {
+      const specializations = await this.mergedSpecializations(
+        userId,
+        dto.otherSpecializations ?? [],
+        tx,
+      );
       await this.coachCategoryModel.destroy({
         where: { userId },
         transaction: tx,
@@ -289,7 +290,7 @@ export class OnboardingService {
       account.countryCode = dto.countryCode;
     }
 
-    await this.sequelize.transaction(async (tx) => {
+    await this.personTransaction(userId, async (tx) => {
       if (Object.keys(account).length > 0) {
         await this.userService.updateUser(userId, account, tx);
       }
@@ -319,7 +320,7 @@ export class OnboardingService {
     userId: string,
     steps: OnboardingStep[],
   ): Promise<OnboardingState> {
-    await this.sequelize.transaction(async (tx) => {
+    await this.personTransaction(userId, async (tx) => {
       await this.markSteps(userId, steps, OnboardingStepStatus.Skipped, tx);
     });
     return this.getState(userId);
@@ -333,10 +334,33 @@ export class OnboardingService {
     userId: string,
     steps: OnboardingStep[],
   ): Promise<OnboardingState> {
-    await this.sequelize.transaction(async (tx) => {
+    await this.personTransaction(userId, async (tx) => {
       await this.markSteps(userId, steps, OnboardingStepStatus.Dismissed, tx);
     });
     return this.getState(userId);
+  }
+
+  /**
+   * One transaction for one person's answers, their user row locked first,
+   * so two writes at once (a double tap, Skip racing a Save) run one after
+   * the other: the step, interest and category rows they create would
+   * otherwise collide on their keys and fail the second with a 500.
+   */
+  private async personTransaction(
+    userId: string,
+    work: (tx: Transaction) => Promise<void>,
+  ): Promise<void> {
+    await this.sequelize.transaction(async (tx) => {
+      const user = await this.userModel.findByPk(userId, {
+        attributes: ['id'],
+        transaction: tx,
+        lock: tx.LOCK.UPDATE,
+      });
+      if (!user) {
+        throw new NotFoundException(apiError('user.notFound'));
+      }
+      await work(tx);
+    });
   }
 
   /**
@@ -424,7 +448,7 @@ export class OnboardingService {
     }
 
     // An admin can revoke the role and leave the profile behind.
-    const profile = await this.profileService.getInstructorProfile(userId);
+    const profile = await this.profileService.getInstructorProfile(userId, tx);
     if (profile) {
       await this.roleService.assignRoleToUserByName(
         userId,
@@ -461,12 +485,13 @@ export class OnboardingService {
   private async mergedSpecializations(
     userId: string,
     words: string[],
+    tx: Transaction,
   ): Promise<string[] | null> {
     if (words.length === 0) {
       return null;
     }
     const [profile, categoryNames] = await Promise.all([
-      this.profileService.getInstructorProfile(userId),
+      this.profileService.getInstructorProfile(userId, tx),
       this.categoryService.foldedNames(),
     ]);
     const merged: string[] = [];
@@ -474,11 +499,11 @@ export class OnboardingService {
       merged.push(...profile.specializations);
     }
 
-    const seen = new Set(merged.map((word) => foldWord(word)));
+    const seen = new Set(merged.map((word) => foldText(word)));
     let added = false;
     for (const raw of words) {
       const word = raw.trim();
-      const key = foldWord(word);
+      const key = foldText(word);
       if (word === '' || seen.has(key) || categoryNames.has(key)) {
         continue;
       }

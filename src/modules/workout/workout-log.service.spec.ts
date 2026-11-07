@@ -2165,6 +2165,12 @@ describe('WorkoutLogService (smoke — not exhaustive)', () => {
       userId: 'me',
       status: WorkoutLogStatus.InProgress,
     };
+    const destroySets = jest.fn();
+
+    beforeEach(() => {
+      destroySets.mockReset().mockResolvedValue(1);
+      (loggedSetModel as Record<string, jest.Mock>).destroy = destroySets;
+    });
 
     it('refuses on a completed log', async () => {
       logModel.findByPk.mockResolvedValueOnce({
@@ -2178,25 +2184,22 @@ describe('WorkoutLogService (smoke — not exhaustive)', () => {
 
     it('404s when the set belongs to a different log', async () => {
       logModel.findByPk.mockResolvedValueOnce(inProgressLog);
-      loggedSetModel.findByPk.mockResolvedValueOnce({
-        id: 'ls-1',
-        exercise: { workoutLogId: 'wl-OTHER' },
-      });
+      // The query is scoped to this log, so another log's set is not found.
+      loggedSetModel.findAll.mockResolvedValueOnce([]);
       await expect(
         service.removeSetFromLog('wl-1', 'ls-1', 'me'),
       ).rejects.toThrow(NotFoundException);
+      expect(destroySets).not.toHaveBeenCalled();
     });
 
-    it('destroys the row on the happy path', async () => {
-      const destroy = jest.fn().mockResolvedValue(undefined);
+    it('deletes the row on the happy path', async () => {
       logModel.findByPk.mockResolvedValueOnce(inProgressLog);
-      loggedSetModel.findByPk.mockResolvedValueOnce({
-        id: 'ls-1',
-        exercise: { workoutLogId: 'wl-1' },
-        destroy,
-      });
+      loggedSetModel.findAll.mockResolvedValueOnce([{ id: 'ls-1' }]);
       await service.removeSetFromLog('wl-1', 'ls-1', 'me');
-      expect(destroy).toHaveBeenCalledTimes(1);
+      expect(destroySets).toHaveBeenCalledWith({
+        where: { id: ['ls-1'] },
+        transaction: fakeTx,
+      });
     });
   });
 

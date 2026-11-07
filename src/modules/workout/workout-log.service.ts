@@ -1271,28 +1271,14 @@ export class WorkoutLogService {
    * the user is not going to do. Deleted rather than flagged: unlike a
    * skipped exercise, a set that was never done carries nothing a coach
    * needs to see. The rows left keep their `orderIndex`; a gap is harmless
-   * because every read sorts by it.
+   * because every read sorts by it. The same checks as several sets at once.
    */
   async removeSetFromLog(
     workoutLogId: string,
     setId: string,
     userId: string,
   ): Promise<void> {
-    const log = await this._loadOwnedLog(workoutLogId, userId);
-    if (log.status !== WorkoutLogStatus.InProgress) {
-      throw new BadRequestException(
-        apiError('workout.cannotEditNotInProgress'),
-      );
-    }
-    const set = await this.loggedSetModel.findByPk(setId, {
-      include: [
-        { model: LoggedExercise, as: 'exercise', attributes: ['workoutLogId'] },
-      ],
-    });
-    if (!set || set.exercise?.workoutLogId !== workoutLogId) {
-      throw new NotFoundException(apiError('workout.setNotFound'));
-    }
-    await set.destroy();
+    await this.removeSetsFromLog(workoutLogId, [setId], userId);
   }
 
   /**
@@ -1393,7 +1379,6 @@ export class WorkoutLogService {
    * Start the clock again, folding the pause into `pausedSeconds`. The
    * pause ends now, or at `at` when Continue was tapped on the lock screen
    * and the app saves it later.
-   * @Arguments workoutLogId, userId, at?
    */
   async resume(
     workoutLogId: string,

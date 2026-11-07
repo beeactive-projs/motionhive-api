@@ -2,7 +2,7 @@ import { BadRequestException, Injectable } from '@nestjs/common';
 import { InjectModel } from '@nestjs/sequelize';
 
 import { apiError } from '../../common/i18n';
-import { normalizeSearchTerm } from '../../common/utils/search.utils';
+import { foldText } from '../../common/utils/search.utils';
 import { Category } from './entities/category.entity';
 import { CategoryKind } from './entities/onboarding.enums';
 
@@ -101,18 +101,13 @@ export class CategoryService {
     });
     const names = new Set<string>();
     for (const row of rows) {
-      names.add(foldWord(row.name));
+      names.add(foldText(row.name));
       for (const fields of Object.values(row.translations ?? {})) {
         if (fields && typeof fields.name === 'string') {
-          names.add(foldWord(fields.name));
+          names.add(foldText(fields.name));
         }
       }
     }
     return names;
   }
-}
-
-/** A word compared blind to case and accents. */
-export function foldWord(word: string): string {
-  return normalizeSearchTerm(word).toLowerCase();
 }

@@ -69,6 +69,7 @@ import { WorkoutReportService } from '../workout/workout-report.service';
 import { WorkoutPhotoService } from '../workout/workout-photo.service';
 import { ReportWorkoutDto } from '../workout/dto/report-workout.dto';
 import { WorkoutVisibility } from '../workout/entities/workout.enums';
+import { categoryIdsSql, categoryRowsSql } from '../onboarding/category-sql';
 
 // The privacy rules live in profile-privacy.ts, which group and other
 // modules read without importing this service. Re-exported for the spec.
@@ -101,12 +102,10 @@ const ONLINE_VENUE_SQL = `EXISTS (
  * The categories a coach coaches (migration 081), as a JSON array of ids in
  * the list's order. Coach categories are keyed by the coach's user id.
  */
-const COACH_CATEGORY_IDS_SQL = `COALESCE((
-  SELECT json_agg(cc.category_id ORDER BY c.kind, c.display_order)
-  FROM coach_category cc
-  JOIN category c ON c.id = cc.category_id
-  WHERE cc.user_id = "InstructorProfile"."user_id"
-), '[]'::json)`;
+const COACH_CATEGORY_IDS_SQL = categoryIdsSql(
+  'coach',
+  '"InstructorProfile"."user_id"',
+);
 
 /** A profile's specializations as rows; `[]` when the column holds no array. */
 const SPECIALIZATIONS_SQL = `json_array_elements_text(
@@ -264,9 +263,11 @@ export class ProfileService {
 
   async getInstructorProfile(
     userId: string,
+    transaction?: Transaction,
   ): Promise<InstructorProfile | null> {
     return this.instructorProfileModel.findOne({
       where: { userId: userId },
+      transaction,
     });
   }
 
@@ -913,10 +914,7 @@ export class ProfileService {
       this.reviewService.getSummaryForProfile(profile.id),
       this.venueService.listPublicForProfile(profile.id),
       this.sequelize.query<{ categoryId: string }>(
-        `SELECT cc.category_id AS "categoryId"
-           FROM coach_category cc JOIN category c ON c.id = cc.category_id
-          WHERE cc.user_id = :userId
-          ORDER BY c.kind, c.display_order`,
+        categoryRowsSql('coach', ':userId', 'x.category_id AS "categoryId"'),
         { replacements: { userId: profile.userId }, type: QueryTypes.SELECT },
       ),
     ]);

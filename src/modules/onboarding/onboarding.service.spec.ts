@@ -374,6 +374,21 @@ describe('OnboardingService', () => {
   });
 
   describe('skip and dismiss', () => {
+    // Two writes at once (a double tap, Skip racing a Save) would both
+    // create the same step row; the person's row is locked first instead.
+    it("locks the person's row before writing their steps", async () => {
+      await service.skip(userId, [OnboardingStep.Level]);
+
+      expect(userModel.findByPk).toHaveBeenCalledWith(userId, {
+        attributes: ['id'],
+        transaction: fakeTx,
+        lock: fakeTx.LOCK.UPDATE,
+      });
+      const lockedAt = userModel.findByPk.mock.invocationCallOrder[0];
+      const createdAt = stepModel.create.mock.invocationCallOrder[0];
+      expect(lockedAt).toBeLessThan(createdAt);
+    });
+
     it('never turns an answered step into a skipped one', async () => {
       const done = stepRow(OnboardingStep.Interests, OnboardingStepStatus.Done);
       stepModel.findAll.mockResolvedValueOnce([done]);

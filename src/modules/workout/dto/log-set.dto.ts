@@ -3,7 +3,6 @@ import {
   IsBoolean,
   IsEnum,
   IsInt,
-  IsISO8601,
   IsNumber,
   IsOptional,
   IsString,
@@ -11,6 +10,8 @@ import {
   MaxLength,
   Min,
 } from 'class-validator';
+
+import { IsInstant } from '../../../common/validators/instant.validator';
 import { ExerciseSetType, RestSource } from '../entities/workout.enums';
 
 /**
@@ -104,7 +105,7 @@ export class LogSetDto {
       'workout start and now. Without it, now.',
   })
   @IsOptional()
-  @IsISO8601({ strict: true })
+  @IsInstant()
   completedAt?: string;
 
   @ApiPropertyOptional({ maxLength: 2000 })

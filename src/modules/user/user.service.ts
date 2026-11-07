@@ -51,6 +51,7 @@ import { Role } from '../role/entities/role.entity';
 import { SearchIndexService } from '../search/search-index.service';
 import { JobsService } from '../jobs/jobs.service';
 import type { Locale } from '../../common/i18n';
+import { categoryRowsSql } from '../onboarding/category-sql';
 
 /**
  * Roles that must never appear in user-picker search results, regardless of
@@ -90,6 +91,10 @@ export interface UserDataExport {
   /** What became of each welcome flow step. */
   onboardingSteps: Record<string, unknown>[];
 }
+
+/** What the export says about each category a person holds. */
+const EXPORTED_CATEGORY_COLUMNS =
+  'c.slug, c.kind, c.name, x.created_at AS "createdAt"';
 
 /** A category as the export names it: the slug and the English name. */
 interface ExportedCategory {
@@ -790,17 +795,11 @@ export class UserService {
       }),
       // Raw queries keep the onboarding entities out of this module.
       this.sequelize.query<ExportedCategory>(
-        `SELECT c.slug, c.kind, c.name, ui.created_at AS "createdAt"
-           FROM user_interest ui JOIN category c ON c.id = ui.category_id
-          WHERE ui.user_id = :userId
-          ORDER BY c.kind, c.display_order`,
+        categoryRowsSql('interest', ':userId', EXPORTED_CATEGORY_COLUMNS),
         { replacements: { userId }, type: QueryTypes.SELECT },
       ),
       this.sequelize.query<ExportedCategory>(
-        `SELECT c.slug, c.kind, c.name, cc.created_at AS "createdAt"
-           FROM coach_category cc JOIN category c ON c.id = cc.category_id
-          WHERE cc.user_id = :userId
-          ORDER BY c.kind, c.display_order`,
+        categoryRowsSql('coach', ':userId', EXPORTED_CATEGORY_COLUMNS),
         { replacements: { userId }, type: QueryTypes.SELECT },
       ),
       this.sequelize.query<Record<string, unknown>>(

@@ -150,9 +150,11 @@ CREATE TABLE IF NOT EXISTS user_onboarding_step (
 -- How a word starts when it means a category, folded (lowercase, no
 -- diacritics), English and Romanian. `\m` is a word start, so "alerg" finds
 -- "Alergare" and "Alergăm", and "run" does not find "brunch".
+-- "weight" and "greutate" alone are left out: "Weight loss" and "Pierdere
+-- în greutate" are not strength (corrected by 082 where 081 already ran).
 CREATE TEMP TABLE category_words (slug VARCHAR(50), pattern TEXT) ON COMMIT DROP;
 INSERT INTO category_words (slug, pattern) VALUES
-  ('strength',    '\m(strength|forta|power|lift|haltere|putere|musculat|bodybuild|culturism|weight|greutat)'),
+  ('strength',    '\m(strength|forta|power|lift|weightlift|haltere|putere|musculat|bodybuild|culturism|greutati)'),
   ('running',     '\m(run|alerg|jog|marathon|maraton|sprint)'),
   ('yoga',        '\myoga'),
   ('pilates',     '\mpilates'),

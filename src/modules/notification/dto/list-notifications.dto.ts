@@ -2,6 +2,7 @@ import { ApiPropertyOptional } from '@nestjs/swagger';
 import { Transform } from 'class-transformer';
 import { IsArray, IsBoolean, IsEnum, IsOptional } from 'class-validator';
 import { PaginationDto } from '../../../common/dto/pagination.dto';
+import { toQueryList } from '../../../common/utils/query.utils';
 import { NotificationCategory } from '../notification-categories';
 
 /**
@@ -30,27 +31,9 @@ export class ListNotificationsDto extends PaginationDto {
       '(`category=SESSIONS&category=PAYMENTS`) or comma-separate ' +
       '(`category=SESSIONS,PAYMENTS`). Omit for everything.',
   })
-  @Transform(({ value }) => toCategoryList(value))
+  @Transform(({ value }) => toQueryList(value))
   @IsArray()
   @IsEnum(NotificationCategory, { each: true })
   @IsOptional()
   category?: NotificationCategory[];
-}
-
-/**
- * Express hands back a string for `?category=A` and an array for
- * `?category=A&category=B`; a comma-separated single value is the
- * third spelling clients reach for. All three become one flat list so
- * the validator and the service see a single shape. Empty input stays
- * undefined so `@IsOptional` skips it. Non-strings pass through
- * untouched, for `@IsEnum` to reject.
- */
-function toCategoryList(value: unknown): unknown[] | undefined {
-  if (value === undefined || value === null || value === '') return undefined;
-  const raw: unknown[] = Array.isArray(value) ? value : [value];
-  const list = raw
-    .flatMap((item) => (typeof item === 'string' ? item.split(',') : [item]))
-    .map((item) => (typeof item === 'string' ? item.trim() : item))
-    .filter((item) => item !== '');
-  return list.length > 0 ? list : undefined;
 }

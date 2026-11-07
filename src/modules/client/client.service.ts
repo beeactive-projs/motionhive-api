@@ -13,10 +13,7 @@ import { randomBytes } from 'crypto';
 import { WINSTON_MODULE_NEST_PROVIDER } from 'nest-winston';
 import { Op } from 'sequelize';
 import { Sequelize } from 'sequelize-typescript';
-import {
-  foldedContains,
-  normalizeSearchTerm,
-} from '../../common/utils/search.utils';
+import { foldedContains, foldText } from '../../common/utils/search.utils';
 import { FilterSettingsDto } from '../../common/dto/filter-settings.dto';
 import { ClientDirection } from './dto/list-clients.dto';
 import {
@@ -98,11 +95,9 @@ function matchClientRows(rows: ClientRow[], tokens: string[]): ClientRow[] {
       .filter(Boolean)
       .join(' ');
     // Folded like the query half (`foldedContains`): "stefan" finds "Ștefan".
-    const folded = normalizeSearchTerm(haystack).toLowerCase();
+    const folded = foldText(haystack);
 
-    return tokens.every((token) =>
-      folded.includes(normalizeSearchTerm(token).toLowerCase()),
-    );
+    return tokens.every((token) => folded.includes(foldText(token)));
   });
 }
 

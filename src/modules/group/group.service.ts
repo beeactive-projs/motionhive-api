@@ -61,6 +61,7 @@ import {
   JoinRequestDecision,
 } from './dto/decide-join-request.dto';
 import { apiError, toLocale } from '../../common/i18n';
+import { categoryIdsSql } from '../onboarding/category-sql';
 
 /**
  * Group Service
@@ -814,15 +815,7 @@ export class GroupService {
             'createdAt',
             [memberCountLiteral, 'memberCount'],
             // What the group trains (migration 081), for the Discover filters.
-            [
-              literal(`COALESCE((
-                SELECT json_agg(gc.category_id ORDER BY c.kind, c.display_order)
-                FROM group_category gc
-                JOIN category c ON c.id = gc.category_id
-                WHERE gc.group_id = "Group"."id"
-              ), '[]'::json)`),
-              'categoryIds',
-            ],
+            [literal(categoryIdsSql('group', '"Group"."id"')), 'categoryIds'],
           ],
         },
         order: [[memberCountLiteral, 'DESC']],
