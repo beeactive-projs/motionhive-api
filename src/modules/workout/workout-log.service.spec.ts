@@ -2170,6 +2170,62 @@ describe('WorkoutLogService (smoke — not exhaustive)', () => {
     });
   });
 
+  describe('removeSetsFromLog', () => {
+    const inProgressLog = {
+      id: 'wl-1',
+      userId: 'me',
+      status: WorkoutLogStatus.InProgress,
+    };
+    const destroySets = jest.fn();
+
+    beforeEach(() => {
+      destroySets.mockReset().mockResolvedValue(2);
+      (loggedSetModel as Record<string, jest.Mock>).destroy = destroySets;
+    });
+
+    it('deletes the whole round in one transaction', async () => {
+      logModel.findByPk.mockResolvedValueOnce(inProgressLog);
+      loggedSetModel.findAll.mockResolvedValueOnce([
+        { id: 'ls-1' },
+        { id: 'ls-2' },
+      ]);
+
+      await service.removeSetsFromLog('wl-1', ['ls-1', 'ls-2'], 'me');
+
+      const [query] = loggedSetModel.findAll.mock.calls[0] as [
+        { where: { id: string[] }; include: { where: unknown }[] },
+      ];
+      expect(query.where.id).toEqual(['ls-1', 'ls-2']);
+      expect(query.include[0].where).toEqual({ workoutLogId: 'wl-1' });
+      expect(destroySets).toHaveBeenCalledWith({
+        where: { id: ['ls-1', 'ls-2'] },
+        transaction: fakeTx,
+      });
+    });
+
+    it('deletes nothing when one set is not in this workout', async () => {
+      logModel.findByPk.mockResolvedValueOnce(inProgressLog);
+      loggedSetModel.findAll.mockResolvedValueOnce([{ id: 'ls-1' }]);
+
+      await expect(
+        service.removeSetsFromLog('wl-1', ['ls-1', 'ls-other'], 'me'),
+      ).rejects.toThrow(NotFoundException);
+      expect(destroySets).not.toHaveBeenCalled();
+    });
+
+    it('refuses on a finished workout', async () => {
+      logModel.findByPk.mockResolvedValueOnce({
+        ...inProgressLog,
+        status: WorkoutLogStatus.Completed,
+      });
+
+      await expect(
+        service.removeSetsFromLog('wl-1', ['ls-1'], 'me'),
+      ).rejects.toThrow(BadRequestException);
+      expect(destroySets).not.toHaveBeenCalled();
+    });
+  });
+
   // ─── Mid-session: add set ────────────────────────────────────────
 
   describe('addSetToLog', () => {

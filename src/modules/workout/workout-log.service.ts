@@ -1288,6 +1288,48 @@ export class WorkoutLogService {
   }
 
   /**
+   * Several sets of a running workout deleted together, such as a whole
+   * round of a superset. All or nothing: if any of them is not in this
+   * workout, none is deleted.
+   */
+  async removeSetsFromLog(
+    workoutLogId: string,
+    setIds: string[],
+    userId: string,
+  ): Promise<void> {
+    const log = await this._loadOwnedLog(workoutLogId, userId);
+    if (log.status !== WorkoutLogStatus.InProgress) {
+      throw new BadRequestException(
+        apiError('workout.cannotEditNotInProgress'),
+      );
+    }
+    const ids = [...new Set(setIds)];
+    await this.sequelize.transaction(async (tx) => {
+      const found = await this.loggedSetModel.findAll({
+        where: { id: ids },
+        attributes: ['id'],
+        include: [
+          {
+            model: LoggedExercise,
+            as: 'exercise',
+            attributes: [],
+            where: { workoutLogId },
+            required: true,
+          },
+        ],
+        transaction: tx,
+      });
+      if (found.length !== ids.length) {
+        throw new NotFoundException(apiError('workout.setNotFound'));
+      }
+      await this.loggedSetModel.destroy({
+        where: { id: ids },
+        transaction: tx,
+      });
+    });
+  }
+
+  /**
    * "Last time you did this" — most-recent completed log set for this
    * exercise. Powers the `LastTimeHint` component on the active log.
    * Returns up to 6 actual rows (one workout's worth), newest first.

@@ -136,6 +136,22 @@ export const WorkoutLogDocs = {
     ],
   } as ApiEndpointOptions,
 
+  removeSets: {
+    summary: 'Delete several sets of a running workout',
+    description:
+      'Owner only, IN_PROGRESS only. Deletes the given sets in one ' +
+      'transaction (a whole round of a superset is the reason). All or ' +
+      'nothing: if any id is not a set of this workout, none is deleted ' +
+      'and the answer is 404. At most 20 ids, no repeats.',
+    auth: true,
+    responses: [
+      { status: 204, description: 'Deleted' },
+      { status: 400, description: 'The workout is not in progress' },
+      { status: 404, description: 'No such workout or set, or not yours' },
+      ApiStandardResponses.Unauthorized,
+    ],
+  } as ApiEndpointOptions,
+
   pauseGap: {
     summary: 'Pause a workout for time already spent away',
     description:
