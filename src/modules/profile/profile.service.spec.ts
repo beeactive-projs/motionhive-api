@@ -127,6 +127,8 @@ describe('ProfileService (smoke — not exhaustive)', () => {
     jest.restoreAllMocks();
     // Most tests don't care about venues; opt in per-test with mockResolvedValueOnce.
     venueService.listPublicForProfile.mockResolvedValue([]);
+    // Nor about the categories a coach coaches (raw query).
+    sequelize.query.mockResolvedValue([]);
     // Nor about a pending coaching request between viewer and owner.
     jest.spyOn(ClientRequest, 'findOne').mockResolvedValue(null);
     const module = await Test.createTestingModule({
@@ -686,6 +688,19 @@ describe('ProfileService (smoke — not exhaustive)', () => {
       expect(online).toContain('v.deleted_at IS NULL');
     });
 
+    it('narrows to coaches of any picked category', async () => {
+      await service.coachDirectory(null, {
+        categoryIds: ['cat-yoga', 'cat-running'],
+      });
+
+      const categories = andSql(lastQuery()).find((sql) =>
+        sql.includes('FROM coach_category'),
+      );
+      expect(categories).toContain(
+        `cc.category_id IN ('cat-yoga', 'cat-running')`,
+      );
+    });
+
     it('matches specializations whole and folded', async () => {
       await service.coachDirectory(null, {
         specializations: ['Forță', 'Yoga'],
@@ -750,21 +765,24 @@ describe('ProfileService (smoke — not exhaustive)', () => {
   });
 
   describe('suggestInstructors', () => {
-    const row = {
-      id: 'ip-c',
-      userId: 'u-c',
-      displayName: 'Coach C',
-      specializations: ['yoga'],
-      yearsOfExperience: 3,
-      user: {
-        handle: 'coach-c',
-        firstName: 'C',
-        lastName: 'Last',
-        avatarUrl: 'https://img/c.jpg',
-        city: 'Iasi',
-        countryCode: 'RO',
+    const row = directoryRow(
+      {
+        id: 'ip-c',
+        userId: 'u-c',
+        displayName: 'Coach C',
+        specializations: ['yoga'],
+        yearsOfExperience: 3,
+        user: {
+          handle: 'coach-c',
+          firstName: 'C',
+          lastName: 'Last',
+          avatarUrl: 'https://img/c.jpg',
+          city: 'Iasi',
+          countryCode: 'RO',
+        },
       },
-    };
+      { categoryIds: ['cat-yoga'] },
+    );
 
     it('returns each coach with the user id and a SUGGESTED reason', async () => {
       instructorProfileModel.findAll.mockResolvedValueOnce([row]);
@@ -781,6 +799,7 @@ describe('ProfileService (smoke — not exhaustive)', () => {
           avatarUrl: 'https://img/c.jpg',
           displayName: 'Coach C',
           specializations: ['yoga'],
+          categoryIds: ['cat-yoga'],
           yearsOfExperience: 3,
           city: 'Iasi',
           countryCode: 'RO',
@@ -815,6 +834,20 @@ describe('ProfileService (smoke — not exhaustive)', () => {
       expect(filters).toContain('instructor_client');
       expect(filters).toContain('user_block');
       expect(filters).toContain(`'${me}'`);
+    });
+
+    it('puts coaches of what the viewer likes first', async () => {
+      instructorProfileModel.findAll.mockResolvedValueOnce([]);
+
+      await service.suggestInstructors(me, { limit: 5 });
+
+      const [[query]] = instructorProfileModel.findAll.mock.calls as [
+        [{ order: [{ val: string }, string][] }],
+      ];
+      const [first, direction] = query.order[0];
+      expect(first.val).toContain('JOIN user_interest ui');
+      expect(first.val).toContain(`ui.user_id = '${me}'`);
+      expect(direction).toBe('DESC');
     });
   });
 

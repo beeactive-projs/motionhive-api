@@ -10,6 +10,7 @@ import { group } from './group';
 import { invitation } from './invitation';
 import { messaging } from './messaging';
 import { notification } from './notification';
+import { onboarding } from './onboarding';
 import { payment } from './payment';
 import { post } from './post';
 import { profile } from './profile';
@@ -34,6 +35,7 @@ export const errors: Catalog['errors'] = {
   invitation,
   messaging,
   notification,
+  onboarding,
   payment,
   post,
   profile,

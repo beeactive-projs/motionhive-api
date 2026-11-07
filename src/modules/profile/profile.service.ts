@@ -97,6 +97,17 @@ const ONLINE_VENUE_SQL = `EXISTS (
     AND v.deleted_at IS NULL
 )`;
 
+/**
+ * The categories a coach coaches (migration 081), as a JSON array of ids in
+ * the list's order. Coach categories are keyed by the coach's user id.
+ */
+const COACH_CATEGORY_IDS_SQL = `COALESCE((
+  SELECT json_agg(cc.category_id ORDER BY c.kind, c.display_order)
+  FROM coach_category cc
+  JOIN category c ON c.id = cc.category_id
+  WHERE cc.user_id = "InstructorProfile"."user_id"
+), '[]'::json)`;
+
 /** A profile's specializations as rows; `[]` when the column holds no array. */
 const SPECIALIZATIONS_SQL = `json_array_elements_text(
   CASE WHEN json_typeof("InstructorProfile"."specializations") = 'array'
@@ -429,6 +440,7 @@ export class ProfileService {
         'socialLinks',
         'showSocialLinks',
         [literal(ONLINE_VENUE_SQL), 'isOnline'],
+        [literal(COACH_CATEGORY_IDS_SQL), 'categoryIds'],
       ],
       order: [['yearsOfExperience', 'DESC']],
       limit: 30,
@@ -477,6 +489,18 @@ export class ProfileService {
         literal(`EXISTS (
           SELECT 1 FROM ${SPECIALIZATIONS_SQL} AS spec(value)
           WHERE fold_for_search(btrim(spec.value)) IN (${wanted})
+        )`),
+      );
+    }
+
+    if (dto.categoryIds?.length) {
+      // Any of the picked categories.
+      const wanted = dto.categoryIds.map((id) => esc(id)).join(', ');
+      and.push(
+        literal(`EXISTS (
+          SELECT 1 FROM coach_category cc
+          WHERE cc.user_id = "InstructorProfile"."user_id"
+            AND cc.category_id IN (${wanted})
         )`),
       );
     }
@@ -530,6 +554,7 @@ export class ProfileService {
         'socialLinks',
         'showSocialLinks',
         [literal(ONLINE_VENUE_SQL), 'isOnline'],
+        [literal(COACH_CATEGORY_IDS_SQL), 'categoryIds'],
         [
           literal(viewerId ? this.requestSentSql(viewerId) : 'false'),
           'requestSent',
@@ -667,6 +692,15 @@ export class ProfileService {
     }
   }
 
+  /** The `categoryIds` literal of a coach row; `[]` when the query did not ask. */
+  private categoryIdsOf(profile: InstructorProfile): string[] {
+    const value: unknown = profile.getDataValue('categoryIds' as never);
+    if (!Array.isArray(value)) {
+      return [];
+    }
+    return value.filter((id): id is string => typeof id === 'string');
+  }
+
   /** One coach as the discover list and the directory both send it. */
   private toDirectoryRow(profile: InstructorProfile) {
     return {
@@ -684,6 +718,7 @@ export class ProfileService {
       isAcceptingClients: profile.isAcceptingClients,
       // A `literal` alias, so it is not a model attribute.
       isOnline: profile.getDataValue('isOnline' as never) === true,
+      categoryIds: this.categoryIdsOf(profile),
       city: profile.user?.city ?? null,
       countryCode: profile.user?.countryCode ?? null,
       socialLinks: profile.showSocialLinks ? profile.socialLinks : null,
@@ -696,8 +731,9 @@ export class ProfileService {
    *
    * Only users who hold the INSTRUCTOR role. Leaves out the viewer, coaches
    * they already have or have a pending request with, coaches not taking
-   * clients, and anyone on either side of a block. Ranked same country first, then those with a photo, then by
-   * experience. Each row carries a `reason`; sponsored placements will join
+   * clients, and anyone on either side of a block. Ranked by how many of
+   * the viewer's interests the coach coaches, then same country, then those
+   * with a photo, then by experience. Each row carries a `reason`; sponsored placements will join
    * this list under their own reason (see `CoachSuggestionReason`).
    */
   async suggestInstructors(viewerId: string, dto: SuggestedInstructorsDto) {
@@ -744,8 +780,19 @@ export class ProfileService {
         'displayName',
         'specializations',
         'yearsOfExperience',
+        [literal(COACH_CATEGORY_IDS_SQL), 'categoryIds'],
       ],
       order: [
+        // Coaches of what the viewer likes first, the most in common first.
+        [
+          literal(`(
+            SELECT COUNT(*) FROM coach_category cc
+            JOIN user_interest ui ON ui.category_id = cc.category_id
+            WHERE cc.user_id = "InstructorProfile"."user_id"
+              AND ui.user_id = ${viewer}
+          )`),
+          'DESC',
+        ],
         [
           literal(
             `CASE WHEN "user"."country_code" = (SELECT country_code FROM "user" WHERE id = ${viewer}) THEN 0 ELSE 1 END`,
@@ -771,6 +818,7 @@ export class ProfileService {
       avatarUrl: profile.user?.avatarUrl ?? null,
       displayName: profile.displayName,
       specializations: profile.specializations,
+      categoryIds: this.categoryIdsOf(profile),
       yearsOfExperience: profile.yearsOfExperience,
       city: profile.user?.city ?? null,
       countryCode: profile.user?.countryCode ?? null,
@@ -861,9 +909,16 @@ export class ProfileService {
    * Public Profile screen.
    */
   private async toPublicProfileDto(profile: InstructorProfile) {
-    const [rating, venues] = await Promise.all([
+    const [rating, venues, categories] = await Promise.all([
       this.reviewService.getSummaryForProfile(profile.id),
       this.venueService.listPublicForProfile(profile.id),
+      this.sequelize.query<{ categoryId: string }>(
+        `SELECT cc.category_id AS "categoryId"
+           FROM coach_category cc JOIN category c ON c.id = cc.category_id
+          WHERE cc.user_id = :userId
+          ORDER BY c.kind, c.display_order`,
+        { replacements: { userId: profile.userId }, type: QueryTypes.SELECT },
+      ),
     ]);
 
     const settings = profile.user?.privacySettings ?? {};
@@ -881,6 +936,8 @@ export class ProfileService {
       displayName: profile.displayName,
       bio: profile.bio,
       specializations: profile.specializations,
+      /** What they coach, from the category list (`GET /categories`). */
+      categoryIds: categories.map((row) => row.categoryId),
       certifications: normalizeCertifications(profile.certifications),
       yearsOfExperience: profile.yearsOfExperience,
       isAcceptingClients: profile.isAcceptingClients,

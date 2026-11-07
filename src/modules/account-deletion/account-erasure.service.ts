@@ -148,6 +148,10 @@ const ERASURE_STATEMENTS: ReadonlyArray<readonly [string, string]> = [
     `UPDATE feedback SET email = NULL, user_id = NULL WHERE user_id = :id`,
   ],
   ['blocks they made', `DELETE FROM user_block WHERE blocker_id = :id`],
+  // What they told the welcome flow (migration 081).
+  ['interests', `DELETE FROM user_interest WHERE user_id = :id`],
+  ['coached categories', `DELETE FROM coach_category WHERE user_id = :id`],
+  ['welcome steps', `DELETE FROM user_onboarding_step WHERE user_id = :id`],
 
   // ── Sign-in, devices, notifications ──
   ['linked sign-ins', `DELETE FROM social_account WHERE user_id = :id`],
@@ -189,7 +193,7 @@ const ERASURE_STATEMENTS: ReadonlyArray<readonly [string, string]> = [
             email_verification_token = NULL, email_verification_expires = NULL,
             password_reset_token = NULL, password_reset_expires = NULL,
             locked_until = NULL, last_login_at = NULL,
-            privacy_settings = '{}'::jsonb,
+            privacy_settings = '{}'::jsonb, fitness_level = NULL,
             is_active = false, is_email_verified = false, updated_at = :now
       WHERE id = :id`,
   ],

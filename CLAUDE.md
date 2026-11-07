@@ -83,6 +83,7 @@ src/
     ├── exercise/     # Movement catalog (883 SYSTEM from free-exercise-db + instructor-authored), muscle/equipment links
     ├── workout/      # Programs, routines, assignments, logging — see "Workout Module Shape" below
     ├── progress/     # Trainee progress overview + per-exercise history, coach roster (read-only, raw SQL)
+    ├── onboarding/   # Category list (GET /categories) + the welcome flow after first sign in — see "Onboarding Module" below
     └── health/       # Terminus health checks, app config (controller-only, no service)
 ```
 
@@ -186,6 +187,13 @@ One table drives both concepts users see as different things: `program`. `is_sin
 - **Coach privacy**: a coach reads a client's logs from their own plans, plus the ones the client set to COACHES_ONLY or PUBLIC (`isReadableByCoach` / `readableLogsWhere` in `coach-access.service.ts`; the old `share_off_plan` flag opens nothing since migration 073). The coach's client list (`GET /coach/clients/:id/workout-logs`) also returns the skipped days of that coach's plans as SKIPPED rows (the assigned workout's id, nothing to open) when asked with `kind=all` or `kind=skipped`; `kind=plan|own` narrow the finished logs, omitted keeps the old logs-only list, and `dateFrom`/`dateTo` bound the day. The trainee's own History gets the same timeline over all their plans with `GET /workout-logs?kind=all` (`listHistory`; a photo/record chip or a search keeps to the logs).
 - **Duration**: a workout left open over 30 min after its last ticked set ends at that set (`completedAt` too, so it lands on the day it was done); over 6 h of active time stores `durationSeconds = null` (unknown, out of totals); `close_stale_workouts` completes one untouched for 24 h (or discards it when nothing was ticked). Finishing a plan's last workout completes the plan at once (`ProgramAssignmentService.completeIfFinished`), the 02:30 sweep is the backstop.
 - **Completion feedback** arrives on a *second* `POST /workout-logs/:id/complete` after the log is already COMPLETED (the feedback screen runs post-completion), so that path must apply the rating and note rather than returning early.
+
+### Onboarding Module
+One category list (migration 081, `category`: 14 activities + 6 goals, `slug` is the stable key, RO in `translations`) shared by people (`user_interest`), coaches (`coach_category`, keyed by the coach's **user** id) and groups (`group_category`). `user.fitness_level` reuses `exercise_level`.
+- **Welcome flow state** lives in `user_onboarding_step` (one row per step: DONE / SKIPPED / DISMISSED + `flow_version`; no row = pending). What to ask is the pure `computeOnboardingFlow` (`onboarding-flow.ts`): ROLE is never asked of a coach; trainee path INTERESTS → LEVEL (level + goals); coach path COACH_CATEGORIES → COACH_DETAILS, with their own training on the Train-mode card; SKIPPED moves a step to a Home card, DISMISSED (card closed) ends it, DONE always wins. Bump `ONBOARDING_FLOW_VERSION` only to ask a new question.
+- Routes under `users/me/onboarding` (GET state; PUT role / interests / level / coach-categories / coach-details; POST skip / dismiss with a `steps` list). Each write returns the new state. Answering COACH creates the coach profile + role like "Become a coach". The register page is untouched by design: the flow runs after the first sign in.
+- Discovery reads the links in SQL (no module import, so onboarding → profile stays one way): `categoryIds` on coach rows (discover, directory, suggested, public profile), groups discover, and sessions discover (group's categories, else the coach's). Directory filters by `categoryIds`; suggestions rank by shared interests first.
+- Free-text `instructor_profile.specializations` stay (the coach's own words); the coach step only appends to them.
 
 ### Venue Module
 Where instructors deliver their service. One instructor has 0..N venues; sessions reference one via `session.venue_id` (nullable, ON DELETE SET NULL).

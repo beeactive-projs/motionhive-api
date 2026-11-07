@@ -813,6 +813,16 @@ export class GroupService {
             'country',
             'createdAt',
             [memberCountLiteral, 'memberCount'],
+            // What the group trains (migration 081), for the Discover filters.
+            [
+              literal(`COALESCE((
+                SELECT json_agg(gc.category_id ORDER BY c.kind, c.display_order)
+                FROM group_category gc
+                JOIN category c ON c.id = gc.category_id
+                WHERE gc.group_id = "Group"."id"
+              ), '[]'::json)`),
+              'categoryIds',
+            ],
           ],
         },
         order: [[memberCountLiteral, 'DESC']],

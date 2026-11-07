@@ -7,7 +7,7 @@ import {
 import type { LoggerService } from '@nestjs/common';
 import { InjectModel } from '@nestjs/sequelize';
 import { WINSTON_MODULE_NEST_PROVIDER } from 'nest-winston';
-import { Op, type IncludeOptions } from 'sequelize';
+import { Op, literal, type IncludeOptions } from 'sequelize';
 import {
   buildPaginatedResponse,
   getOffset,
@@ -92,6 +92,21 @@ const PUBLIC_TEMPLATE_FIELDS = [
   'instructorId',
   'groupId',
 ] as const;
+
+/**
+ * What a session trains, for the Discover filters: its group's categories
+ * when the group has some, else its coach's (migration 081). A JSON array
+ * of ids over the `template` include alias.
+ */
+const TEMPLATE_CATEGORY_IDS_SQL = `COALESCE(
+  (SELECT json_agg(gc.category_id ORDER BY c.kind, c.display_order)
+     FROM group_category gc JOIN category c ON c.id = gc.category_id
+    WHERE gc.group_id = "template"."group_id"),
+  (SELECT json_agg(cc.category_id ORDER BY c.kind, c.display_order)
+     FROM coach_category cc JOIN category c ON c.id = cc.category_id
+    WHERE cc.user_id = "template"."instructor_id"),
+  '[]'::json
+)`;
 
 // Fields shown when the session is blocked (GROUP_ONLY non-member).
 // Bare minimum needed to render a "join the group to see this" CTA.
@@ -215,7 +230,10 @@ export class SessionDiscoverService {
 
     const templateInclude: IncludeOptions = {
       model: SessionTemplate,
-      attributes: [...PUBLIC_TEMPLATE_FIELDS],
+      attributes: [
+        ...PUBLIC_TEMPLATE_FIELDS,
+        [literal(TEMPLATE_CATEGORY_IDS_SQL), 'categoryIds'],
+      ],
       required: true,
       // The venue the class normally runs at. `venueOverride` below only
       // carries a per-occurrence change, so without this an ordinary session

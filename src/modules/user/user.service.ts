@@ -84,6 +84,19 @@ export interface UserDataExport {
   sessionParticipations: Record<string, unknown>[];
   clientRelationships: Record<string, unknown>[];
   invitations: Record<string, unknown>[];
+  /** What they like to train and why, and (a coach) what they coach. */
+  interests: ExportedCategory[];
+  coachCategories: ExportedCategory[];
+  /** What became of each welcome flow step. */
+  onboardingSteps: Record<string, unknown>[];
+}
+
+/** A category as the export names it: the slug and the English name. */
+interface ExportedCategory {
+  slug: string;
+  kind: string;
+  name: string;
+  createdAt: Date;
 }
 
 @Injectable()
@@ -750,6 +763,9 @@ export class UserService {
       sessionParticipations,
       clientRelationships,
       invitations,
+      interests,
+      coachCategories,
+      onboardingSteps,
     ] = await Promise.all([
       this.socialAccountModel.findAll({
         where: { userId },
@@ -772,6 +788,29 @@ export class UserService {
         where: { email: user.email },
         attributes: ['groupId', 'acceptedAt', 'declinedAt', 'createdAt'],
       }),
+      // Raw queries keep the onboarding entities out of this module.
+      this.sequelize.query<ExportedCategory>(
+        `SELECT c.slug, c.kind, c.name, ui.created_at AS "createdAt"
+           FROM user_interest ui JOIN category c ON c.id = ui.category_id
+          WHERE ui.user_id = :userId
+          ORDER BY c.kind, c.display_order`,
+        { replacements: { userId }, type: QueryTypes.SELECT },
+      ),
+      this.sequelize.query<ExportedCategory>(
+        `SELECT c.slug, c.kind, c.name, cc.created_at AS "createdAt"
+           FROM coach_category cc JOIN category c ON c.id = cc.category_id
+          WHERE cc.user_id = :userId
+          ORDER BY c.kind, c.display_order`,
+        { replacements: { userId }, type: QueryTypes.SELECT },
+      ),
+      this.sequelize.query<Record<string, unknown>>(
+        `SELECT step, status, flow_version AS "flowVersion",
+                created_at AS "createdAt", updated_at AS "updatedAt"
+           FROM user_onboarding_step
+          WHERE user_id = :userId
+          ORDER BY created_at`,
+        { replacements: { userId }, type: QueryTypes.SELECT },
+      ),
     ]);
 
     this.logger.log(`Data export generated for user: ${userId}`, 'UserService');
@@ -785,6 +824,9 @@ export class UserService {
       sessionParticipations: sessionParticipations.map((p) => p.toJSON()),
       clientRelationships: clientRelationships.map((c) => c.toJSON()),
       invitations: invitations.map((i) => i.toJSON()),
+      interests,
+      coachCategories,
+      onboardingSteps,
     };
   }
 

@@ -10,6 +10,7 @@ import {
   IsNumber,
   IsOptional,
   IsString,
+  IsUUID,
   Max,
   MaxLength,
   Min,
@@ -93,6 +94,20 @@ export class CoachDirectoryDto {
   specializations?: string[];
 
   @ApiPropertyOptional({
+    example: ['0b1c2d3e-4f50-4a6b-8c7d-9e0f1a2b3c4d'],
+    isArray: true,
+    description:
+      'Coaches who coach any of these categories (ids from `GET /categories`). ' +
+      'Repeat the param or separate the ids with commas.',
+  })
+  @Transform(({ value }) => toIdList(value))
+  @IsArray()
+  @ArrayMaxSize(30)
+  @IsUUID('all', { each: true })
+  @IsOptional()
+  categoryIds?: string[];
+
+  @ApiPropertyOptional({
     example: 5,
     description: 'Coaches with at least this many years of experience',
   })
@@ -153,4 +168,33 @@ function toStringList(value: unknown): unknown[] | undefined {
     .map((item) => (typeof item === 'string' ? item.trim() : item))
     .filter((item) => item !== '');
   return list.length > 0 ? list : undefined;
+}
+
+/**
+ * Ids as one list: `?categoryIds=A&categoryIds=B` or `?categoryIds=A,B`.
+ * Ids never hold a comma, so splitting on it is safe here (unlike the free
+ * text specializations).
+ */
+function toIdList(value: unknown): unknown[] | undefined {
+  const list = toStringList(value);
+  if (!list) {
+    return undefined;
+  }
+  const ids: unknown[] = [];
+  for (const item of list) {
+    if (typeof item !== 'string') {
+      ids.push(item);
+      continue;
+    }
+    for (const part of item.split(',')) {
+      const id = part.trim();
+      if (id !== '') {
+        ids.push(id);
+      }
+    }
+  }
+  if (ids.length === 0) {
+    return undefined;
+  }
+  return ids;
 }
