@@ -15,17 +15,18 @@ import { ProfileService } from '../profile/profile.service';
 import { RoleService } from '../role/role.service';
 import { User } from '../user/entities/user.entity';
 import { UserService } from '../user/user.service';
-import { CategoryPicker, CategoryService } from './category.service';
-import { Category } from './entities/category.entity';
+import { CategoryService } from '../category/category.service';
+import { Category } from '../category/entities/category.entity';
+import { CategoryKind } from '../category/entities/category.enums';
 import { CoachCategory } from './entities/coach-category.entity';
 import {
-  CategoryKind,
   OnboardingRole,
   OnboardingStep,
   OnboardingStepStatus,
 } from './entities/onboarding.enums';
 import { UserInterest } from './entities/user-interest.entity';
 import { UserOnboardingStep } from './entities/user-onboarding-step.entity';
+import { OnboardingStateService } from './onboarding-state.service';
 import { OnboardingService } from './onboarding.service';
 
 describe('OnboardingService', () => {
@@ -57,7 +58,6 @@ describe('OnboardingService', () => {
   };
 
   let service: OnboardingService;
-  let categories: CategoryService;
 
   const categoryModel = makeModelMock();
   const userInterestModel = { ...makeModelMock(), bulkCreate: jest.fn() };
@@ -124,6 +124,7 @@ describe('OnboardingService', () => {
       providers: [
         OnboardingService,
         CategoryService,
+        OnboardingStateService,
         { provide: getModelToken(Category), useValue: categoryModel },
         { provide: getModelToken(UserInterest), useValue: userInterestModel },
         { provide: getModelToken(CoachCategory), useValue: coachCategoryModel },
@@ -138,7 +139,6 @@ describe('OnboardingService', () => {
     }).compile();
 
     service = moduleRef.get(OnboardingService);
-    categories = moduleRef.get(CategoryService);
   });
 
   describe('getState', () => {
@@ -157,6 +157,23 @@ describe('OnboardingService', () => {
       ]);
       expect(state.interestIds).toEqual([yoga.id]);
       expect(state.flowVersion).toBe(1);
+    });
+
+    it("reads a coach's flow from their role, and the level from their account", async () => {
+      roleService.getUserRoleNames.mockResolvedValue(['USER', 'INSTRUCTOR']);
+      userModel.findByPk.mockResolvedValue({
+        id: userId,
+        fitnessLevel: 'INTERMEDIATE',
+      });
+
+      const state = await service.getState(userId);
+
+      expect(state.role).toBe(OnboardingRole.Coach);
+      expect(state.flow).toEqual([
+        OnboardingStep.CoachCategories,
+        OnboardingStep.CoachDetails,
+      ]);
+      expect(state.fitnessLevel).toBe('INTERMEDIATE');
     });
   });
 
@@ -425,16 +442,6 @@ describe('OnboardingService', () => {
       await service.setLevel(userId, { fitnessLevel: null, goalIds: [] });
 
       expect(skipped.status).toBe(OnboardingStepStatus.Done);
-    });
-  });
-
-  describe('CategoryService.assertPickable', () => {
-    it('hands back the ids of the kind being replaced', async () => {
-      const { kindIds } = await categories.assertPickable(
-        CategoryPicker.Goals,
-        [loseFat.id],
-      );
-      expect(kindIds).toEqual([loseFat.id]);
     });
   });
 });

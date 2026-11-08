@@ -67,6 +67,7 @@ describe('workout settings', () => {
         undefined as never,
         undefined as never,
         undefined as never,
+        undefined as never,
       );
       return { service, user, userModel, sequelize };
     }

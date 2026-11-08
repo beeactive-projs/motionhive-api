@@ -7,9 +7,13 @@ import {
   IsEmail,
   IsArray,
   MaxLength,
+  ArrayMaxSize,
+  ArrayUnique,
+  IsUUID,
 } from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { JoinPolicy, MemberPostPolicy } from '../entities/group.entity';
+import { MAX_CATEGORIES_PER_PICK } from '../../category/dto/category-ids';
 
 export class CreateGroupDto {
   @ApiProperty({
@@ -104,4 +108,19 @@ export class CreateGroupDto {
   @MaxLength(5)
   @IsOptional()
   country?: string;
+
+  @ApiPropertyOptional({
+    type: [String],
+    maxItems: MAX_CATEGORIES_PER_PICK,
+    description:
+      'What the group trains: category ids of kind ACTIVITY from ' +
+      '`GET /categories` (coaches only ones included). Optional.',
+    example: ['0b1c2d3e-4f50-4a6b-8c7d-9e0f1a2b3c4d'],
+  })
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(MAX_CATEGORIES_PER_PICK)
+  @ArrayUnique()
+  @IsUUID('all', { each: true })
+  categoryIds?: string[];
 }

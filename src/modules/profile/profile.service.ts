@@ -69,7 +69,11 @@ import { WorkoutReportService } from '../workout/workout-report.service';
 import { WorkoutPhotoService } from '../workout/workout-photo.service';
 import { ReportWorkoutDto } from '../workout/dto/report-workout.dto';
 import { WorkoutVisibility } from '../workout/entities/workout.enums';
-import { categoryIdsSql, categoryRowsSql } from '../onboarding/category-sql';
+import {
+  categoryIdsSql,
+  categoryRowsSql,
+  hasAnyCategorySql,
+} from '../category/category-sql';
 
 // The privacy rules live in profile-privacy.ts, which group and other
 // modules read without importing this service. Re-exported for the spec.
@@ -98,14 +102,14 @@ const ONLINE_VENUE_SQL = `EXISTS (
     AND v.deleted_at IS NULL
 )`;
 
+/** The coach's user id on a discovery row: coach categories are keyed by it. */
+const COACH_USER_ID_SQL = '"InstructorProfile"."user_id"';
+
 /**
  * The categories a coach coaches (migration 081), as a JSON array of ids in
- * the list's order. Coach categories are keyed by the coach's user id.
+ * the list's order.
  */
-const COACH_CATEGORY_IDS_SQL = categoryIdsSql(
-  'coach',
-  '"InstructorProfile"."user_id"',
-);
+const COACH_CATEGORY_IDS_SQL = categoryIdsSql('coach', COACH_USER_ID_SQL);
 
 /** A profile's specializations as rows; `[]` when the column holds no array. */
 const SPECIALIZATIONS_SQL = `json_array_elements_text(
@@ -419,6 +423,10 @@ export class ProfileService {
       ];
     }
 
+    if (dto.categoryIds && dto.categoryIds.length > 0) {
+      where[Op.and] = [literal(this.coachCategorySql(dto.categoryIds))];
+    }
+
     const profiles = await this.instructorProfileModel.findAll({
       where,
       include: [
@@ -494,16 +502,8 @@ export class ProfileService {
       );
     }
 
-    if (dto.categoryIds?.length) {
-      // Any of the picked categories.
-      const wanted = dto.categoryIds.map((id) => esc(id)).join(', ');
-      and.push(
-        literal(`EXISTS (
-          SELECT 1 FROM coach_category cc
-          WHERE cc.user_id = "InstructorProfile"."user_id"
-            AND cc.category_id IN (${wanted})
-        )`),
-      );
+    if (dto.categoryIds && dto.categoryIds.length > 0) {
+      and.push(literal(this.coachCategorySql(dto.categoryIds)));
     }
 
     const where: Record<string | symbol, unknown> = { [Op.and]: and };
@@ -691,6 +691,16 @@ export class ProfileService {
           byId,
         ];
     }
+  }
+
+  /**
+   * Coaches who coach any of `ids`: the `categoryIds` filter of the discover
+   * list and the directory alike.
+   */
+  private coachCategorySql(ids: readonly string[]): string {
+    return hasAnyCategorySql('coach', COACH_USER_ID_SQL, ids, (value) =>
+      this.sequelize.escape(value),
+    );
   }
 
   /** The `categoryIds` literal of a coach row; `[]` when the query did not ask. */

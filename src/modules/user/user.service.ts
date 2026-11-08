@@ -51,7 +51,12 @@ import { Role } from '../role/entities/role.entity';
 import { SearchIndexService } from '../search/search-index.service';
 import { JobsService } from '../jobs/jobs.service';
 import type { Locale } from '../../common/i18n';
-import { categoryRowsSql } from '../onboarding/category-sql';
+import { categoryRowsSql } from '../category/category-sql';
+import {
+  OnboardingStateService,
+  type OnboardingState,
+} from '../onboarding/onboarding-state.service';
+import type { AuthenticatedUser } from '../../common/types/authenticated-request';
 
 /**
  * Roles that must never appear in user-picker search results, regardless of
@@ -115,10 +120,11 @@ export class UserService {
     private readonly configService: ConfigService,
     private readonly cryptoService: CryptoService,
     private readonly mediaStorage: MediaStorageService,
-    @Inject(WINSTON_MODULE_NEST_PROVIDER)
-    private readonly logger: LoggerService,
     private readonly searchIndexService: SearchIndexService,
     private readonly jobs: JobsService,
+    private readonly onboardingStateService: OnboardingStateService,
+    @Inject(WINSTON_MODULE_NEST_PROVIDER)
+    private readonly logger: LoggerService,
   ) {}
 
   /** Exact, case-sensitive match. Caller normalises (lowercase + trim). */
@@ -178,6 +184,23 @@ export class UserService {
       );
       return resolveWorkoutSettings(merged as StoredWorkoutSettings);
     });
+  }
+
+  /**
+   * `GET /users/me`: the caller's profile with `onboarding`, where they are
+   * in the welcome flow (the same state `GET /users/me/onboarding` sends),
+   * so the apps learn it from the profile they load on start. Role and
+   * level come from the signed-in user, read fresh for this request.
+   */
+  async getMe(
+    user: AuthenticatedUser,
+  ): Promise<Record<string, unknown> & { onboarding: OnboardingState }> {
+    const onboarding = await this.onboardingStateService.read({
+      userId: user.id,
+      isCoach: user.roles.includes('INSTRUCTOR'),
+      fitnessLevel: user.fitnessLevel,
+    });
+    return { ...UserService.toProfileDto(user), onboarding };
   }
 
   /**

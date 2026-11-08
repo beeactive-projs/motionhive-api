@@ -8,7 +8,7 @@ import {
   IsUUID,
 } from 'class-validator';
 import { ExerciseLevel } from '../../exercise/entities/exercise.enums';
-import { MAX_CATEGORIES_PER_PICK } from './set-interests.dto';
+import { MAX_CATEGORIES_PER_PICK } from '../../category/dto/category-ids';
 
 /**
  * `PUT /users/me/onboarding/level`: how far along a person is and why they

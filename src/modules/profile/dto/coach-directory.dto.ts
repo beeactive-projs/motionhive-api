@@ -10,12 +10,11 @@ import {
   IsNumber,
   IsOptional,
   IsString,
-  IsUUID,
   Max,
   MaxLength,
   Min,
 } from 'class-validator';
-import { toQueryList } from '../../../common/utils/query.utils';
+import { CategoryIdsFilter } from '../../category/dto/category-ids';
 import { CoachDirectorySort } from '../entities/coach-directory.enums';
 
 /**
@@ -94,18 +93,7 @@ export class CoachDirectoryDto {
   @IsOptional()
   specializations?: string[];
 
-  @ApiPropertyOptional({
-    example: ['0b1c2d3e-4f50-4a6b-8c7d-9e0f1a2b3c4d'],
-    isArray: true,
-    description:
-      'Coaches who coach any of these categories (ids from `GET /categories`). ' +
-      'Repeat the param or separate the ids with commas.',
-  })
-  @Transform(({ value }) => toQueryList(value))
-  @IsArray()
-  @ArrayMaxSize(30)
-  @IsUUID('all', { each: true })
-  @IsOptional()
+  @CategoryIdsFilter('Coaches who coach any of these categories')
   categoryIds?: string[];
 
   @ApiPropertyOptional({

@@ -14,7 +14,9 @@ export const ProfileDocs = {
       'Supports search by name, display name, first/last name, bio, specializations, and city. ' +
       'Filter by city or country using separate query params. ' +
       'Returns up to 30 results sorted by years of experience (most experienced first). ' +
-      'Query params: search (string), city (string), country (ISO 3166-1 alpha-2 e.g. "RO").',
+      'Query params: search (string), city (string), country (ISO 3166-1 alpha-2 e.g. "RO"), ' +
+      'categoryIds (ids from GET /categories, repeat the param or separate with commas, up to 30: ' +
+      'coaches who coach any of them, the same filter as the directory). Each row carries `categoryIds`.',
     auth: false,
     responses: [
       {
@@ -34,6 +36,7 @@ export const ProfileDocs = {
             yearsOfExperience: 8,
             isAcceptingClients: true,
             isOnline: false,
+            categoryIds: ['0b1c2d3e-4f50-4a6b-8c7d-9e0f1a2b3c4d'],
             city: 'Bucharest',
             countryCode: 'RO',
             socialLinks: {
@@ -55,7 +58,8 @@ export const ProfileDocs = {
       'accents and case), city (contains), country (ISO 3166-1 alpha-2), accepting (taking new clients), ' +
       'online (has an active online venue), requested (coaches the caller asked and is still waiting ' +
       'on; nobody for a guest), specializations (repeat the param; any of them, matched ' +
-      'whole), minYears. sort: recommended (default: taking clients first, then experience, then name), ' +
+      'whole), categoryIds (ids from GET /categories, repeat the param or separate with commas; ' +
+      'coaches who coach any of them), minYears. sort: recommended (default: taking clients first, then experience, then name), ' +
       'experience, name. page (default 1), limit (1 to 50, default 20). `isOnline` on each row is the ' +
       'same online-venue test. `requestSent` is true when the caller asked that coach and the request ' +
       'is still waiting (pending, not expired); always false for a guest. `isPublic` is not applied yet.',
@@ -238,7 +242,8 @@ export const ProfileDocs = {
   getInstructorPublicGroups: {
     summary: 'List public groups owned by an instructor',
     description:
-      'Returns groups where the user is the owning instructor and the group is marked public. Powers the Groups tab of the Public Profile page. No authentication required.',
+      'Returns groups where the user is the owning instructor and the group is marked public. Powers the Groups tab of the Public Profile page. No authentication required. ' +
+      'Each group carries `categoryIds`, what it trains, in the order of the category list.',
     auth: false,
     responses: [
       {
@@ -254,6 +259,7 @@ export const ProfileDocs = {
             city: 'Bucharest',
             country: 'RO',
             memberCount: 24,
+            categoryIds: ['0b1c2d3e-4f50-4a6b-8c7d-9e0f1a2b3c4d'],
           },
         ],
       },

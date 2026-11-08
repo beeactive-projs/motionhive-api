@@ -7,7 +7,7 @@ import {
   UpdatedAt,
 } from 'sequelize-typescript';
 import type { ContentTranslations } from '../../../common/i18n';
-import { CategoryKind } from './onboarding.enums';
+import { CategoryKind } from './category.enums';
 
 /**
  * Category

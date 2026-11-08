@@ -21,7 +21,8 @@ import { SetCoachCategoriesDto } from './dto/set-coach-categories.dto';
 import { SetCoachDetailsDto } from './dto/set-coach-details.dto';
 import { SetInterestsDto } from './dto/set-interests.dto';
 import { SetLevelDto } from './dto/set-level.dto';
-import { OnboardingService, OnboardingState } from './onboarding.service';
+import type { OnboardingState } from './onboarding-state.service';
+import { OnboardingService } from './onboarding.service';
 
 /** A person answers each step by hand, a few times at most. */
 const WRITE_THROTTLE = { default: { limit: 60, ttl: 3_600_000 } };

@@ -329,7 +329,10 @@ export const SessionDocs = {
   discover: {
     summary: 'Browse upcoming sessions (public, optional auth)',
     description:
-      'Anonymous callers see OPEN/FREE upcoming sessions only. Authenticated callers also see CLIENTS_ONLY sessions for instructors they have an active client relationship with, and GROUP_ONLY sessions for groups they currently belong to. Hard 90-day date window. Cached for 60s by HTTP layer; vary by Authorization.',
+      'Anonymous callers see OPEN/FREE upcoming sessions only. Authenticated callers also see CLIENTS_ONLY sessions for instructors they have an active client relationship with, and GROUP_ONLY sessions for groups they currently belong to. Hard 90-day date window. Cached for 60s by HTTP layer; vary by Authorization. ' +
+      "`template.categoryIds` is what a session trains: its group's categories when the group has some, else its coach's. " +
+      'The categoryIds filter (ids from GET /categories, repeat the param or separate with commas, up to 30) keeps the sessions ' +
+      'whose `template.categoryIds` hold any of them, by that same rule.',
     auth: false,
     responses: [
       {

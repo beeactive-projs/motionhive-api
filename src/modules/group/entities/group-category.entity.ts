@@ -7,13 +7,14 @@ import {
   BelongsTo,
   CreatedAt,
 } from 'sequelize-typescript';
-import { Category } from './category.entity';
+import { Category } from '../../category/entities/category.entity';
 
 /**
  * GroupCategory
  *
- * What a group trains. Backfilled from group names and tags by migration
- * 081; Discover matches groups on it.
+ * What a group trains: activities from the category list, set by the
+ * group's owner when they create or edit it (`categoryIds`). Backfilled
+ * from group names and tags by migration 081; Discover matches groups on it.
  */
 @Table({
   tableName: 'group_category',

@@ -12,14 +12,13 @@ import { Op, Transaction } from 'sequelize';
 import { Sequelize } from 'sequelize-typescript';
 
 import { apiError } from '../../common/i18n';
-import type { ExerciseLevel } from '../exercise/entities/exercise.enums';
 import { ProfileService } from '../profile/profile.service';
 import { RoleService } from '../role/role.service';
 import type { UpdateUserDto } from '../user/dto/update-user.dto';
 import { User } from '../user/entities/user.entity';
 import { UserService } from '../user/user.service';
 import { foldText } from '../../common/utils/search.utils';
-import { CategoryPicker, CategoryService } from './category.service';
+import { CategoryPicker, CategoryService } from '../category/category.service';
 import type { AnswerRoleDto } from './dto/answer-role.dto';
 import type { SetCoachCategoriesDto } from './dto/set-coach-categories.dto';
 import type { SetCoachDetailsDto } from './dto/set-coach-details.dto';
@@ -33,21 +32,11 @@ import {
 } from './entities/onboarding.enums';
 import { UserInterest } from './entities/user-interest.entity';
 import { UserOnboardingStep } from './entities/user-onboarding-step.entity';
+import { ONBOARDING_FLOW_VERSION } from './onboarding-flow';
 import {
-  computeOnboardingFlow,
-  ONBOARDING_FLOW_VERSION,
-  type OnboardingFlow,
-} from './onboarding-flow';
-
-/** What `GET /users/me/onboarding` sends: the flow plus the answers so far. */
-export interface OnboardingState extends OnboardingFlow {
-  flowVersion: number;
-  /** Category ids the person likes (activities and goals). */
-  interestIds: string[];
-  fitnessLevel: ExerciseLevel | null;
-  /** Category ids a coach coaches; empty for someone who does not. */
-  coachCategoryIds: string[];
-}
+  OnboardingStateService,
+  type OnboardingState,
+} from './onboarding-state.service';
 
 /**
  * The welcome flow a person sees after they first sign in, and the answers
@@ -71,6 +60,7 @@ export class OnboardingService {
     @InjectModel(User) private readonly userModel: typeof User,
     private readonly sequelize: Sequelize,
     private readonly categoryService: CategoryService,
+    private readonly onboardingStateService: OnboardingStateService,
     private readonly roleService: RoleService,
     private readonly userService: UserService,
     private readonly profileService: ProfileService,
@@ -78,49 +68,26 @@ export class OnboardingService {
     private readonly logger: LoggerService,
   ) {}
 
-  /** Where the person is in the flow, and what they answered so far. */
+  /**
+   * Where the person is in the flow, and what they answered so far. Read by
+   * OnboardingStateService, the same reader `GET /users/me` uses; this only
+   * looks up the role and level it needs (fresh after a write here).
+   */
   async getState(userId: string): Promise<OnboardingState> {
-    const [user, roleNames, steps, interests, coachCategories] =
-      await Promise.all([
-        this.userModel.findByPk(userId, { attributes: ['id', 'fitnessLevel'] }),
-        this.roleService.getUserRoleNames(userId),
-        this.stepModel.findAll({
-          where: { userId },
-          attributes: ['step', 'status'],
-        }),
-        this.userInterestModel.findAll({
-          where: { userId },
-          attributes: ['categoryId'],
-          order: [['createdAt', 'ASC']],
-        }),
-        this.coachCategoryModel.findAll({
-          where: { userId },
-          attributes: ['categoryId'],
-          order: [['createdAt', 'ASC']],
-        }),
-      ]);
+    const [user, roleNames] = await Promise.all([
+      this.userModel.findByPk(userId, { attributes: ['id', 'fitnessLevel'] }),
+      this.roleService.getUserRoleNames(userId),
+    ]);
 
     if (!user) {
       throw new NotFoundException(apiError('user.notFound'));
     }
 
-    const statuses: Partial<Record<OnboardingStep, OnboardingStepStatus>> = {};
-    for (const row of steps) {
-      statuses[row.step] = row.status;
-    }
-
-    const flow = computeOnboardingFlow({
+    return this.onboardingStateService.read({
+      userId,
       isCoach: roleNames.includes('INSTRUCTOR'),
-      statuses,
-    });
-
-    return {
-      flowVersion: ONBOARDING_FLOW_VERSION,
-      ...flow,
-      interestIds: interests.map((row) => row.categoryId),
       fitnessLevel: user.fitnessLevel,
-      coachCategoryIds: coachCategories.map((row) => row.categoryId),
-    };
+    });
   }
 
   /**

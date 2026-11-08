@@ -8,7 +8,7 @@ import {
   IsUUID,
   MaxLength,
 } from 'class-validator';
-import { MAX_CATEGORIES_PER_PICK } from './set-interests.dto';
+import { MAX_CATEGORIES_PER_PICK } from '../../category/dto/category-ids';
 
 /** Extra words a coach can add in one go, on top of the list. */
 export const MAX_OTHER_SPECIALIZATIONS = 10;

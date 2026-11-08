@@ -4,7 +4,7 @@ import { InjectModel } from '@nestjs/sequelize';
 import { apiError } from '../../common/i18n';
 import { foldText } from '../../common/utils/search.utils';
 import { Category } from './entities/category.entity';
-import { CategoryKind } from './entities/onboarding.enums';
+import { CategoryKind } from './entities/category.enums';
 
 /** The columns every read sends; `translations` so the reader's language applies. */
 const CATEGORY_ATTRIBUTES = [
@@ -26,6 +26,8 @@ export const CategoryPicker = {
   Goals: 'GOALS',
   /** What a coach coaches: any activity. */
   Coach: 'COACH',
+  /** What a group trains: any activity, like a coach's. */
+  Group: 'GROUP',
 } as const;
 export type CategoryPicker =
   (typeof CategoryPicker)[keyof typeof CategoryPicker];
@@ -33,7 +35,8 @@ export type CategoryPicker =
 /**
  * The category list: what people train (activities) and why (goals). Read
  * only, MotionHive's own rows (migration 081). Names come out in the
- * reader's language through ContentLocaleInterceptor.
+ * reader's language through ContentLocaleInterceptor. Onboarding checks a
+ * person's and a coach's picks with it, groups their owner's.
  */
 @Injectable()
 export class CategoryService {
@@ -78,12 +81,10 @@ export class CategoryService {
     for (const id of ids) {
       const category = byId.get(id);
       if (!category) {
-        throw new BadRequestException(apiError('onboarding.unknownCategory'));
+        throw new BadRequestException(apiError('category.unknownCategory'));
       }
       if (picker === CategoryPicker.Interests && category.coachesOnly) {
-        throw new BadRequestException(
-          apiError('onboarding.coachesOnlyCategory'),
-        );
+        throw new BadRequestException(apiError('category.coachesOnlyCategory'));
       }
     }
 

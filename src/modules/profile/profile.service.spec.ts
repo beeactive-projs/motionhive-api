@@ -30,6 +30,7 @@ import {
   makeSilentLogger,
 } from '../../../test/helpers/sequelize-mocks';
 import { foldedLike } from '../../../test/helpers/folded-search';
+import { hasAnyCategorySql } from '../category/category-sql';
 
 /**
  * Smoke tests for ProfileService — covers the surface the FE relies on:
@@ -519,6 +520,48 @@ describe('ProfileService (smoke — not exhaustive)', () => {
       expect(out[0].isOnline).toBe(false);
     });
 
+    it('narrows to coaches of any picked category, as the directory does', async () => {
+      instructorProfileModel.findAll.mockResolvedValueOnce([]);
+      instructorProfileModel.findAndCountAll.mockResolvedValue({
+        rows: [],
+        count: 0,
+      });
+
+      await service.discoverInstructors({ categoryIds: ['cat-yoga'] });
+      await service.coachDirectory(null, { categoryIds: ['cat-yoga'] });
+
+      type Query = { where: Record<symbol, Array<{ val: string }>> };
+      const discoverCalls = instructorProfileModel.findAll.mock.calls as Array<
+        [Query]
+      >;
+      const directoryCalls = instructorProfileModel.findAndCountAll.mock
+        .calls as Array<[Query]>;
+      const [discover] = discoverCalls[discoverCalls.length - 1];
+      const [directory] = directoryCalls[directoryCalls.length - 1];
+      const discoverSql = discover.where[Op.and].map((c) => c.val);
+      const directorySql = directory.where[Op.and].map((c) => c.val);
+
+      expect(discoverSql).toHaveLength(1);
+      expect(discoverSql[0]).toContain('FROM coach_category x');
+      expect(discoverSql[0]).toContain(
+        'x.user_id = "InstructorProfile"."user_id"',
+      );
+      expect(discoverSql[0]).toContain("x.category_id IN ('cat-yoga')");
+      expect(directorySql).toContain(discoverSql[0]);
+    });
+
+    it('adds no category condition without the filter', async () => {
+      instructorProfileModel.findAll.mockResolvedValueOnce([]);
+
+      await service.discoverInstructors({ categoryIds: [] });
+
+      const calls = instructorProfileModel.findAll.mock.calls as Array<
+        [{ where: Record<symbol, unknown> }]
+      >;
+      const [call] = calls[calls.length - 1];
+      expect(call.where[Op.and]).toBeUndefined();
+    });
+
     // "brasov" finds "Brașov" and "stefan" finds "Ștefan": both sides fold.
     it('searches and filters by city blind to accents', async () => {
       instructorProfileModel.findAll.mockResolvedValueOnce([]);
@@ -696,8 +739,16 @@ describe('ProfileService (smoke — not exhaustive)', () => {
       const categories = andSql(lastQuery()).find((sql) =>
         sql.includes('FROM coach_category'),
       );
+      expect(categories).toBe(
+        hasAnyCategorySql(
+          'coach',
+          '"InstructorProfile"."user_id"',
+          ['cat-yoga', 'cat-running'],
+          (v) => `'${v}'`,
+        ),
+      );
       expect(categories).toContain(
-        `cc.category_id IN ('cat-yoga', 'cat-running')`,
+        `x.category_id IN ('cat-yoga', 'cat-running')`,
       );
     });
 

@@ -8,6 +8,7 @@ import {
 } from 'class-validator';
 import { ApiPropertyOptional } from '@nestjs/swagger';
 import { PaginationDto } from '../../../common/dto/pagination.dto';
+import { CategoryIdsFilter } from '../../category/dto/category-ids';
 
 /**
  * Query DTO for the public discover endpoint.
@@ -49,6 +50,13 @@ export class DiscoverSessionsQueryDto extends PaginationDto {
   @IsOptional()
   @IsUUID('4')
   groupId?: string;
+
+  @CategoryIdsFilter(
+    "Sessions that train any of these categories: the session's group's " +
+      "categories when the group has some, else its coach's, as each row's " +
+      '`template.categoryIds` shows',
+  )
+  categoryIds?: string[];
 
   @ApiPropertyOptional({ description: 'ISO8601 lower bound (inclusive).' })
   @IsOptional()

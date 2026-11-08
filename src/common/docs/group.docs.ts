@@ -14,7 +14,9 @@ export const GroupDocs = {
     description:
       'Browse and search public groups. No authentication required. ' +
       'Supports filtering by tags (?tags=hiit,yoga), city, country, and free-text search on name/description (?search=yoga). ' +
-      'Results sorted by member count (most popular first).',
+      'categoryIds (ids from GET /categories, repeat the param or separate with commas, up to 30) keeps the groups ' +
+      'that train any of them. Results sorted by member count (most popular first). Each row carries ' +
+      '`categoryIds`, what the group trains, in the order of the category list.',
     auth: false,
     responses: [
       {
@@ -34,6 +36,7 @@ export const GroupDocs = {
               city: 'Bucharest',
               country: 'RO',
               memberCount: 42,
+              categoryIds: ['0b1c2d3e-4f50-4a6b-8c7d-9e0f1a2b3c4d'],
             },
           ],
           total: 1,
@@ -49,7 +52,8 @@ export const GroupDocs = {
     description:
       'Returns the public profile of a group including instructor info, ' +
       'specializations, and upcoming sessions. No authentication required. ' +
-      'Only works for public groups.',
+      'Only works for public groups. `group.categoryIds` is what the group ' +
+      'trains, in the order of the category list.',
     auth: false,
     responses: [
       {
@@ -64,6 +68,7 @@ export const GroupDocs = {
             joinPolicy: 'OPEN',
             city: 'Bucharest',
             memberCount: 42,
+            categoryIds: ['0b1c2d3e-4f50-4a6b-8c7d-9e0f1a2b3c4d'],
           },
           instructor: {
             firstName: 'John',
@@ -186,7 +191,10 @@ export const GroupDocs = {
     summary: 'Create a new group',
     description:
       'Create a new group. Requires INSTRUCTOR role. Creator becomes the owner. ' +
-      'You can set tags, isPublic, joinPolicy, and contact/location info.',
+      'You can set tags, isPublic, joinPolicy, and contact/location info. ' +
+      'categoryIds (optional, up to 30 unique UUIDs) is what the group trains: activities from ' +
+      'GET /categories, coaches only ones included; a goal or an unknown id is a 400. ' +
+      'The response carries the saved `categoryIds` in the order of the category list.',
     auth: true,
     responses: [
       {
@@ -202,6 +210,7 @@ export const GroupDocs = {
           joinPolicy: 'OPEN',
           timezone: 'Europe/Bucharest',
           isActive: true,
+          categoryIds: ['0b1c2d3e-4f50-4a6b-8c7d-9e0f1a2b3c4d'],
         },
       },
       ApiStandardResponses.BadRequest,
@@ -212,7 +221,9 @@ export const GroupDocs = {
 
   getMyGroups: {
     summary: 'List my groups',
-    description: 'Returns all groups the authenticated user belongs to.',
+    description:
+      'Returns all groups the authenticated user belongs to, each with `memberCount`, ' +
+      "the caller's `myRole` and `categoryIds` (what the group trains, in the order of the category list).",
     auth: true,
     responses: [
       {
@@ -224,6 +235,9 @@ export const GroupDocs = {
             name: 'Morning HIIT Crew',
             slug: 'morning-hiit-crew',
             tags: ['fitness', 'hiit'],
+            memberCount: 12,
+            myRole: 'OWNER',
+            categoryIds: ['0b1c2d3e-4f50-4a6b-8c7d-9e0f1a2b3c4d'],
           },
         ],
       },
@@ -254,7 +268,9 @@ export const GroupDocs = {
 
   getById: {
     summary: 'Get group by ID',
-    description: 'Returns group details. User must be a member.',
+    description:
+      "Returns group details with `memberCount`, the caller's `myRole` and `categoryIds` " +
+      '(what the group trains, in the order of the category list). User must be a member.',
     auth: true,
     responses: [
       {
@@ -271,7 +287,10 @@ export const GroupDocs = {
     summary: 'Update group',
     description:
       'Update group details. Owner only. If name changes, slug is auto-regenerated. ' +
-      'You can also update tags, isPublic, joinPolicy, contact info, and location.',
+      'You can also update tags, isPublic, joinPolicy, contact info, and location. ' +
+      'categoryIds, when sent, replaces what the group trains (activities from GET /categories, ' +
+      'up to 30 unique UUIDs; an empty list clears them); left out, they stay as they are. ' +
+      "The response carries the group's `categoryIds` in the order of the category list.",
     auth: true,
     responses: [
       {

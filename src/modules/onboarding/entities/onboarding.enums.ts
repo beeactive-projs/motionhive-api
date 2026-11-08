@@ -1,13 +1,6 @@
-// Onboarding domain enums: the category list and the welcome flow. const +
-// type pattern (runtime accessible + TypeScript narrowing). Keep in sync with
-// migration 081.
-
-/** ACTIVITY is what you do, GOAL is why you train. */
-export const CategoryKind = {
-  Activity: 'ACTIVITY',
-  Goal: 'GOAL',
-} as const;
-export type CategoryKind = (typeof CategoryKind)[keyof typeof CategoryKind];
+// Onboarding domain enums: the welcome flow. const + type pattern (runtime
+// accessible + TypeScript narrowing). Keep in sync with migration 081. The
+// category list's own enum is in category/entities/category.enums.ts.
 
 /**
  * The welcome flow's steps. A trainee's flow is ROLE, INTERESTS, LEVEL; a

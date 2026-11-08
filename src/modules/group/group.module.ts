@@ -3,6 +3,7 @@ import { SequelizeModule } from '@nestjs/sequelize';
 import { Group } from './entities/group.entity';
 import { GroupMember } from './entities/group-member.entity';
 import { GroupJoinRequest } from './entities/group-join-request.entity';
+import { GroupCategory } from './entities/group-category.entity';
 import { User } from '../user/entities/user.entity';
 import { SessionInstance } from '../session/entities/session-instance.entity';
 import { SessionTemplate } from '../session/entities/session-template.entity';
@@ -12,6 +13,7 @@ import { RoleModule } from '../role/role.module';
 import { InstructorClient } from '../client/entities/instructor-client.entity';
 import { CryptoService } from '../../common/services/crypto.service';
 import { SearchModule } from '../search/search.module';
+import { CategoryModule } from '../category/category.module';
 
 /**
  * Group Module
@@ -23,6 +25,7 @@ import { SearchModule } from '../search/search.module';
  * - InstructorClient: to flag which group members are clients of the instructor
  * - EmailService: for sending notifications (e.g. join confirmations)
  * - CryptoService: for generating/hashing join link tokens
+ * - CategoryModule: checks the categories an owner picks for their group
  *
  * Exports GroupService so InvitationModule can add members.
  */
@@ -32,6 +35,7 @@ import { SearchModule } from '../search/search.module';
       Group,
       GroupMember,
       GroupJoinRequest,
+      GroupCategory,
       InstructorClient,
       User,
       SessionInstance,
@@ -39,6 +43,7 @@ import { SearchModule } from '../search/search.module';
     ]),
     RoleModule,
     SearchModule,
+    CategoryModule,
   ],
   controllers: [GroupController],
   providers: [GroupService, CryptoService],

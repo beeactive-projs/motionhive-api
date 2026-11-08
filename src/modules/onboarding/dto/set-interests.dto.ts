@@ -1,8 +1,7 @@
 import { ApiProperty } from '@nestjs/swagger';
 import { ArrayMaxSize, ArrayUnique, IsArray, IsUUID } from 'class-validator';
 
-/** More than the list holds, so the cap only stops a runaway client. */
-export const MAX_CATEGORIES_PER_PICK = 30;
+import { MAX_CATEGORIES_PER_PICK } from '../../category/dto/category-ids';
 
 /**
  * `PUT /users/me/onboarding/interests`: the activities a person likes,
