@@ -62,9 +62,11 @@ export const VenueDocs = {
     summary: 'Create a venue',
     description:
       'Creates a new venue owned by the authenticated instructor. ' +
-      '`kind=ONLINE` requires `meetingUrl`. Physical kinds (GYM/STUDIO/' +
-      'PARK/OUTDOOR/OTHER) require at least `city`. `CLIENT_HOME` stores ' +
-      'no address — the client address belongs to the booking.',
+      '`kind=ONLINE` takes an optional `meetingUrl` and `meetingProvider` ' +
+      '(neither is required since migration 084) and keeps no address. ' +
+      'Physical kinds (GYM/STUDIO/PARK/OUTDOOR/OTHER) require at least ' +
+      '`city`. `CLIENT_HOME` keeps only the area (city, region, country), ' +
+      'no street: the client address belongs to the booking.',
     auth: true,
     responses: [
       { status: 201, description: 'Venue created', example: venueExample },
@@ -77,9 +79,11 @@ export const VenueDocs = {
   update: {
     summary: 'Update a venue',
     description:
-      'Partial update — only the provided fields change. Cross-field ' +
-      'rules are re-validated against the post-update snapshot, so a ' +
-      'switch from GYM to ONLINE requires `meetingUrl`.',
+      'Partial update: only the provided fields change, and `meetingUrl: ' +
+      'null` / `meetingProvider: null` clear those two. Cross-field rules ' +
+      'are re-validated against the post-update snapshot, so a switch from ' +
+      'ONLINE to GYM requires `city`; a new kind without `isOnline` decides ' +
+      'whether the place counts as online.',
     auth: true,
     responses: [
       { status: 200, description: 'Venue updated', example: venueExample },

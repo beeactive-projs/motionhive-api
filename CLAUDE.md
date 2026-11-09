@@ -203,10 +203,12 @@ One category list (migration 081, `category`: 14 activities + 6 goals, `slug` is
 Where instructors deliver their service. One instructor has 0..N venues; sessions reference one via `session.venue_id` (nullable, ON DELETE SET NULL).
 - **Kinds** (`venue_kind` enum): `GYM`, `STUDIO`, `PARK`, `OUTDOOR`, `CLIENT_HOME`, `ONLINE`, `OTHER`
 - **Cross-field rules** enforced by `VenueService.normalizeAndValidate`:
-  - `kind=ONLINE` ⇔ `isOnline=true` ⇔ `meetingUrl` required
-  - `CLIENT_HOME` stores no address (client's address belongs to the booking); `travelRadiusKm` only applies here
+  - `kind=ONLINE` ⇒ `isOnline=true`; the meeting link and platform are optional (migration 084 dropped the CHECK that required the link; it is never shown publicly). An online place keeps no address. An active online venue is what makes a coach "Online" on Discover
+  - `CLIENT_HOME` keeps only the area (city, region, country), no street (client's address belongs to the booking); `travelRadiusKm` only applies here
   - Physical kinds require at least `city`
-- DB-level CHECK constraints back the `is_online` ⇒ `meetingUrl` rule and the country-code format
+  - PATCH: `meetingUrl: null` / `meetingProvider: null` clear those two; a changed `kind` without `isOnline` decides it
+- DB-level CHECK constraint backs the country-code format
+- Coaches add and edit places in the web Venues page, the mobile Coaching profile and the mobile welcome flow's coach details step
 - Soft delete (paranoid) + `is_active=false` archive
 - Ownership returns 404 (not 403) on cross-instructor access — don't leak existence
 
@@ -244,7 +246,7 @@ Full schema in `src/config/env.validation.ts` (Joi, `abortEarly: false`).
 - **No batch invite** endpoint.
 - **Sessions ↔ venues** — picker is live in session-form-dialog + quick-create-popover (conditional on `locationKind = IN_PERSON`). Minor polish gap: no inline "Create venue" CTA when the instructor has zero venues yet — they have to leave the dialog and use the Venues page first.
 - **Incomplete modules**: `role` (service-only, no controller, empty `constants/` dir), `notification` (Phase 1 stub for delivery; in-app + email channels live, push/SMS not yet).
-- **Test coverage**: 125 suites / 3340 tests. Includes the full jobs stack (notifications/sessions/workouts/payments/maintenance workers + schedulers), payment reminder/balance/dispute services, and async webhook processing + reconciliation. Notably still thin: blog, profile, venue, analytics, feedback, waitlist, search.
+- **Test coverage**: 125 suites / 3348 tests. Includes the full jobs stack (notifications/sessions/workouts/payments/maintenance workers + schedulers), payment reminder/balance/dispute services, and async webhook processing + reconciliation. Notably still thin: blog, profile, venue, analytics, feedback, waitlist, search.
 
 ## Coding Conventions
 - File names: **kebab-case** (`create-user.dto.ts`)

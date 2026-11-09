@@ -12,6 +12,8 @@ import { InstructorProfile } from '../profile/entities/instructor-profile.entity
 import { CreateVenueDto } from './dto/create-venue.dto';
 import { UpdateVenueDto } from './dto/update-venue.dto';
 import { MeetingProvider, Venue, VenueKind } from './entities/venue.entity';
+import { plainToInstance } from 'class-transformer';
+import { validate } from 'class-validator';
 import { VenueService } from './venue.service';
 import {
   fakeTx,
@@ -21,7 +23,8 @@ import {
 /**
  * Smoke tests for VenueService — covers the load-bearing surface:
  *   - normalizeAndValidate cross-field rules
- *     (ONLINE ⇔ meetingUrl, CLIENT_HOME strips address, physical kinds
+ *     (ONLINE link and platform optional since 084, ONLINE keeps no
+ *     address, CLIENT_HOME keeps only the area, physical kinds
  *     need city, travelRadiusKm only on CLIENT_HOME, kind=ONLINE
  *     auto-flips isOnline)
  *   - cross-instructor reads/writes 404 (existence-hide policy)
@@ -87,20 +90,102 @@ describe('VenueService (smoke)', () => {
   // ───── normalizeAndValidate cross-field rules (via create) ─────────
 
   describe('cross-field validation', () => {
-    it('rejects kind=ONLINE without meetingUrl', async () => {
-      await expect(
-        service.create(
-          userId,
-          baseGymDto({ kind: VenueKind.ONLINE, city: undefined }),
-        ),
-      ).rejects.toThrow(BadRequestException);
-      expect(venueModel.create).not.toHaveBeenCalled();
+    it('takes an online place with neither a link nor a platform', async () => {
+      venueModel.create.mockImplementationOnce((payload) =>
+        Promise.resolve({ id: 'v-on', ...payload }),
+      );
+
+      await service.create(
+        userId,
+        baseGymDto({ kind: VenueKind.ONLINE, name: 'Online', city: undefined }),
+      );
+
+      const persisted = venueModel.create.mock.calls[0][0];
+      expect(persisted.isOnline).toBe(true);
+      expect(persisted.meetingUrl).toBeNull();
+      expect(persisted.meetingProvider).toBeNull();
     });
 
-    it('rejects isOnline=true without meetingUrl (even when kind is physical)', async () => {
-      await expect(
-        service.create(userId, baseGymDto({ isOnline: true })),
-      ).rejects.toThrow(BadRequestException);
+    it('keeps the platform of an online place that has no link', async () => {
+      venueModel.create.mockImplementationOnce((payload) =>
+        Promise.resolve({ id: 'v-on', ...payload }),
+      );
+
+      await service.create(
+        userId,
+        baseGymDto({
+          kind: VenueKind.ONLINE,
+          name: 'Zoom',
+          city: undefined,
+          meetingProvider: MeetingProvider.ZOOM,
+        }),
+      );
+
+      const persisted = venueModel.create.mock.calls[0][0];
+      expect(persisted.meetingProvider).toBe(MeetingProvider.ZOOM);
+      expect(persisted.meetingUrl).toBeNull();
+    });
+
+    it('keeps no address on an online place, whatever was sent', async () => {
+      venueModel.create.mockImplementationOnce((payload) =>
+        Promise.resolve({ id: 'v-on', ...payload }),
+      );
+
+      await service.create(
+        userId,
+        baseGymDto({
+          kind: VenueKind.ONLINE,
+          line1: 'Str. Memorandumului 28',
+          countryCode: 'RO',
+          latitude: 46.77,
+          longitude: 23.62,
+        }),
+      );
+
+      const persisted = venueModel.create.mock.calls[0][0];
+      expect(persisted).toMatchObject({
+        line1: null,
+        city: null,
+        countryCode: null,
+        latitude: null,
+        longitude: null,
+      });
+    });
+
+    it('lets a physical place be online too, without a link', async () => {
+      venueModel.create.mockImplementationOnce((payload) =>
+        Promise.resolve({ id: 'v', ...payload }),
+      );
+
+      await service.create(userId, baseGymDto({ isOnline: true }));
+
+      const persisted = venueModel.create.mock.calls[0][0];
+      expect(persisted.isOnline).toBe(true);
+      expect(persisted.city).toBe('Cluj-Napoca');
+    });
+
+    it("keeps the area of clients' homes but no street", async () => {
+      venueModel.create.mockImplementationOnce((payload) =>
+        Promise.resolve({ id: 'v-ch', ...payload }),
+      );
+
+      await service.create(
+        userId,
+        baseGymDto({
+          kind: VenueKind.CLIENT_HOME,
+          line1: 'Str. Memorandumului 28',
+          postalCode: '400114',
+          countryCode: 'RO',
+        }),
+      );
+
+      const persisted = venueModel.create.mock.calls[0][0];
+      expect(persisted).toMatchObject({
+        city: 'Cluj-Napoca',
+        countryCode: 'RO',
+        line1: null,
+        postalCode: null,
+      });
     });
 
     it('rejects physical kinds without a city', async () => {
@@ -307,7 +392,122 @@ describe('VenueService (smoke)', () => {
       expect(update.mock.calls[0][1]).toEqual({ transaction: fakeTx });
     });
 
-    it('rejects a kind→ONLINE patch that does not also supply meetingUrl', async () => {
+    /** A stored venue, a gym in Cluj unless told otherwise. */
+    const storedVenue = (fields: Record<string, unknown> = {}) => ({
+      id: 'v-1',
+      instructorId,
+      kind: VenueKind.GYM,
+      isOnline: false,
+      name: 'Old',
+      notes: null,
+      line1: 'Str. Memorandumului 28',
+      line2: null,
+      city: 'Cluj',
+      region: null,
+      postalCode: null,
+      countryCode: null,
+      latitude: null,
+      longitude: null,
+      meetingUrl: null,
+      meetingProvider: null,
+      travelRadiusKm: null,
+      isActive: true,
+      displayOrder: null,
+      update: jest.fn().mockResolvedValue(undefined),
+      ...fields,
+    });
+
+    it('turns a gym into an online place without a link, dropping its address', async () => {
+      const venue = storedVenue();
+      venueModel.findByPk.mockResolvedValueOnce(venue);
+
+      await service.update(userId, 'v-1', { kind: VenueKind.ONLINE });
+
+      const payload = venue.update.mock.calls[0][0];
+      expect(payload.isOnline).toBe(true);
+      expect(payload.meetingUrl).toBeNull();
+      expect(payload.line1).toBeNull();
+      expect(payload.city).toBeNull();
+    });
+
+    it('stops counting a place as online once it becomes a gym', async () => {
+      const venue = storedVenue({
+        kind: VenueKind.ONLINE,
+        isOnline: true,
+        city: null,
+        line1: null,
+        meetingUrl: 'https://zoom.us/j/1',
+        meetingProvider: MeetingProvider.ZOOM,
+      });
+      venueModel.findByPk.mockResolvedValueOnce(venue);
+
+      await service.update(userId, 'v-1', {
+        kind: VenueKind.GYM,
+        city: 'Cluj-Napoca',
+      });
+
+      const payload = venue.update.mock.calls[0][0];
+      expect(payload.isOnline).toBe(false);
+      expect(payload.meetingUrl).toBeNull();
+      expect(payload.meetingProvider).toBeNull();
+    });
+
+    it('clears the link and the platform on an explicit null, and keeps them when left out', async () => {
+      const online = {
+        kind: VenueKind.ONLINE,
+        isOnline: true,
+        city: null,
+        line1: null,
+        meetingUrl: 'https://zoom.us/j/1',
+        meetingProvider: MeetingProvider.ZOOM,
+      };
+      const cleared = storedVenue(online);
+      venueModel.findByPk.mockResolvedValueOnce(cleared);
+      await service.update(userId, 'v-1', {
+        meetingUrl: null,
+        meetingProvider: null,
+      });
+      expect(cleared.update.mock.calls[0][0]).toMatchObject({
+        meetingUrl: null,
+        meetingProvider: null,
+      });
+
+      const kept = storedVenue(online);
+      venueModel.findByPk.mockResolvedValueOnce(kept);
+      await service.update(userId, 'v-1', { name: 'Zoom sessions' });
+      expect(kept.update.mock.calls[0][0]).toMatchObject({
+        meetingUrl: 'https://zoom.us/j/1',
+        meetingProvider: MeetingProvider.ZOOM,
+      });
+    });
+
+    it('clears address parts sent as empty strings, and validates them as such', async () => {
+      const body = { postalCode: '', countryCode: '', region: '' };
+      const errors = await validate(plainToInstance(UpdateVenueDto, body));
+      expect(errors).toEqual([]);
+
+      const venue = storedVenue({ postalCode: '400114', countryCode: 'RO' });
+      venueModel.findByPk.mockResolvedValueOnce(venue);
+      await service.update(userId, 'v-1', body);
+
+      expect(venue.update.mock.calls[0][0]).toMatchObject({
+        postalCode: null,
+        countryCode: null,
+        region: null,
+      });
+    });
+
+    it('still checks the format of a postcode or country that holds something', async () => {
+      const errors = await validate(
+        plainToInstance(UpdateVenueDto, { postalCode: '!', countryCode: 'ro' }),
+      );
+      expect(errors.map((e) => e.property).sort()).toEqual([
+        'countryCode',
+        'postalCode',
+      ]);
+    });
+
+    it('still asks a city of a place moved to a physical kind', async () => {
       const update = jest.fn();
       venueModel.findByPk.mockResolvedValueOnce({
         id: 'v-1',
@@ -333,7 +533,7 @@ describe('VenueService (smoke)', () => {
       });
 
       await expect(
-        service.update(userId, 'v-1', { kind: VenueKind.ONLINE }),
+        service.update(userId, 'v-1', { kind: VenueKind.STUDIO, city: '' }),
       ).rejects.toThrow(BadRequestException);
       expect(update).not.toHaveBeenCalled();
     });
