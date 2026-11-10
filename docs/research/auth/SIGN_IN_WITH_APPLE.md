@@ -1,6 +1,6 @@
 # Sign in with Apple for MotionHive
 
-Research, 2026-11-07. No code changed. Covers the API (`beeactive-api`), the apps (`beeactive-ui`: `mobile`, `web`, `core`), the Apple and Meta rules, and how this fits our existing Google / Facebook sign-in, account deletion and email.
+Research, 2026-11-07. Built 2026-11-08 for iOS and the web (see `APPLE_SIGN_IN_IOS_PLAN.md`); the migration sketched below as 081 shipped as 085 (084 went to the online venue change). Covers the API (`beeactive-api`), the apps (`beeactive-ui`: `mobile`, `web`, `core`), the Apple and Meta rules, and how this fits our existing Google / Facebook sign-in, account deletion and email.
 
 Items marked **(unverified)** could not be confirmed against a primary source and need checking during the build.
 
@@ -466,7 +466,8 @@ FE strings (`auth.common.continueWithApple`, sign-in methods screen) go in EN + 
 
 Answered 2026-11-07:
 - **Team: HIVECRAFT S.R.L.** (the team that already ships TestFlight builds; the Xcode project signs both targets with team `AB34A8FY5K`). No transfer planned, so the `sub` migration risk in 2.0 is closed.
-- **Platforms: iOS only.** No web button, no Android, so steps 10 and 16 drop, and so do the Services ID, return URLs and domain verification in 2.1. The only accepted audience is the bundle id `fit.motionhive.app`. Consequence: an Apple user who opens the web app or an Android phone signs in there with a password set through "Forgot password" (sent to their relay address, so relay email registration in 2.3 is **required**, not optional), or with Google once they connect it in Sign-in methods.
+- **Platforms, revised 2026-11-08: iOS and the web app.** The owner widened it: the web button is built (step 10) with the Services ID `fit.motionhive.web`, so 2.1 step 3 applies again. Android (step 16) is still not built. Status and setup: `APPLE_SIGN_IN_IOS_PLAN.md`.
+- ~~**Platforms: iOS only.**~~ (7 Nov, superseded) No web button, no Android, so steps 10 and 16 drop, and so do the Services ID, return URLs and domain verification in 2.1. The only accepted audience is the bundle id `fit.motionhive.app`. Consequence: an Apple user who opens the web app or an Android phone signs in there with a password set through "Forgot password" (sent to their relay address, so relay email registration in 2.3 is **required**, not optional), or with Google once they connect it in Sign-in methods.
 
 Still open:
 2. `account-deleted` for an Apple-only account: auto-schedule deletion, or flag for admin? (3.6)

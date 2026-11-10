@@ -8,7 +8,7 @@ export const auth: Catalog['errors']['auth'] = {
   accountScheduledForDeletion:
     'Acest cont este programat pentru ștergere pe {date}. Îl mai poți păstra.',
   noPasswordToChange:
-    'Te autentifici cu Google sau Facebook, așa că nu ai o parolă de schimbat.',
+    'Te autentifici cu Google, Apple sau Facebook, așa că nu ai o parolă de schimbat.',
   currentPasswordIncorrect: 'Parola actuală nu este corectă.',
   samePassword: 'Parola nouă trebuie să fie diferită de cea actuală.',
   passwordChanged:

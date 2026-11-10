@@ -6,7 +6,7 @@ export const auth = {
   accountScheduledForDeletion:
     'This account is scheduled for deletion on {date}. You can still keep it.',
   noPasswordToChange:
-    'You sign in with Google or Facebook, so there is no password to change.',
+    'You sign in with Google, Apple or Facebook, so there is no password to change.',
   currentPasswordIncorrect: 'Current password is incorrect.',
   samePassword: 'New password must be different from your current password.',
   passwordChanged: 'Your password was changed. Please log in again.',

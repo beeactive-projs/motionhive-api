@@ -5,6 +5,7 @@ import { SequelizeModule } from '@nestjs/sequelize';
 
 import { MediaStorageService } from '../../common/services/media-storage.service';
 import { getJwtConfig } from '../../config/jwt.config';
+import { AppleModule } from '../auth/apple/apple.module';
 import { RefreshToken } from '../auth/entities/refresh-token.entity';
 import { ClientModule } from '../client/client.module';
 import { ClientRequest } from '../client/entities/client-request.entity';
@@ -72,6 +73,9 @@ import { AccountDeletion } from './entities/account-deletion.entity';
     ClientModule,
     MessagingModule,
     SearchModule,
+    // Revokes Sign in with Apple when an account is deleted. Imports
+    // nothing of ours, so no cycle with AuthModule.
+    AppleModule,
   ],
   controllers: [AccountDeletionController],
   providers: [

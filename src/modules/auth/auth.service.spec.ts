@@ -17,6 +17,8 @@ import { CryptoService } from '../../common/services/crypto.service';
 import { EmailVerifierService } from '../../common/services/email-verifier.service';
 import { makeSilentLogger } from '../../../test/helpers/sequelize-mocks';
 import { AccountDeletionService } from '../account-deletion/account-deletion.service';
+import { AppleIdentityService } from './apple/apple-identity.service';
+import { AppleAccountService } from './apple/apple-account.service';
 
 // AuthService smoke tests — not exhaustive. The goal is to catch
 // "login is completely broken" regressions, not to re-test bcrypt.
@@ -140,6 +142,9 @@ describe('AuthService (smoke)', () => {
         { provide: CryptoService, useValue: cryptoService },
         { provide: EmailVerifierService, useValue: emailVerifier },
         { provide: AccountDeletionService, useValue: accountDeletion },
+        // Apple's own flow is covered in apple-sign-in.spec.ts.
+        { provide: AppleIdentityService, useValue: {} },
+        { provide: AppleAccountService, useValue: {} },
         { provide: WINSTON_MODULE_NEST_PROVIDER, useValue: makeSilentLogger() },
       ],
     }).compile();

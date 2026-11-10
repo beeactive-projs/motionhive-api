@@ -68,6 +68,33 @@ export const envValidationSchema = Joi.object({
   // App Store builds connect (the dev API serves TestFlight).
   APNS_PRODUCTION: Joi.string().valid('true', 'false').default('false'),
 
+  // Sign in with Apple. All optional, like Google and Facebook: with no
+  // client id the route answers `auth.providerUnavailable`.
+  // - APPLE_BUNDLE_ID: the iOS app (`fit.motionhive.app`), the audience of
+  //   tokens from the iPhone. Falls back to APNS_BUNDLE_ID.
+  // - APPLE_SERVICES_ID: the web Services ID (`fit.motionhive.web`), the
+  //   audience of tokens from the web app's Apple popup.
+  // - APPLE_WEB_REDIRECT_URI: the popup's return URL on this environment's
+  //   web app (https://app.motionhive.fit/auth/login, or the dev host); a
+  //   web code is exchanged with exactly this.
+  // - APPLE_TEAM_ID (falls back to APNS_TEAM_ID), APPLE_KEY_ID and
+  //   APPLE_PRIVATE_KEY (the Sign in with Apple .p8 contents, newlines
+  //   escaped): sign the client secret that exchanges a sign-in's code for
+  //   the refresh token and revokes it when the account is deleted.
+  //   Without them people still sign in; there is just nothing to revoke.
+  // - TOKEN_ENCRYPTION_KEY: 32 random bytes, base64 (`openssl rand -base64
+  //   32`), encrypting that refresh token at rest. Never change it once
+  //   tokens are stored: the old ones could no longer be read.
+  APPLE_BUNDLE_ID: Joi.string().optional(),
+  APPLE_SERVICES_ID: Joi.string().optional(),
+  APPLE_WEB_REDIRECT_URI: Joi.string()
+    .uri({ scheme: ['https'] })
+    .optional(),
+  APPLE_TEAM_ID: Joi.string().optional(),
+  APPLE_KEY_ID: Joi.string().optional(),
+  APPLE_PRIVATE_KEY: Joi.string().optional(),
+  TOKEN_ENCRYPTION_KEY: Joi.string().base64().optional(),
+
   // Firebase Cloud Messaging, for Android. Optional on the same terms
   // as APNs: absent means Android pushes are skipped, not that the app
   // fails to boot. Values come from a service-account key in the

@@ -41,3 +41,12 @@ export function stripHtml(
   }
   return cleaned;
 }
+
+/**
+ * How an email address is stored and compared: trimmed and lowercased, so
+ * "Ana@Example.com " and "ana@example.com" are one person. (The local part
+ * is case sensitive in theory; no provider we deal with treats it so.)
+ */
+export function normalizeEmail(email: string): string {
+  return email.trim().toLowerCase();
+}

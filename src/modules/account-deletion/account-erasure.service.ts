@@ -11,6 +11,7 @@ import { WORKOUT_PHOTO_RESOURCE } from '../workout/workout-photo.service';
 import { EXERCISE_IMAGE_RESOURCE } from '../exercise/exercise.service';
 import { escapeLikeWildcards } from '../../common/utils/search.utils';
 import { EmailService } from '../../common/services/email.service';
+import { AppleAccountService } from '../auth/apple/apple-account.service';
 import { MessagingService } from '../messaging/messaging.service';
 import { StripeCustomer } from '../payment/entities/stripe-customer.entity';
 import { StripeService } from '../payment/services/stripe.service';
@@ -218,6 +219,7 @@ export class AccountErasureService {
     private readonly mediaStorage: MediaStorageService,
     private readonly emailService: EmailService,
     private readonly sequelize: Sequelize,
+    private readonly appleAccounts: AppleAccountService,
     @Inject(WINSTON_MODULE_NEST_PROVIDER)
     private readonly logger: LoggerService,
   ) {}
@@ -318,6 +320,9 @@ export class AccountErasureService {
     await this.windDownService.windDown(user.id);
     await this.deleteStripeCustomers(user.id, user.email);
     await this.messagingService.eraseMessagesFrom(user.id);
+    // Before the scrub deletes the link that holds the token. Never throws:
+    // a GDPR deadline does not wait on Apple.
+    await this.appleAccounts.revokeForUser(user.id);
 
     const now = new Date();
     await this.sequelize.transaction(async (tx) => {

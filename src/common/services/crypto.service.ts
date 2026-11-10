@@ -1,5 +1,19 @@
 import { Injectable } from '@nestjs/common';
-import { randomBytes, createHash, timingSafeEqual } from 'crypto';
+import {
+  createCipheriv,
+  createDecipheriv,
+  createHash,
+  randomBytes,
+  timingSafeEqual,
+} from 'crypto';
+
+/** AES-256-GCM: a 32 byte key, a fresh 12 byte IV per message, a 16 byte tag. */
+const CIPHER = 'aes-256-gcm';
+const CIPHER_KEY_BYTES = 32;
+const CIPHER_IV_BYTES = 12;
+const CIPHER_TAG_BYTES = 16;
+/** The format version leading every encrypted value, so a later change can read old ones. */
+const CIPHER_VERSION = 'v1';
 
 /**
  * Crypto Service
@@ -110,5 +124,68 @@ export class CryptoService {
     const expiresAt = new Date(Date.now() + ttlMs);
 
     return { token, hashedToken, expiresAt };
+  }
+
+  /**
+   * Read a 32 byte encryption key given as base64 (how it sits in an env
+   * var). Null when it is missing or not 32 bytes, so callers can treat a
+   * bad key like no key.
+   */
+  parseKey(base64Key: string | undefined | null): Buffer | null {
+    if (!base64Key) {
+      return null;
+    }
+    const key = Buffer.from(base64Key.trim(), 'base64');
+    if (key.length !== CIPHER_KEY_BYTES) {
+      return null;
+    }
+    return key;
+  }
+
+  /**
+   * Encrypt a secret we must be able to read back (unlike `hashToken`), such
+   * as a provider's refresh token. AES-256-GCM with a fresh IV each time, so
+   * the same secret never encrypts to the same text, and the tag makes any
+   * change to the stored value fail on decrypt.
+   *
+   * Returns `v1.<iv>.<tag>.<ciphertext>`, each part base64url.
+   */
+  encrypt(plaintext: string, key: Buffer): string {
+    const iv = randomBytes(CIPHER_IV_BYTES);
+    const cipher = createCipheriv(CIPHER, key, iv);
+    const ciphertext = Buffer.concat([
+      cipher.update(plaintext, 'utf8'),
+      cipher.final(),
+    ]);
+    const tag = cipher.getAuthTag();
+    return [
+      CIPHER_VERSION,
+      iv.toString('base64url'),
+      tag.toString('base64url'),
+      ciphertext.toString('base64url'),
+    ].join('.');
+  }
+
+  /**
+   * Read back a value from `encrypt`. Throws when the value was changed, was
+   * made with another key, or is not in the format.
+   */
+  decrypt(payload: string, key: Buffer): string {
+    const parts = payload.split('.');
+    if (parts.length !== 4 || parts[0] !== CIPHER_VERSION) {
+      throw new Error('Not an encrypted value');
+    }
+    const iv = Buffer.from(parts[1], 'base64url');
+    const tag = Buffer.from(parts[2], 'base64url');
+    const ciphertext = Buffer.from(parts[3], 'base64url');
+    if (iv.length !== CIPHER_IV_BYTES || tag.length !== CIPHER_TAG_BYTES) {
+      throw new Error('Not an encrypted value');
+    }
+    const decipher = createDecipheriv(CIPHER, key, iv);
+    decipher.setAuthTag(tag);
+    return Buffer.concat([
+      decipher.update(ciphertext),
+      decipher.final(),
+    ]).toString('utf8');
   }
 }

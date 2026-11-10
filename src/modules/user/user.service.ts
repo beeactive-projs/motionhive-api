@@ -26,6 +26,7 @@ import * as bcrypt from 'bcrypt';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { UpdateWorkoutSettingsDto } from './dto/update-workout-settings.dto';
+import { normalizeEmail } from '../../common/utils/text.utils';
 import {
   resolveWorkoutSettings,
   type StoredWorkoutSettings,
@@ -65,9 +66,22 @@ import type { AuthenticatedUser } from '../../common/types/authenticated-request
  */
 const SEARCH_HIDDEN_ROLES = ['SUPER_ADMIN', 'ADMIN', 'SUPPORT'] as const;
 
+/** Provider names as people read them, for messages. */
+const PROVIDER_NAMES: Record<SocialProvider, string> = {
+  GOOGLE: 'Google',
+  FACEBOOK: 'Facebook',
+  APPLE: 'Apple',
+};
+
 export interface OAuthProfile {
   providerUserId: string;
   email: string;
+  /**
+   * The provider vouches the email is the person's (Google's and Apple's
+   * `email_verified`). Only then may the sign-in join an existing account
+   * with that email; Facebook never says, so it never does.
+   */
+  emailVerified: boolean;
   firstName: string;
   lastName: string;
   /** Language the app was in at sign-in. Only used when creating the user. */
@@ -127,10 +141,21 @@ export class UserService {
     private readonly logger: LoggerService,
   ) {}
 
-  /** Exact, case-sensitive match. Caller normalises (lowercase + trim). */
-  async findByEmail(email: string): Promise<User | null> {
+  /**
+   * The account with this email, ignoring letter case and surrounding
+   * spaces (`normalizeEmail`), so a provider sending "Ana@Example.com" finds
+   * the account made as "ana@example.com". Uses the lower(email) index (085).
+   */
+  async findByEmail(
+    email: string,
+    transaction?: Transaction,
+  ): Promise<User | null> {
     return this.userModel.findOne({
-      where: { email },
+      where: this.sequelize.where(
+        this.sequelize.fn('lower', this.sequelize.col('email')),
+        normalizeEmail(email),
+      ),
+      transaction,
     });
   }
 
@@ -457,7 +482,7 @@ export class UserService {
 
     const user = await this.userModel.create(
       {
-        email: userData.email,
+        email: normalizeEmail(userData.email),
         passwordHash: hashedPassword,
         firstName: userData.firstName,
         lastName: userData.lastName,
@@ -484,13 +509,14 @@ export class UserService {
    *    but only if the email is already verified (prevents OAuth account takeover on
    *    unverified email/password accounts).
    * 3. **New user** — no match. Create a new User (no passwordHash) and SocialAccount.
-   *    OAuth users are auto-verified (isEmailVerified=true).
+   *    The account's email counts as verified when the provider vouched for it.
    *
    * @param provider - The OAuth provider (GOOGLE | FACEBOOK | APPLE)
    * @param profile - Normalised profile data from the provider (email, name, providerUserId)
    * @param transaction - Optional Sequelize transaction
    * @returns { user, isNewUser } — isNewUser is true only when a brand-new account was created
-   * @throws ConflictException if the email matches an unverified password account
+   * @throws ConflictException if the email matches an account but the provider
+   *   did not vouch for it, or matches an unverified password account
    */
   async findOrCreateFromOAuth(
     provider: SocialProvider,
@@ -511,8 +537,17 @@ export class UserService {
     }
 
     // 2. User exists by email? Link social account only if safe.
-    const existingUser = await this.findByEmail(profile.email);
+    const existingUser = await this.findByEmail(profile.email, transaction);
     if (existingUser) {
+      // The provider must vouch for the email, or anyone could add an
+      // address they do not own at the provider and walk into its account.
+      if (!profile.emailVerified) {
+        throw new ConflictException(
+          apiError('user.providerEmailUnverified', {
+            provider: PROVIDER_NAMES[provider],
+          }),
+        );
+      }
       // If user has a password (email/password account), only auto-link
       // if their email is already verified (proves ownership).
       // Otherwise, reject to prevent OAuth account takeover.
@@ -617,8 +652,8 @@ export class UserService {
    * Create a new user from an OAuth profile (no password).
    *
    * Used internally by findOrCreateFromOAuth when no existing account is found.
-   * The created user has passwordHash=null and isEmailVerified=true (identity
-   * was verified by the OAuth provider).
+   * The created user has passwordHash=null, and isEmailVerified is whatever
+   * the provider vouched (`profile.emailVerified`).
    *
    * @param profile - Normalised profile data from the OAuth provider
    * @param transaction - Optional Sequelize transaction
@@ -629,7 +664,7 @@ export class UserService {
     profile: OAuthProfile,
     transaction?: Transaction,
   ): Promise<User> {
-    const existingUser = await this.findByEmail(profile.email);
+    const existingUser = await this.findByEmail(profile.email, transaction);
     if (existingUser) {
       throw new ConflictException(apiError('user.emailTaken'));
     }
@@ -640,11 +675,11 @@ export class UserService {
     );
     const user = await this.userModel.create(
       {
-        email: profile.email,
+        email: normalizeEmail(profile.email),
         passwordHash: null,
         firstName: profile.firstName,
         lastName: profile.lastName,
-        isEmailVerified: true,
+        isEmailVerified: profile.emailVerified,
         language: profile.language,
         handle,
       },
