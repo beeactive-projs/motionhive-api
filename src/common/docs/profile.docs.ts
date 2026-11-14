@@ -10,10 +10,12 @@ export const ProfileDocs = {
   discoverTrainers: {
     summary: 'Discover instructors',
     description:
-      'Browse and search public instructor profiles. No authentication required. ' +
-      'Supports search by name, display name, first/last name, bio, specializations, and city. ' +
+      'Browse and search instructor profiles. Authentication optional: the same people as the ' +
+      'directory (coaches only; a signed-in caller and anyone on either side of a block with them left out). ' +
+      'Supports search by name, display name, first/last name, bio, specializations, city and the ' +
+      'names of the categories a coach coaches in every language ("forta" finds a Strength coach). ' +
       'Filter by city or country using separate query params. ' +
-      'Returns up to 30 results sorted by years of experience (most experienced first). ' +
+      'Returns up to 30 results: the most experienced first, a coach who gives no years last, then by name. ' +
       'Query params: search (string), city (string), country (ISO 3166-1 alpha-2 e.g. "RO"), ' +
       'categoryIds (ids from GET /categories, repeat the param or separate with commas, up to 30: ' +
       'coaches who coach any of them, the same filter as the directory). Each row carries `categoryIds`.',
@@ -54,13 +56,17 @@ export const ProfileDocs = {
     description:
       'Every active coach, paged, for the mobile Coaches screen. Authentication optional: a signed-in ' +
       'caller is left out of the list, along with anyone on either side of a block with them. ' +
-      'Filters combine with AND: search (name, display name, bio, city, specializations; blind to ' +
-      'accents and case), city (contains), country (ISO 3166-1 alpha-2), accepting (taking new clients), ' +
+      'Filters combine with AND: search (name, display name, bio, city, specializations and the names of ' +
+      'the categories a coach coaches, in every language; blind to accents and case), city (contains), ' +
+      'includeOnline (with city: also coaches with an active online venue, wherever they live), ' +
+      'country (ISO 3166-1 alpha-2), accepting (taking new clients), ' +
       'online (has an active online venue), requested (coaches the caller asked and is still waiting ' +
       'on; nobody for a guest), specializations (repeat the param; any of them, matched ' +
       'whole), categoryIds (ids from GET /categories, repeat the param or separate with commas; ' +
-      'coaches who coach any of them), minYears. sort: recommended (default: taking clients first, then experience, then name), ' +
-      'experience, name. page (default 1), limit (1 to 50, default 20). `isOnline` on each row is the ' +
+      'coaches who coach any of them), minYears. sort: recommended (default: taking clients first, then, ' +
+      'for a signed-in caller, the most of their interests coached, then experience, then name), ' +
+      'experience, name, spotlight (a new order every day, the same for everyone that day: what ' +
+      "Discover's spotlight shows). page (default 1), limit (1 to 50, default 20). `isOnline` on each row is the " +
       'same online-venue test. `requestSent` is true when the caller asked that coach and the request ' +
       'is still waiting (pending, not expired); always false for a guest. `isPublic` is not applied yet.',
     auth: false,
@@ -103,9 +109,11 @@ export const ProfileDocs = {
     summary: 'Coach directory facets',
     description:
       "The cities the directory's coaches are in and the specializations they list, each with how " +
-      'many coaches, the most common first (up to 40 of each). Counted over the whole directory before ' +
-      'any filter, with the same coaches left out as there. Entries are grouped blind to accents and ' +
-      'case and labelled with the spelling most coaches use. Authentication optional.',
+      'many coaches, the most common first (up to 40 of each); every category coached (`categories`, ' +
+      'ids from GET /categories) with its coaches; and how many coach online (`online`). Counted over ' +
+      'the whole directory before any filter, with the same coaches left out as there. Cities and ' +
+      'specializations are grouped blind to accents and case and labelled with the spelling most ' +
+      'coaches use. Authentication optional.',
     auth: false,
     responses: [
       {
@@ -120,6 +128,11 @@ export const ProfileDocs = {
             { label: 'Yoga', count: 9 },
             { label: 'Forță', count: 6 },
           ],
+          categories: [
+            { id: '0b1c2d3e-4f50-4a6b-8c7d-9e0f1a2b3c4d', count: 11 },
+            { id: '1c2d3e4f-5061-4b7c-9d8e-0f1a2b3c4d5e', count: 4 },
+          ],
+          online: 3,
         },
       },
     ],

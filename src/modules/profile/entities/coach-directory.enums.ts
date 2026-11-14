@@ -9,4 +9,9 @@ export enum CoachDirectorySort {
   EXPERIENCE = 'experience',
   /** By the name the row shows: the display name, else first and last. */
   NAME = 'name',
+  /**
+   * Discover's spotlight: a new order every day, the same for everyone
+   * that day, so every coach takes turns at the top.
+   */
+  SPOTLIGHT = 'spotlight',
 }

@@ -56,6 +56,7 @@ import {
 } from '../client/entities/client-request.entity';
 import {
   foldedContains,
+  foldedContainsSql,
   normalizeSearchTerm,
 } from '../../common/utils/search.utils';
 import { buildPaginatedResponse } from '../../common/dto/pagination.dto';
@@ -73,6 +74,7 @@ import {
   categoryIdsSql,
   categoryRowsSql,
   hasAnyCategorySql,
+  hasCategoryNamedSql,
 } from '../category/category-sql';
 
 // The privacy rules live in profile-privacy.ts, which group and other
@@ -126,9 +128,29 @@ const DIRECTORY_NAME_SQL = `lower(COALESCE(
 /** How many cities and specializations the directory's filter sheet offers. */
 const DIRECTORY_FACET_LIMIT = 40;
 
+/** Today in UTC (`2026-11-14`): the spotlight's order changes with it. */
+function spotlightDay(now: Date = new Date()): string {
+  return now.toISOString().slice(0, 10);
+}
+
 export interface CoachDirectoryFacet {
   label: string;
   count: number;
+}
+
+/** A category the directory's coaches coach, with how many of them. */
+export interface CoachCategoryFacet {
+  id: string;
+  count: number;
+}
+
+/** What `coachDirectoryFacets` answers: the sheet's choices and Discover's chips. */
+export interface CoachDirectoryFacets {
+  cities: CoachDirectoryFacet[];
+  specializations: CoachDirectoryFacet[];
+  categories: CoachCategoryFacet[];
+  /** How many coaches have an active online venue. */
+  online: number;
 }
 
 /**
@@ -378,15 +400,21 @@ export class ProfileService {
   // =====================================================
 
   /**
-   * Discover instructor profiles: up to 30, the most experienced first, as
-   * one plain array. `page` and `limit` are accepted but not applied; the
-   * paged list is `coachDirectory`.
+   * Discover instructor profiles: up to 30, the most experienced first (no
+   * years last, then name and id), as one plain array. `page` and `limit`
+   * are accepted but not applied; the paged list is `coachDirectory`, which
+   * the mobile app reads.
    *
+   * The same people as the directory: coaches only, and with a signed-in
+   * viewer, neither the viewer nor anyone on either side of a block.
    * `isPublic` is not checked: every active coach is listed, whatever they
    * picked. City/country filters target `user` (the person's location),
    * not a duplicate on instructor_profile.
    */
-  async discoverInstructors(dto: DiscoverInstructorsDto) {
+  async discoverInstructors(
+    viewerId: string | null,
+    dto: DiscoverInstructorsDto,
+  ) {
     const where: Record<string | symbol, unknown> = {};
     // A coach whose account is closing (or switched off) is not listed.
     const userWhere: Record<string | symbol, unknown> = { isActive: true };
@@ -404,27 +432,16 @@ export class ProfileService {
       userWhere.countryCode = dto.country.toUpperCase();
     }
 
-    if (dto.search) {
-      const term = dto.search;
-      where[Op.or] = [
-        foldedContains('"InstructorProfile"."display_name"', term, esc),
-        foldedContains('"InstructorProfile"."bio"', term, esc),
-        foldedContains(
-          `concat_ws(' ', "user"."first_name", "user"."last_name")`,
-          term,
-          esc,
-        ),
-        foldedContains('"user"."city"', term, esc),
-        foldedContains(
-          'CAST("InstructorProfile"."specializations" AS TEXT)',
-          term,
-          esc,
-        ),
-      ];
-    }
-
+    // The directory's people: coaches only, and with a viewer neither the
+    // viewer nor anyone on either side of a block with them.
+    const and = this.directoryScopeSql(viewerId).map((sql) => literal(sql));
     if (dto.categoryIds && dto.categoryIds.length > 0) {
-      where[Op.and] = [literal(this.coachCategorySql(dto.categoryIds))];
+      and.push(literal(this.coachCategorySql(dto.categoryIds)));
+    }
+    where[Op.and] = and;
+
+    if (dto.search) {
+      where[Op.or] = this.coachSearchConditions(dto.search);
     }
 
     const profiles = await this.instructorProfileModel.findAll({
@@ -451,7 +468,9 @@ export class ProfileService {
         [literal(ONLINE_VENUE_SQL), 'isOnline'],
         [literal(COACH_CATEGORY_IDS_SQL), 'categoryIds'],
       ],
-      order: [['yearsOfExperience', 'DESC']],
+      // The most experienced first, a coach who gives no years last, then
+      // by name and id so the same 30 come back every time.
+      order: this.directoryOrder(CoachDirectorySort.EXPERIENCE, null),
       limit: 30,
     });
 
@@ -474,14 +493,22 @@ export class ProfileService {
     const esc = (value: string) => this.sequelize.escape(value);
 
     const userWhere: Record<string | symbol, unknown> = { isActive: true };
-    if (dto.city) {
-      userWhere[Op.and] = [foldedContains('"user"."city"', dto.city, esc)];
-    }
     if (dto.country) {
       userWhere.countryCode = dto.country.toUpperCase();
     }
 
     const and = this.directoryScopeSql(viewerId).map((sql) => literal(sql));
+    if (dto.city && dto.includeOnline) {
+      // Someone who coaches online coaches people in every city, as an
+      // online session is in every city.
+      and.push(
+        literal(
+          `(${foldedContainsSql('"user"."city"', dto.city, esc)} OR ${ONLINE_VENUE_SQL})`,
+        ),
+      );
+    } else if (dto.city) {
+      userWhere[Op.and] = [foldedContains('"user"."city"', dto.city, esc)];
+    }
     if (dto.online) {
       and.push(literal(ONLINE_VENUE_SQL));
     }
@@ -514,22 +541,7 @@ export class ProfileService {
       where.yearsOfExperience = { [Op.gte]: dto.minYears };
     }
     if (dto.search) {
-      const term = dto.search;
-      where[Op.or] = [
-        foldedContains('"InstructorProfile"."display_name"', term, esc),
-        foldedContains('"InstructorProfile"."bio"', term, esc),
-        foldedContains(
-          `concat_ws(' ', "user"."first_name", "user"."last_name")`,
-          term,
-          esc,
-        ),
-        foldedContains('"user"."city"', term, esc),
-        foldedContains(
-          'CAST("InstructorProfile"."specializations" AS TEXT)',
-          term,
-          esc,
-        ),
-      ];
+      where[Op.or] = this.coachSearchConditions(dto.search);
     }
 
     const { rows, count } = await this.instructorProfileModel.findAndCountAll({
@@ -561,7 +573,10 @@ export class ProfileService {
           'requestSent',
         ],
       ],
-      order: this.directoryOrder(dto.sort ?? CoachDirectorySort.RECOMMENDED),
+      order: this.directoryOrder(
+        dto.sort ?? CoachDirectorySort.RECOMMENDED,
+        viewerId,
+      ),
       limit,
       offset: (page - 1) * limit,
     });
@@ -588,10 +603,9 @@ export class ProfileService {
    * Entries are grouped folded ("Forță" and "forta" are one), labelled with
    * the spelling most coaches use.
    */
-  async coachDirectoryFacets(viewerId: string | null): Promise<{
-    cities: CoachDirectoryFacet[];
-    specializations: CoachDirectoryFacet[];
-  }> {
+  async coachDirectoryFacets(
+    viewerId: string | null,
+  ): Promise<CoachDirectoryFacets> {
     const scope = [
       '"InstructorProfile"."deleted_at" IS NULL',
       '"user"."deleted_at" IS NULL',
@@ -601,7 +615,7 @@ export class ProfileService {
     const from = `FROM instructor_profile AS "InstructorProfile"
       JOIN "user" AS "user" ON "user"."id" = "InstructorProfile"."user_id"`;
 
-    const [cities, specializations] = await Promise.all([
+    const [cities, specializations, categories, online] = await Promise.all([
       this.sequelize.query<CoachDirectoryFacet>(
         `SELECT mode() WITHIN GROUP (ORDER BY btrim("user"."city")) AS label,
                 COUNT(*)::int AS count
@@ -623,9 +637,32 @@ export class ProfileService {
          LIMIT ${DIRECTORY_FACET_LIMIT}`,
         { type: QueryTypes.SELECT },
       ),
+      // Every category with its coaches: the sheet lists them all, and
+      // Discover offers a chip only where someone coaches it.
+      this.sequelize.query<CoachCategoryFacet>(
+        `SELECT cc.category_id AS id,
+                COUNT(DISTINCT "InstructorProfile"."id")::int AS count
+         ${from}
+         JOIN coach_category cc ON cc.user_id = "InstructorProfile"."user_id"
+         WHERE ${scope}
+         GROUP BY cc.category_id
+         ORDER BY count DESC, id ASC`,
+        { type: QueryTypes.SELECT },
+      ),
+      this.sequelize.query<{ count: number }>(
+        `SELECT COUNT(*)::int AS count
+         ${from}
+         WHERE ${scope} AND ${ONLINE_VENUE_SQL}`,
+        { type: QueryTypes.SELECT },
+      ),
     ]);
 
-    return { cities, specializations };
+    return {
+      cities,
+      specializations,
+      categories,
+      online: online[0]?.count ?? 0,
+    };
   }
 
   /**
@@ -673,8 +710,15 @@ export class ProfileService {
     )`;
   }
 
-  /** Each order ends on the id, so paging never splits or repeats a tie. */
-  private directoryOrder(sort: CoachDirectorySort): Order {
+  /**
+   * Each order ends on the id, so paging never splits or repeats a tie.
+   * Recommended, for a signed-in viewer, puts the coaches of what they like
+   * right after those taking clients: the most shared interests first.
+   */
+  private directoryOrder(
+    sort: CoachDirectorySort,
+    viewerId: string | null,
+  ): Order {
     const byName: OrderItem = [literal(DIRECTORY_NAME_SQL), 'ASC'];
     const byId: OrderItem = ['id', 'ASC'];
     switch (sort) {
@@ -682,15 +726,70 @@ export class ProfileService {
         return [['yearsOfExperience', 'DESC NULLS LAST'], byName, byId];
       case CoachDirectorySort.NAME:
         return [byName, byId];
-      case CoachDirectorySort.RECOMMENDED:
-      default:
+      case CoachDirectorySort.SPOTLIGHT:
+        // A new order every day, the same for everyone that day: every coach
+        // gets turns at the top, none is stuck there. Promoted coaches will
+        // be a pool of their own ahead of this.
         return [
-          ['isAcceptingClients', 'DESC'],
-          ['yearsOfExperience', 'DESC NULLS LAST'],
-          byName,
+          [
+            literal(
+              `md5("InstructorProfile"."user_id" || ${this.sequelize.escape(spotlightDay())})`,
+            ),
+            'ASC',
+          ],
           byId,
         ];
+      case CoachDirectorySort.RECOMMENDED:
+      default: {
+        const order: OrderItem[] = [['isAcceptingClients', 'DESC']];
+        if (viewerId) {
+          order.push([literal(this.sharedInterestsSql(viewerId)), 'DESC']);
+        }
+        order.push(['yearsOfExperience', 'DESC NULLS LAST'], byName, byId);
+        return order;
+      }
     }
+  }
+
+  /** How many of the viewer's interests the coach coaches, over the `InstructorProfile` alias. */
+  private sharedInterestsSql(viewerId: string): string {
+    const viewer = this.sequelize.escape(viewerId);
+    return `(
+      SELECT COUNT(*) FROM coach_category cc
+      JOIN user_interest ui ON ui.category_id = cc.category_id
+      WHERE cc.user_id = "InstructorProfile"."user_id"
+        AND ui.user_id = ${viewer}
+    )`;
+  }
+
+  /**
+   * What a typed search looks in, folded on both sides: the names, the bio,
+   * the city, the coach's own words, and the names of the categories they
+   * coach in every language ("forta" finds a Strength coach, "yoga" one who
+   * only picked Yoga). The discover list and the directory share it.
+   */
+  private coachSearchConditions(term: string) {
+    const esc = (value: string) => this.sequelize.escape(value);
+    return [
+      foldedContains('"InstructorProfile"."display_name"', term, esc),
+      foldedContains('"InstructorProfile"."bio"', term, esc),
+      foldedContains(
+        `concat_ws(' ', "user"."first_name", "user"."last_name")`,
+        term,
+        esc,
+      ),
+      foldedContains('"user"."city"', term, esc),
+      foldedContains(
+        'CAST("InstructorProfile"."specializations" AS TEXT)',
+        term,
+        esc,
+      ),
+      literal(
+        hasCategoryNamedSql('coach', COACH_USER_ID_SQL, (names) =>
+          foldedContainsSql(names, term, esc),
+        ),
+      ),
+    ];
   }
 
   /**

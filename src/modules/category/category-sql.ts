@@ -125,3 +125,28 @@ function hasCategoriesSql(source: CategorySource): string {
   const { table, key } = CATEGORY_LINKS[source.link];
   return `EXISTS (SELECT 1 FROM ${table} x WHERE x.${key} = ${source.ownerRef})`;
 }
+
+/**
+ * A category's name in every language it has, as one text (`c` is the
+ * category row): the English name, then each translation's.
+ */
+const CATEGORY_NAMES_SQL = `concat_ws(' ', c.name, (
+  SELECT string_agg(t.value->>'name', ' ')
+  FROM jsonb_each(COALESCE(c.translations, '{}'::jsonb)) AS t
+))`;
+
+/**
+ * Whether the owner holds a category whose names pass `nameMatch`, a
+ * condition the caller writes over the names text (a folded "contains" for
+ * a typed search): "forta" finds a coach of Strength training, whose
+ * Romanian name is "Antrenament de forță".
+ */
+export function hasCategoryNamedSql(
+  link: CategoryLink,
+  ownerRef: string,
+  nameMatch: (namesSql: string) => string,
+): string {
+  const { table, key } = CATEGORY_LINKS[link];
+  return `EXISTS (SELECT 1 FROM ${table} x JOIN category c ON c.id = x.category_id
+    WHERE x.${key} = ${ownerRef} AND ${nameMatch(CATEGORY_NAMES_SQL)})`;
+}

@@ -69,6 +69,16 @@ export class CoachDirectoryDto {
 
   @ApiPropertyOptional({
     description:
+      'With `city`: also coaches with an active online venue, wherever they live ' +
+      '(someone who coaches online coaches every city, as an online session is in every city)',
+  })
+  @Transform(queryFlag)
+  @IsBoolean()
+  @IsOptional()
+  includeOnline?: boolean;
+
+  @ApiPropertyOptional({
+    description:
       'Only coaches the caller asked and is still waiting on (each row says `requestSent`). ' +
       'Matches nobody for a guest.',
   })

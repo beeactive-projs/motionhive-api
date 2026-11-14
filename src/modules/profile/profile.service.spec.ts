@@ -474,7 +474,10 @@ describe('ProfileService (smoke — not exhaustive)', () => {
         ),
       ]);
 
-      const out = await service.discoverInstructors({ page: 1, limit: 20 });
+      const out = await service.discoverInstructors(null, {
+        page: 1,
+        limit: 20,
+      });
 
       expect(out).toHaveLength(1);
       expect(out[0]).toMatchObject({
@@ -515,7 +518,7 @@ describe('ProfileService (smoke — not exhaustive)', () => {
         }),
       ]);
 
-      const out = await service.discoverInstructors({});
+      const out = await service.discoverInstructors(null, {});
       expect(out[0].socialLinks).toBeNull();
       expect(out[0].isOnline).toBe(false);
     });
@@ -527,7 +530,7 @@ describe('ProfileService (smoke — not exhaustive)', () => {
         count: 0,
       });
 
-      await service.discoverInstructors({ categoryIds: ['cat-yoga'] });
+      await service.discoverInstructors(null, { categoryIds: ['cat-yoga'] });
       await service.coachDirectory(null, { categoryIds: ['cat-yoga'] });
 
       type Query = { where: Record<symbol, Array<{ val: string }>> };
@@ -541,32 +544,80 @@ describe('ProfileService (smoke — not exhaustive)', () => {
       const discoverSql = discover.where[Op.and].map((c) => c.val);
       const directorySql = directory.where[Op.and].map((c) => c.val);
 
-      expect(discoverSql).toHaveLength(1);
-      expect(discoverSql[0]).toContain('FROM coach_category x');
-      expect(discoverSql[0]).toContain(
-        'x.user_id = "InstructorProfile"."user_id"',
+      const category = discoverSql.find((sql) =>
+        sql.includes('FROM coach_category x'),
       );
-      expect(discoverSql[0]).toContain("x.category_id IN ('cat-yoga')");
-      expect(directorySql).toContain(discoverSql[0]);
+      expect(category).toContain('x.user_id = "InstructorProfile"."user_id"');
+      expect(category).toContain("x.category_id IN ('cat-yoga')");
+      expect(directorySql).toContain(category);
     });
 
     it('adds no category condition without the filter', async () => {
       instructorProfileModel.findAll.mockResolvedValueOnce([]);
 
-      await service.discoverInstructors({ categoryIds: [] });
+      await service.discoverInstructors(null, { categoryIds: [] });
 
       const calls = instructorProfileModel.findAll.mock.calls as Array<
-        [{ where: Record<symbol, unknown> }]
+        [{ where: Record<symbol, Array<{ val: string }>> }]
       >;
       const [call] = calls[calls.length - 1];
-      expect(call.where[Op.and]).toBeUndefined();
+      const sql = call.where[Op.and].map((c) => c.val).join('\n');
+      expect(sql).not.toContain('coach_category');
+    });
+
+    it('lists the directory people: coaches only, never the viewer or a block', async () => {
+      instructorProfileModel.findAll.mockResolvedValueOnce([]);
+
+      await service.discoverInstructors(me, {});
+
+      const call = instructorProfileModel.findAll.mock.calls.at(-1)?.[0] as {
+        where: Record<symbol, Array<{ val: string }>>;
+      };
+      const sql = call.where[Op.and].map((c) => c.val).join('\n');
+      expect(sql).toContain(`r.name = 'INSTRUCTOR'`);
+      expect(sql).toContain(`"InstructorProfile"."user_id" <> '${me}'`);
+      expect(sql).toContain(`ub.blocker_id = '${me}'`);
+      expect(sql).toContain(`ub.blocked_id = '${me}'`);
+    });
+
+    it('puts the most experienced first, no years last, and always the same 30', async () => {
+      instructorProfileModel.findAll.mockResolvedValueOnce([]);
+
+      await service.discoverInstructors(null, {});
+
+      const call = instructorProfileModel.findAll.mock.calls.at(-1)?.[0] as {
+        order: unknown[];
+        limit: number;
+      };
+      expect(call.order[0]).toEqual(['yearsOfExperience', 'DESC NULLS LAST']);
+      expect(call.order.at(-1)).toEqual(['id', 'ASC']);
+      expect(call.limit).toBe(30);
+    });
+
+    it('finds a coach by the name of a category they coach, in any language', async () => {
+      instructorProfileModel.findAll.mockResolvedValueOnce([]);
+
+      await service.discoverInstructors(null, { search: 'forta' });
+
+      const call = instructorProfileModel.findAll.mock.calls.at(-1)?.[0] as {
+        where: Record<symbol, Array<{ val: string }>>;
+      };
+      const byCategory = call.where[Op.or]
+        .map((c) => c.val)
+        .find((sql) => sql.includes('FROM coach_category x'));
+      expect(byCategory).toContain('JOIN category c ON c.id = x.category_id');
+      expect(byCategory).toContain('jsonb_each(COALESCE(c.translations');
+      expect(byCategory).toContain("fold_for_search('forta')");
     });
 
     // "brasov" finds "Brașov" and "stefan" finds "Ștefan": both sides fold.
     it('searches and filters by city blind to accents', async () => {
       instructorProfileModel.findAll.mockResolvedValueOnce([]);
 
-      await service.discoverInstructors({ search: 'Ștefan', city: 'Brașov' });
+      await service.discoverInstructors(null, {
+        search: 'Ștefan',
+        city: 'Brașov',
+      });
 
       const call = instructorProfileModel.findAll.mock.calls.at(-1)?.[0] as {
         where: Record<symbol, Array<{ val: string }>>;
@@ -789,29 +840,85 @@ describe('ProfileService (smoke — not exhaustive)', () => {
       ]);
       expect(lastQuery().order.at(-1)).toEqual(['id', 'ASC']);
     });
+
+    it('recommends the coaches of what a signed-in viewer likes, after those taking clients', async () => {
+      await service.coachDirectory(me, {});
+      const order = lastQuery().order as Array<[unknown, string]>;
+      expect(order[0]).toEqual(['isAcceptingClients', 'DESC']);
+      const [shared, direction] = order[1] as [{ val: string }, string];
+      expect(shared.val).toContain('JOIN user_interest ui');
+      expect(shared.val).toContain(`ui.user_id = '${me}'`);
+      expect(direction).toBe('DESC');
+
+      await service.coachDirectory(null, {});
+      expect(JSON.stringify(lastQuery().order)).not.toContain('user_interest');
+    });
+
+    it('turns the spotlight every day: a hash of the coach and today, then the id', async () => {
+      await service.coachDirectory(null, {
+        sort: CoachDirectorySort.SPOTLIGHT,
+      });
+      const order = lastQuery().order as Array<[unknown, string]>;
+      const [hash, direction] = order[0] as [{ val: string }, string];
+      const today = new Date().toISOString().slice(0, 10);
+      expect(hash.val).toBe(`md5("InstructorProfile"."user_id" || '${today}')`);
+      expect(direction).toBe('ASC');
+      expect(order.at(-1)).toEqual(['id', 'ASC']);
+    });
+
+    it('counts online coaches in every city when asked to', async () => {
+      await service.coachDirectory(null, {
+        city: 'Brașov',
+        includeOnline: true,
+      });
+
+      expect(lastQuery().include[0].where[Op.and]).toBeUndefined();
+      const city = andSql(lastQuery()).find((sql) =>
+        sql.includes('"user"."city"'),
+      );
+      expect(city).toContain(foldedLike('"user"."city"', 'Brasov'));
+      expect(city).toContain(' OR EXISTS (');
+      expect(city).toContain('v.is_online = true');
+    });
+
+    it('searches category names the same way as the discover list', async () => {
+      await service.coachDirectory(null, { search: 'yoga' });
+
+      const byCategory = (lastQuery().where[Op.or] as Array<{ val: string }>)
+        .map((c) => c.val)
+        .find((sql) => sql.includes('FROM coach_category x'));
+      expect(byCategory).toContain("fold_for_search('yoga')");
+    });
   });
 
   describe('coachDirectoryFacets', () => {
-    it('counts cities and specializations over the same coaches', async () => {
+    it('counts cities, specializations, categories and online coaches over the same coaches', async () => {
       sequelize.query
         .mockResolvedValueOnce([{ label: 'Cluj-Napoca', count: 3 }])
-        .mockResolvedValueOnce([{ label: 'Yoga', count: 2 }]);
+        .mockResolvedValueOnce([{ label: 'Yoga', count: 2 }])
+        .mockResolvedValueOnce([{ id: 'cat-yoga', count: 4 }])
+        .mockResolvedValueOnce([{ count: 1 }]);
 
       const out = await service.coachDirectoryFacets(me);
 
       expect(out).toEqual({
         cities: [{ label: 'Cluj-Napoca', count: 3 }],
         specializations: [{ label: 'Yoga', count: 2 }],
+        categories: [{ id: 'cat-yoga', count: 4 }],
+        online: 1,
       });
-      const [citySql, specSql] = sequelize.query.mock.calls.map(
-        ([sql]) => sql as string,
-      );
-      for (const sql of [citySql, specSql]) {
+      const [citySql, specSql, categorySql, onlineSql] =
+        sequelize.query.mock.calls.map(([sql]) => sql as string);
+      for (const sql of [citySql, specSql, categorySql, onlineSql]) {
         expect(sql).toContain('"user"."is_active" = true');
         expect(sql).toContain('"InstructorProfile"."deleted_at" IS NULL');
         expect(sql).toContain(`"InstructorProfile"."user_id" <> '${me}'`);
+      }
+      for (const sql of [citySql, specSql]) {
         expect(sql).toContain('GROUP BY fold_for_search');
       }
+      expect(categorySql).toContain('JOIN coach_category cc');
+      expect(onlineSql).toContain('v.is_online = true');
     });
   });
 
