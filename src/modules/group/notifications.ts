@@ -166,6 +166,19 @@ export function groupInvitationReceived(
 ): NotifyParams {
   return {
     userId: inviteeUserId,
+    ...groupInvitationsReceived(group, inviterName),
+  };
+}
+
+/**
+ * Several people at once (a coach inviting their clients): the same alert,
+ * one row for all of them. It opens Groups, where the invite waits on top.
+ */
+export function groupInvitationsReceived(
+  group: GroupRef,
+  inviterName: string | null,
+): NotifyManyParams {
+  return {
     type: NotificationType.GROUP_INVITATION_RECEIVED,
     message: {
       key: 'group.invitationReceived',

@@ -64,6 +64,7 @@ import { apiError, toLocale } from '../../common/i18n';
 import { categoryIdsSql, hasAnyCategorySql } from '../category/category-sql';
 import { CategoryPicker, CategoryService } from '../category/category.service';
 import { GroupCategory } from './entities/group-category.entity';
+import { PostApprovalState } from '../post/entities/post.entity';
 
 /**
  * Group Service
@@ -101,6 +102,59 @@ const GROUP_CATEGORY_IDS_SQL = categoryIdsSql('group', '"Group"."id"');
 
 /** A group as the apps read it: its columns plus what it trains. */
 export type GroupWithCategories = Group & { categoryIds: string[] };
+
+/** When the group last had a published post: its sign of life. */
+const LAST_POST_AT_SQL = `(SELECT MAX(p.posted_at) FROM post p WHERE p.group_id = "Group"."id" AND p.approval_state = '${PostApprovalState.APPROVED}' AND p.deleted_at IS NULL)`;
+
+/** Join requests waiting on the owner. */
+const PENDING_JOIN_REQUESTS_SQL = `(SELECT COUNT(*)::int FROM group_join_request r WHERE r.group_id = "Group"."id" AND r.status = '${GroupJoinRequestStatus.PENDING}')`;
+
+/** Posts waiting for the owner or a moderator to review them. */
+const PENDING_POSTS_SQL = `(SELECT COUNT(*)::int FROM post p WHERE p.group_id = "Group"."id" AND p.approval_state = '${PostApprovalState.PENDING}' AND p.deleted_at IS NULL)`;
+
+/** The person who runs the group, as Groups home and the group page name them. */
+export interface GroupOwnerSummary {
+  id: string;
+  firstName: string;
+  lastName: string;
+  handle: string | null;
+  avatarUrl: string | null;
+}
+
+/**
+ * A group as one of its members reads it: their role, the last post, who runs
+ * it, and the work waiting on them. Join requests count only for the owner,
+ * waiting posts for the owner and moderators; everyone else reads 0.
+ */
+export type MemberGroupView = GroupWithCategories & {
+  myRole: GroupMemberRole;
+  memberCount: number;
+  lastPostAt: Date | null;
+  pendingJoinRequestCount: number;
+  pendingPostCount: number;
+  owner: GroupOwnerSummary | null;
+};
+
+/** The extra columns a member's read of a group asks for. */
+const MEMBER_VIEW_ATTRIBUTES: Array<[ReturnType<typeof literal>, string]> = [
+  [
+    literal(
+      '(SELECT COUNT(*)::int FROM group_member WHERE group_member.group_id = "Group"."id" AND group_member.left_at IS NULL)',
+    ),
+    'memberCount',
+  ],
+  [literal(GROUP_CATEGORY_IDS_SQL), 'categoryIds'],
+  [literal(LAST_POST_AT_SQL), 'lastPostAt'],
+  [literal(PENDING_JOIN_REQUESTS_SQL), 'pendingJoinRequestCount'],
+  [literal(PENDING_POSTS_SQL), 'pendingPostCount'],
+];
+
+/** Who runs the group, loaded with a member's read of it. */
+const OWNER_INCLUDE = {
+  model: User,
+  as: 'instructor',
+  attributes: ['id', 'firstName', 'lastName', 'handle', 'avatarUrl'],
+};
 
 /** Result returned by `selfJoinGroup`. Branches on group's joinPolicy. */
 export interface SelfJoinResult {
@@ -297,9 +351,7 @@ export class GroupService {
    * the user's role in it: whether they may post somewhere depends on it
    * (staff always may), and the membership rows are loaded here anyway.
    */
-  async getMyGroups(
-    userId: string,
-  ): Promise<Array<GroupWithCategories & { myRole: GroupMemberRole }>> {
+  async getMyGroups(userId: string): Promise<MemberGroupView[]> {
     const memberships = await this.memberModel.findAll({
       where: { userId, leftAt: null },
       attributes: ['groupId', 'role'],
@@ -307,29 +359,66 @@ export class GroupService {
 
     const roleByGroup = new Map(memberships.map((m) => [m.groupId, m.role]));
     const groupIds = [...roleByGroup.keys()];
-    if (groupIds.length === 0) return [];
-
-    const memberCountLiteral = literal(
-      '(SELECT COUNT(*)::int FROM group_member WHERE group_member.group_id = "Group"."id" AND group_member.left_at IS NULL)',
-    );
+    if (groupIds.length === 0) {
+      return [];
+    }
 
     const groups = await this.groupModel.findAll({
       where: { id: { [Op.in]: groupIds }, isActive: true },
-      attributes: {
-        include: [
-          [memberCountLiteral, 'memberCount'],
-          [literal(GROUP_CATEGORY_IDS_SQL), 'categoryIds'],
-        ],
-      },
+      attributes: { include: MEMBER_VIEW_ATTRIBUTES },
+      include: [OWNER_INCLUDE],
     });
-    // Plain rows: an instance drops an added property when serialised.
     return groups.map((group) => {
-      const plain = group.get({ plain: true }) as GroupWithCategories & {
-        myRole: GroupMemberRole;
-      };
-      plain.myRole = roleByGroup.get(group.id) ?? GroupMemberRole.MEMBER;
-      return plain;
+      let role = roleByGroup.get(group.id);
+      if (!role) {
+        role = GroupMemberRole.MEMBER;
+      }
+      return this.toMemberView(group, role);
     });
+  }
+
+  /**
+   * A group row as its member reads it. Plain, because an instance drops an
+   * added property when serialised; the counts are masked to what the role
+   * may act on, so a member never learns how many people asked to join.
+   */
+  private toMemberView(group: Group, role: GroupMemberRole): MemberGroupView {
+    const { instructor, ...columns } = group.get({ plain: true }) as Omit<
+      MemberGroupView,
+      'owner' | 'myRole'
+    > & { instructor?: GroupOwnerSummary | null };
+    const isOwner = role === GroupMemberRole.OWNER;
+    const isStaff = isOwner || role === GroupMemberRole.MODERATOR;
+
+    let pendingJoinRequestCount = 0;
+    if (isOwner) {
+      pendingJoinRequestCount = Number(columns.pendingJoinRequestCount ?? 0);
+    }
+    let pendingPostCount = 0;
+    if (isStaff) {
+      pendingPostCount = Number(columns.pendingPostCount ?? 0);
+    }
+
+    let owner: GroupOwnerSummary | null = null;
+    if (instructor) {
+      owner = {
+        id: instructor.id,
+        firstName: instructor.firstName,
+        lastName: instructor.lastName,
+        handle: instructor.handle ?? null,
+        avatarUrl: instructor.avatarUrl ?? null,
+      };
+    }
+
+    return {
+      ...columns,
+      myRole: role,
+      memberCount: Number(columns.memberCount ?? 0),
+      lastPostAt: columns.lastPostAt ?? null,
+      pendingJoinRequestCount,
+      pendingPostCount,
+      owner,
+    } as MemberGroupView;
   }
   /**
    * Groups two people are both active members of — "groups in common" on a
@@ -397,27 +486,12 @@ export class GroupService {
    * moderator who sits past the first page as a non-member and strips
    * their controls. The role is authoritative here and costs nothing.
    */
-  async getById(
-    groupId: string,
-    userId: string,
-  ): Promise<
-    GroupWithCategories & { myRole: GroupMemberRole; memberCount: number }
-  > {
+  async getById(groupId: string, userId: string): Promise<MemberGroupView> {
     const group = await this.groupModel.findByPk(groupId, {
-      // Every list endpoint attaches this; the single-group read did not, so
-      // a detail screen rendered "0 members" for a group the list it came
-      // from had just counted correctly.
-      attributes: {
-        include: [
-          [
-            literal(
-              '(SELECT COUNT(*)::int FROM group_member WHERE group_member.group_id = "Group"."id" AND group_member.left_at IS NULL)',
-            ),
-            'memberCount',
-          ],
-          [literal(GROUP_CATEGORY_IDS_SQL), 'categoryIds'],
-        ],
-      },
+      // The member count rides along as on every list: without it a detail
+      // screen rendered "0 members" for a group the list had just counted.
+      attributes: { include: MEMBER_VIEW_ATTRIBUTES },
+      include: [OWNER_INCLUDE],
     });
 
     if (!group) {
@@ -425,13 +499,7 @@ export class GroupService {
     }
 
     const member = await this.assertMember(groupId, userId);
-
-    // `toJSON` first: spreading a Sequelize instance copies its internals,
-    // not its columns.
-    return { ...group.toJSON(), myRole: member.role } as GroupWithCategories & {
-      myRole: GroupMemberRole;
-      memberCount: number;
-    };
+    return this.toMemberView(group, member.role);
   }
 
   /**

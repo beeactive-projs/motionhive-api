@@ -12,4 +12,5 @@ export const invitation = {
   accountNotFound: "We couldn't find your account. Sign in again.",
   cannotInviteSelf: "You can't invite yourself.",
   cannotSuggestSelf: "You can't suggest yourself.",
+  notYourClients: 'You can invite only your own clients here.',
 };

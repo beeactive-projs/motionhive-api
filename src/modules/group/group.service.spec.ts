@@ -256,14 +256,20 @@ describe('GroupService', () => {
   // removeMember
   // =====================================================================
   describe('getById', () => {
+    /** A group row as Sequelize hands it back: `get` gives the plain columns. */
+    const viewRow = (columns: Record<string, unknown>) => ({
+      get: () => ({ ...columns }),
+      getDataValue: (key: string) => columns[key],
+    });
+
     // The role rides along on the group because the membership row is
     // already loaded to authorise the read. Without it the client has to
     // derive the role from the paginated member list, where a moderator
     // past the first page reads as a non-member and loses their controls.
     it("returns the caller's role alongside the group", async () => {
-      groupModel.findByPk.mockResolvedValue({
-        toJSON: () => ({ id: 'g-1', name: 'Morning Crew' }),
-      });
+      groupModel.findByPk.mockResolvedValue(
+        viewRow({ id: 'g-1', name: 'Morning Crew' }),
+      );
       memberModel.findOne.mockResolvedValue({
         groupId: 'g-1',
         userId: 'mod-1',
@@ -278,9 +284,7 @@ describe('GroupService', () => {
     });
 
     it('rejects a non-member rather than reporting a null role', async () => {
-      groupModel.findByPk.mockResolvedValue({
-        toJSON: () => ({ id: 'g-1' }),
-      });
+      groupModel.findByPk.mockResolvedValue(viewRow({ id: 'g-1' }));
       memberModel.findOne.mockResolvedValue(null);
 
       await expect(service.getById('g-1', 'stranger')).rejects.toThrow(
@@ -292,9 +296,9 @@ describe('GroupService', () => {
       // Every list endpoint attaches this count; the single-group read did
       // not, so the detail screen showed "0 members" for a group the list it
       // was opened from had just counted correctly.
-      groupModel.findByPk.mockResolvedValue({
-        toJSON: () => ({ id: 'g-1', memberCount: 4 }),
-      });
+      groupModel.findByPk.mockResolvedValue(
+        viewRow({ id: 'g-1', memberCount: 4 }),
+      );
       memberModel.findOne.mockResolvedValue({
         groupId: 'g-1',
         userId: 'u-1',
@@ -315,6 +319,64 @@ describe('GroupService', () => {
       await expect(service.getById('nope', 'u-1')).rejects.toThrow(
         NotFoundException,
       );
+    });
+
+    describe('waiting work and who runs it', () => {
+      const columns = {
+        id: 'g-1',
+        pendingJoinRequestCount: 2,
+        pendingPostCount: 1,
+        lastPostAt: '2026-11-14T08:00:00.000Z',
+        instructor: {
+          id: 'owner-1',
+          firstName: 'Alex',
+          lastName: 'Rivera',
+          handle: 'alex',
+          avatarUrl: null,
+          email: 'never@sent.test',
+        },
+      };
+      const asRole = (role: GroupMemberRole) => {
+        groupModel.findByPk.mockResolvedValue(viewRow(columns));
+        memberModel.findOne.mockResolvedValue({
+          groupId: 'g-1',
+          userId: 'u-1',
+          leftAt: null,
+          role,
+        });
+        return service.getById('g-1', 'u-1');
+      };
+
+      it('gives the owner both queues', async () => {
+        const result = await asRole(GroupMemberRole.OWNER);
+        expect(result.pendingJoinRequestCount).toBe(2);
+        expect(result.pendingPostCount).toBe(1);
+      });
+
+      it('gives a moderator the posts only', async () => {
+        const result = await asRole(GroupMemberRole.MODERATOR);
+        expect(result.pendingJoinRequestCount).toBe(0);
+        expect(result.pendingPostCount).toBe(1);
+      });
+
+      it('tells a member nothing about either queue', async () => {
+        const result = await asRole(GroupMemberRole.MEMBER);
+        expect(result.pendingJoinRequestCount).toBe(0);
+        expect(result.pendingPostCount).toBe(0);
+      });
+
+      it('names the owner without their email', async () => {
+        const result = await asRole(GroupMemberRole.MEMBER);
+        expect(result.owner).toEqual({
+          id: 'owner-1',
+          firstName: 'Alex',
+          lastName: 'Rivera',
+          handle: 'alex',
+          avatarUrl: null,
+        });
+        expect(JSON.stringify(result)).not.toContain('never@sent.test');
+        expect(result.lastPostAt).toBe('2026-11-14T08:00:00.000Z');
+      });
     });
   });
 
@@ -726,6 +788,7 @@ describe('GroupService', () => {
       return {
         ...columns,
         get: () => ({ ...columns }),
+        getDataValue: (key: string) => columns[key as keyof typeof columns],
         update: jest.fn().mockResolvedValue(undefined),
       };
     };
@@ -914,9 +977,9 @@ describe('GroupService', () => {
       };
 
       it('sends them with one group, my groups and the public lists', async () => {
-        groupModel.findByPk.mockResolvedValue({
-          toJSON: () => ({ id: 'g-1', categoryIds: ['cat-yoga'] }),
-        });
+        groupModel.findByPk.mockResolvedValue(
+          groupRow({ id: 'g-1', categoryIds: ['cat-yoga'] }),
+        );
         memberModel.findOne.mockResolvedValue(ownerMembership);
         const one = await service.getById('g-1', 'owner-1');
         expect(one.categoryIds).toEqual(['cat-yoga']);

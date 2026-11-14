@@ -615,6 +615,11 @@ export const NOTIFICATION_SAMPLES: NotificationSample[] = [
     build: () => group.groupInvitationReceived(U, G0, null),
   },
   {
+    audience: 'group member',
+    variant: 'several invited at once',
+    build: () => group.groupInvitationsReceived(G, 'Dan Ionescu'),
+  },
+  {
     audience: 'group owner',
     variant: 'typical',
     build: () => group.groupInvitationAccepted(U, G, 'Ana Pop'),

@@ -223,7 +223,10 @@ export const GroupDocs = {
     summary: 'List my groups',
     description:
       'Returns all groups the authenticated user belongs to, each with `memberCount`, ' +
-      "the caller's `myRole` and `categoryIds` (what the group trains, in the order of the category list).",
+      "the caller's `myRole`, `categoryIds` (what the group trains, in the order of the category list), " +
+      '`lastPostAt` (the last published post, null when none), `owner` (who runs it: id, names, handle, avatar) ' +
+      'and the work waiting on the caller: `pendingJoinRequestCount` (owner only) and `pendingPostCount` ' +
+      '(owner and moderators). Both counts are 0 for anyone who cannot act on them.',
     auth: true,
     responses: [
       {
@@ -238,6 +241,16 @@ export const GroupDocs = {
             memberCount: 12,
             myRole: 'OWNER',
             categoryIds: ['0b1c2d3e-4f50-4a6b-8c7d-9e0f1a2b3c4d'],
+            lastPostAt: '2026-11-14T08:00:00.000Z',
+            pendingJoinRequestCount: 2,
+            pendingPostCount: 1,
+            owner: {
+              id: '7c9e6679-7425-40de-944b-e07fc1f90ae7',
+              firstName: 'Alex',
+              lastName: 'Rivera',
+              handle: 'alex',
+              avatarUrl: null,
+            },
           },
         ],
       },
@@ -269,8 +282,10 @@ export const GroupDocs = {
   getById: {
     summary: 'Get group by ID',
     description:
-      "Returns group details with `memberCount`, the caller's `myRole` and `categoryIds` " +
-      '(what the group trains, in the order of the category list). User must be a member.',
+      "Returns group details with `memberCount`, the caller's `myRole`, `categoryIds` " +
+      '(what the group trains, in the order of the category list), `lastPostAt`, `owner` and the ' +
+      'waiting work (`pendingJoinRequestCount` for the owner, `pendingPostCount` for the owner and ' +
+      'moderators, 0 otherwise), the same shape as one row of `GET /groups`. User must be a member.',
     auth: true,
     responses: [
       {

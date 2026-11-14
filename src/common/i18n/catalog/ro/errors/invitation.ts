@@ -16,4 +16,5 @@ export const invitation: Catalog['errors']['invitation'] = {
   accountNotFound: 'Nu am găsit contul tău. Autentifică-te din nou.',
   cannotInviteSelf: 'Nu te poți invita pe tine.',
   cannotSuggestSelf: 'Nu te poți recomanda pe tine.',
+  notYourClients: 'Aici poți invita doar clienții tăi.',
 };
