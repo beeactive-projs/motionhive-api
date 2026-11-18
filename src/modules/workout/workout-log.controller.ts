@@ -46,6 +46,7 @@ import { ResumeWorkoutDto } from './dto/resume-workout.dto';
 import { RemoveLogSetsDto } from './dto/remove-log-sets.dto';
 import { RecordOneRepMaxDto } from './dto/record-one-rep-max.dto';
 import { SetWorkoutDurationDto } from './dto/set-workout-duration.dto';
+import { SetLogSupersetsDto } from './dto/set-log-supersets.dto';
 import { SetWorkoutVisibilityDto } from './dto/set-workout-visibility.dto';
 import { SkipLogExerciseDto } from './dto/skip-log-exercise.dto';
 import { SaveLogAsRoutineDto } from './dto/save-log-as-routine.dto';
@@ -120,6 +121,18 @@ export class WorkoutLogController {
       exerciseId,
       req.user.id,
     );
+  }
+
+  /** The logger's superset links: every exercise whose group changed, at once. */
+  @Patch('workout-logs/:id/supersets')
+  @HttpCode(204)
+  @ApiEndpoint({ ...WorkoutLogDocs.setSupersets, body: SetLogSupersetsDto })
+  async setSupersets(
+    @Request() req: AuthenticatedRequest,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: SetLogSupersetsDto,
+  ): Promise<void> {
+    await this.workoutLogService.setSupersets(id, dto.exercises, req.user.id);
   }
 
   @Patch('workout-logs/:id/exercises/:exerciseId/skip')

@@ -154,6 +154,33 @@ export const WorkoutLogDocs = {
     ],
   } as ApiEndpointOptions,
 
+  setSupersets: {
+    summary: 'Link or unlink exercises of a running workout as supersets',
+    description:
+      'Owner only, IN_PROGRESS only. The logger’s "Link as superset" chip ' +
+      'between two exercises, and its undo. Send every exercise whose ' +
+      '`supersetGroupId` changed: neighbours sharing a value are one ' +
+      'superset, null takes an exercise out of any. Saved in one ' +
+      'transaction, all or nothing: if any id is not an exercise of this ' +
+      'workout, nothing changes and the answer is 404. At most 100 ' +
+      'exercises, no repeats.',
+    auth: true,
+    responses: [
+      { status: 204, description: 'Saved' },
+      {
+        status: 400,
+        description:
+          'Invalid body, or the workout is not in progress (`workout.cannotEditNotInProgress`)',
+      },
+      {
+        status: 404,
+        description:
+          'No such workout, or not yours (`workout.logNotFound`), or an exercise not in it (`exercise.notFound`)',
+      },
+      ApiStandardResponses.Unauthorized,
+    ],
+  } as ApiEndpointOptions,
+
   resume: {
     summary: 'Start the clock again',
     description:

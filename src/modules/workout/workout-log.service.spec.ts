@@ -2259,6 +2259,105 @@ describe('WorkoutLogService (smoke — not exhaustive)', () => {
     });
   });
 
+  // ─── Mid-session: superset links ─────────────────────────────────
+
+  describe('setSupersets', () => {
+    const inProgressLog = {
+      id: 'wl-1',
+      userId: 'me',
+      status: WorkoutLogStatus.InProgress,
+    };
+
+    it('saves every changed group in one transaction, one update per group', async () => {
+      logModel.findByPk.mockResolvedValueOnce(inProgressLog);
+      loggedExerciseModel.findAll.mockResolvedValueOnce([
+        { id: 'le-1' },
+        { id: 'le-2' },
+        { id: 'le-3' },
+      ]);
+
+      await service.setSupersets(
+        'wl-1',
+        [
+          { id: 'le-1', supersetGroupId: 1 },
+          { id: 'le-2', supersetGroupId: 1 },
+          { id: 'le-3', supersetGroupId: null },
+        ],
+        'me',
+      );
+
+      expect(sequelize.transaction).toHaveBeenCalledTimes(1);
+      const [query] = loggedExerciseModel.findAll.mock.calls[0] as [
+        { where: unknown },
+      ];
+      expect(query.where).toEqual({
+        id: ['le-1', 'le-2', 'le-3'],
+        workoutLogId: 'wl-1',
+      });
+      expect(loggedExerciseModel.update).toHaveBeenCalledTimes(2);
+      expect(loggedExerciseModel.update).toHaveBeenCalledWith(
+        { supersetGroupId: 1 },
+        {
+          where: { id: ['le-1', 'le-2'], workoutLogId: 'wl-1' },
+          transaction: fakeTx,
+        },
+      );
+      expect(loggedExerciseModel.update).toHaveBeenCalledWith(
+        { supersetGroupId: null },
+        { where: { id: ['le-3'], workoutLogId: 'wl-1' }, transaction: fakeTx },
+      );
+    });
+
+    it('changes nothing when one exercise is not in this workout', async () => {
+      logModel.findByPk.mockResolvedValueOnce(inProgressLog);
+      loggedExerciseModel.findAll.mockResolvedValueOnce([{ id: 'le-1' }]);
+
+      await expect(
+        service.setSupersets(
+          'wl-1',
+          [
+            { id: 'le-1', supersetGroupId: 1 },
+            { id: 'le-other', supersetGroupId: 1 },
+          ],
+          'me',
+        ),
+      ).rejects.toThrow(NotFoundException);
+      expect(loggedExerciseModel.update).not.toHaveBeenCalled();
+    });
+
+    it('refuses on a finished workout', async () => {
+      logModel.findByPk.mockResolvedValueOnce({
+        ...inProgressLog,
+        status: WorkoutLogStatus.Completed,
+      });
+
+      await expect(
+        service.setSupersets(
+          'wl-1',
+          [{ id: 'le-1', supersetGroupId: 1 }],
+          'me',
+        ),
+      ).rejects.toThrow(BadRequestException);
+      expect(loggedExerciseModel.update).not.toHaveBeenCalled();
+    });
+
+    it('hides a workout that is not yours', async () => {
+      logModel.findByPk.mockResolvedValueOnce({
+        ...inProgressLog,
+        userId: 'someone',
+      });
+
+      await expect(
+        service.setSupersets(
+          'wl-1',
+          [{ id: 'le-1', supersetGroupId: 1 }],
+          'me',
+        ),
+      ).rejects.toThrow(NotFoundException);
+      expect(loggedExerciseModel.update).not.toHaveBeenCalled();
+    });
+  });
+
   // ─── Mid-session: add set ────────────────────────────────────────
 
   describe('addSetToLog', () => {

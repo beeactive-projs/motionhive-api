@@ -1144,6 +1144,49 @@ export class WorkoutLogService {
   }
 
   /**
+   * Superset links changed mid-workout: the logger's "Link as superset"
+   * chip and its undo. Each exercise takes the group it is sent with (null
+   * takes it out of any superset), in one transaction. All or nothing: if
+   * any id is not an exercise of this workout, nothing changes. The app
+   * works the groups out, as the routine builder does for a routine.
+   */
+  async setSupersets(
+    workoutLogId: string,
+    items: { id: string; supersetGroupId: number | null }[],
+    userId: string,
+  ): Promise<void> {
+    const log = await this._loadOwnedLog(workoutLogId, userId);
+    if (log.status !== WorkoutLogStatus.InProgress) {
+      throw new BadRequestException(
+        apiError('workout.cannotEditNotInProgress'),
+      );
+    }
+    const ids = [...new Set(items.map((item) => item.id))];
+    // One update per group, rather than one per exercise.
+    const byGroup = new Map<number | null, string[]>();
+    for (const item of items) {
+      const group = item.supersetGroupId ?? null;
+      byGroup.set(group, [...(byGroup.get(group) ?? []), item.id]);
+    }
+    await this.sequelize.transaction(async (tx) => {
+      const found = await this.loggedExerciseModel.findAll({
+        where: { id: ids, workoutLogId },
+        attributes: ['id'],
+        transaction: tx,
+      });
+      if (found.length !== ids.length) {
+        throw new NotFoundException(apiError('exercise.notFound'));
+      }
+      for (const [group, groupIds] of byGroup) {
+        await this.loggedExerciseModel.update(
+          { supersetGroupId: group },
+          { where: { id: groupIds, workoutLogId }, transaction: tx },
+        );
+      }
+    });
+  }
+
+  /**
    * Skip an exercise, or undo the skip.
    *
    * Distinct from removing it. A removed exercise leaves no trace, so a
