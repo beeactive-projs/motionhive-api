@@ -758,6 +758,83 @@ describe('ProgramAssignmentService (smoke — not exhaustive)', () => {
       expect(dates).toEqual(['2026-08-07', '2026-08-10', '2026-08-14']);
     });
 
+    it('numbers the weeks by the calendar when the schedule starts mid-week', async () => {
+      programModel.findByPk.mockResolvedValueOnce(routine());
+      assignmentModel.create.mockResolvedValueOnce({ id: 'pa-1' });
+      assignedWorkoutModel.create.mockResolvedValue({ id: 'aw-x' });
+
+      // Wednesday 2026-08-05, Mon/Wed/Fri, two weeks: Monday the 3rd is gone,
+      // so the first week has two days and next Monday opens week 1.
+      await service.scheduleRoutine(
+        'me',
+        {
+          programId: 'p-1',
+          daysOfWeek: [1, 3, 5],
+          repeatMode: 'BLOCK' as never,
+          repeatWeeks: 2,
+        },
+        '2026-08-05',
+      );
+
+      const rows = assignedWorkoutModel.create.mock.calls.map(
+        (c) => c[0] as { scheduledDate: string; weekIndex: number },
+      );
+      expect(rows.map((r) => [r.scheduledDate, r.weekIndex])).toEqual([
+        ['2026-08-05', 0],
+        ['2026-08-07', 0],
+        ['2026-08-10', 1],
+        ['2026-08-12', 1],
+        ['2026-08-14', 1],
+      ]);
+    });
+
+    it('opens on week 1 when started after the last training day of its week', async () => {
+      programModel.findByPk.mockResolvedValueOnce(routine());
+      assignmentModel.create.mockResolvedValueOnce({ id: 'pa-1' });
+      assignedWorkoutModel.create.mockResolvedValue({ id: 'aw-x' });
+
+      // Friday 2026-08-07, Mon/Wed, two weeks: nothing is left that week.
+      await service.scheduleRoutine(
+        'me',
+        {
+          programId: 'p-1',
+          daysOfWeek: [1, 3],
+          repeatMode: 'BLOCK' as never,
+          repeatWeeks: 2,
+        },
+        '2026-08-07',
+      );
+
+      const rows = assignedWorkoutModel.create.mock.calls.map(
+        (c) => c[0] as { scheduledDate: string; weekIndex: number },
+      );
+      expect(rows.map((r) => [r.scheduledDate, r.weekIndex])).toEqual([
+        ['2026-08-10', 0],
+        ['2026-08-12', 0],
+        ['2026-08-17', 1],
+        ['2026-08-19', 1],
+      ]);
+    });
+
+    it('runs an every-week schedule for 12 weeks', async () => {
+      programModel.findByPk.mockResolvedValueOnce(routine());
+      assignmentModel.create.mockResolvedValueOnce({ id: 'pa-1' });
+      assignedWorkoutModel.create.mockResolvedValue({ id: 'aw-x' });
+
+      // Monday 2026-08-03, Mondays only.
+      await service.scheduleRoutine(
+        'me',
+        { programId: 'p-1', daysOfWeek: [1] },
+        '2026-08-03',
+      );
+
+      const dates = assignedWorkoutModel.create.mock.calls.map(
+        (c) => (c[0] as { scheduledDate: string }).scheduledDate,
+      );
+      expect(dates).toHaveLength(12);
+      expect(dates[11]).toBe('2026-10-19');
+    });
+
     it('marks the assignment as self-scheduled with no instructor', async () => {
       programModel.findByPk.mockResolvedValueOnce(routine());
       assignmentModel.create.mockResolvedValueOnce({ id: 'pa-1' });

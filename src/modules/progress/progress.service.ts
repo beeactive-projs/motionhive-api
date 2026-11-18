@@ -13,6 +13,7 @@ import { estimateOneRepMaxEpley } from '../workout/one-rep-max.estimate';
 import { streakFromWeeks } from '../workout/training-streak';
 import {
   COUNTED_SET_SQL,
+  KG_TOTAL_EXERCISE_SQL,
   NO_VOLUME,
   VOLUME_SUMS_SQL,
   type VolumeSumsRow,
@@ -63,6 +64,8 @@ export interface ProgressOverview {
     recordedAt: string;
     /** Improvement on the previous best; equals weight for a first-ever. */
     deltaKg: number;
+    /** The first time on this lift: a best, not a record beaten. */
+    first: boolean;
   }>;
   /** Lifetime, not windowed — used to pick the empty/near-empty state. */
   lifetimeWorkouts: number;
@@ -1070,11 +1073,13 @@ export class ProgressService {
           -- Load-bearing working sets only; see the volume rule on this class.
           COALESCE(SUM(ls.reps * ls.weight_kg)
                    FILTER (WHERE ls.weight_kg IS NOT NULL
-                             AND ls.set_type <> 'WARMUP'), 0) AS volume_kg,
+                             AND ls.set_type <> 'WARMUP'
+                             AND ${KG_TOTAL_EXERCISE_SQL}), 0) AS volume_kg,
           COUNT(ls.id)                                         AS sets_completed
         FROM windowed w
         JOIN logged_exercise le ON le.workout_log_id = w.id AND le.is_skipped = FALSE
         JOIN logged_set ls      ON ls.logged_exercise_id = le.id AND ls.is_completed = TRUE
+        LEFT JOIN exercise ex   ON ex.id = le.exercise_id
       )
       SELECT
         (SELECT COUNT(*) FROM windowed)                              AS "workouts",
@@ -1131,8 +1136,10 @@ export class ProgressService {
         FROM logs l
         JOIN logged_exercise le ON le.workout_log_id = l.id AND le.is_skipped = FALSE
         JOIN logged_set ls      ON ls.logged_exercise_id = le.id
+        LEFT JOIN exercise ex   ON ex.id = le.exercise_id
         WHERE ${COUNTED_SET_SQL}
           AND ls.weight_kg IS NOT NULL
+          AND ${KG_TOTAL_EXERCISE_SQL}
         GROUP BY le.workout_log_id
       )
       SELECT
@@ -1294,6 +1301,9 @@ export class ProgressService {
         priorKg == null
           ? weightKg
           : Math.round((weightKg - priorKg) * 100) / 100,
+      // The first time on a lift is a best, not a record beaten: the finish
+      // screen and History never call it one, so neither may Home.
+      first: priorKg == null,
     };
   }
 
@@ -1436,10 +1446,14 @@ export class ProgressService {
           COALESCE(wl.completed_at, wl.started_at) AS performed_at,
           ls.reps,
           ls.weight_kg,
-          ls.weight_kg * (30 + ls.reps)            AS strength
+          -- Epley × 30, a single taken as its own weight like the shared
+          -- function, so the ranking agrees with the value.
+          CASE WHEN ls.reps = 1 THEN ls.weight_kg * 30
+               ELSE ls.weight_kg * (30 + ls.reps) END AS strength
         FROM workout_log wl
         JOIN logged_exercise le ON le.workout_log_id = wl.id
         JOIN logged_set ls      ON ls.logged_exercise_id = le.id AND ls.is_completed = TRUE
+        LEFT JOIN exercise ex   ON ex.id = le.exercise_id
         WHERE wl.user_id = :userId
           AND wl.status = 'COMPLETED'
           AND le.exercise_id IS NOT NULL
@@ -1447,6 +1461,9 @@ export class ProgressService {
           -- The sets the estimate covers; it returns nothing for others.
           AND ls.reps BETWEEN 1 AND 12
           AND ls.weight_kg > 0
+          -- As records at finish: never a warm-up, never a bodyweight move.
+          AND ls.set_type <> 'WARMUP'
+          AND (ex.kind IS NULL OR ex.kind <> 'BODYWEIGHT')
           ${scoped.sql}
         ORDER BY wl.id, le.exercise_id, strength DESC
       ),

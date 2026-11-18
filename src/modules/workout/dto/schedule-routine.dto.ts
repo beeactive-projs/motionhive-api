@@ -18,7 +18,7 @@ import { ProgramRepeatMode } from '../entities/workout.enums';
  * Body for `POST /my/scheduled-routines`.
  *
  * The light answer to multi-week planning for someone without a coach:
- * pick a routine, pick the weekdays, decide whether it rolls on or runs
+ * pick a routine, pick the weekdays, decide whether it runs 12 weeks or
  * for a fixed block. No periodisation builder — that stays a coach's
  * job, which is most of why you'd hire one.
  */
@@ -44,7 +44,8 @@ export class ScheduleRoutineDto {
   @ApiPropertyOptional({
     enum: ProgramRepeatMode,
     default: ProgramRepeatMode.Weekly,
-    description: 'WEEKLY rolls on; BLOCK runs for repeatWeeks then completes.',
+    description:
+      'WEEKLY runs 12 weeks; BLOCK runs for repeatWeeks; then it completes.',
   })
   @IsOptional()
   @IsEnum(ProgramRepeatMode)

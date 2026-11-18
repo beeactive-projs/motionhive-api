@@ -375,6 +375,80 @@ describe('ProgramService (smoke — not exhaustive)', () => {
 
   // ─── update — routine tree replacement ───────────────────────────
 
+  describe('setSupersets — a program day, in one transaction', () => {
+    const owned = () => {
+      programModel.findByPk.mockResolvedValueOnce({ id: 'p-1', ownerId: 'me' });
+      workoutModel.findOne.mockResolvedValueOnce({
+        id: 'pw-1',
+        programId: 'p-1',
+      });
+    };
+
+    it('writes one update per group, then undoes a superset left alone', async () => {
+      owned();
+      prescribedExerciseModel.findAll
+        // every id is an exercise of this day
+        .mockResolvedValueOnce([
+          { id: 'c' },
+          { id: 'd' },
+          { id: 'e' },
+          { id: 'f' },
+        ])
+        // after the writes: group 2 = C, D; group 3 = E only
+        .mockResolvedValueOnce([
+          { id: 'c', supersetGroupId: 2 },
+          { id: 'd', supersetGroupId: 2 },
+          { id: 'e', supersetGroupId: 3 },
+        ]);
+
+      await service.setSupersets(
+        'p-1',
+        'pw-1',
+        [
+          { id: 'c', supersetGroupId: 2 },
+          { id: 'd', supersetGroupId: 2 },
+          { id: 'e', supersetGroupId: 3 },
+          { id: 'f', supersetGroupId: null },
+        ],
+        'me',
+      );
+
+      expect(prescribedExerciseModel.update).toHaveBeenCalledWith(
+        { supersetGroupId: 2 },
+        {
+          where: { id: ['c', 'd'], programWorkoutId: 'pw-1' },
+          transaction: fakeTx,
+        },
+      );
+      expect(prescribedExerciseModel.update).toHaveBeenCalledWith(
+        { supersetGroupId: null },
+        { where: { id: ['f'], programWorkoutId: 'pw-1' }, transaction: fakeTx },
+      );
+      expect(prescribedExerciseModel.update).toHaveBeenCalledWith(
+        { supersetGroupId: null },
+        { where: { id: ['e'] }, transaction: fakeTx },
+      );
+    });
+
+    it('changes nothing when an id is not an exercise of the day', async () => {
+      owned();
+      prescribedExerciseModel.findAll.mockResolvedValueOnce([{ id: 'c' }]);
+
+      await expect(
+        service.setSupersets(
+          'p-1',
+          'pw-1',
+          [
+            { id: 'c', supersetGroupId: 1 },
+            { id: 'someone-elses', supersetGroupId: 1 },
+          ],
+          'me',
+        ),
+      ).rejects.toThrow(NotFoundException);
+      expect(prescribedExerciseModel.update).not.toHaveBeenCalled();
+    });
+  });
+
   describe('update — replacing a routine tree', () => {
     it('clears the old exercises before writing the new ones', async () => {
       programModel.findByPk.mockResolvedValueOnce({
@@ -401,6 +475,40 @@ describe('ProgramService (smoke — not exhaustive)', () => {
         ]),
         expect.anything(),
       );
+    });
+
+    it("renames a routine's one workout with it, in one transaction", async () => {
+      const update = jest.fn().mockResolvedValue(undefined);
+      programModel.findByPk.mockResolvedValueOnce({
+        id: 'p-5',
+        ownerId: 'me',
+        isSingleWorkout: true,
+        update,
+      });
+
+      await service.update('p-5', { name: '  Push B ' }, 'me');
+
+      expect(update).toHaveBeenCalledWith(
+        expect.objectContaining({ name: 'Push B' }),
+        { transaction: fakeTx },
+      );
+      expect(workoutModel.update).toHaveBeenCalledWith(
+        { name: 'Push B' },
+        { where: { programId: 'p-5' }, transaction: fakeTx },
+      );
+    });
+
+    it("leaves a program's day names alone on a rename", async () => {
+      programModel.findByPk.mockResolvedValueOnce({
+        id: 'p-6',
+        ownerId: 'me',
+        isSingleWorkout: false,
+        update: jest.fn().mockResolvedValue(undefined),
+      });
+
+      await service.update('p-6', { name: 'Block 2' }, 'me');
+
+      expect(workoutModel.update).not.toHaveBeenCalled();
     });
 
     it('drops the weeks a shortened program no longer has room for', async () => {

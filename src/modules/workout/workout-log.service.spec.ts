@@ -206,6 +206,58 @@ describe('WorkoutLogService (smoke — not exhaustive)', () => {
       ).rejects.toThrow(NotFoundException);
     });
 
+    it('refuses to start a day of the plan that is already done', async () => {
+      assignedWorkoutModel.findByPk.mockResolvedValueOnce({
+        id: 'aw-1',
+        status: 'COMPLETED',
+        exercises: [],
+      });
+      assignedWorkoutModel.findOne.mockResolvedValueOnce({
+        assignment: { clientId: 'me', status: 'ACTIVE' },
+      });
+
+      await expect(
+        service.start('me', { assignedWorkoutId: 'aw-1' }),
+      ).rejects.toThrow(ConflictException);
+      expect(logModel.create).not.toHaveBeenCalled();
+    });
+
+    it('lets a skipped day be made up, on a pending plan too', async () => {
+      assignedWorkoutModel.findByPk.mockResolvedValueOnce({
+        id: 'aw-1',
+        status: 'SKIPPED',
+        name: 'Day 1',
+        programAssignmentId: 'pa-1',
+        update: jest.fn().mockResolvedValue(undefined),
+        exercises: [],
+      });
+      assignedWorkoutModel.findOne.mockResolvedValueOnce({
+        assignment: { clientId: 'me', status: 'PENDING' },
+      });
+      // No exercises: the 1RM lookup is never asked.
+      logModel.create.mockResolvedValueOnce({ id: 'wl-1' });
+
+      await service.start('me', { assignedWorkoutId: 'aw-1' });
+
+      expect(logModel.create).toHaveBeenCalled();
+    });
+
+    it('refuses to start a day of a plan that is not active', async () => {
+      assignedWorkoutModel.findByPk.mockResolvedValueOnce({
+        id: 'aw-1',
+        status: null,
+        exercises: [],
+      });
+      assignedWorkoutModel.findOne.mockResolvedValueOnce({
+        assignment: { clientId: 'me', status: 'PAUSED' },
+      });
+
+      await expect(
+        service.start('me', { assignedWorkoutId: 'aw-1' }),
+      ).rejects.toThrow(ConflictException);
+      expect(logModel.create).not.toHaveBeenCalled();
+    });
+
     it('refuses to start while another workout is in progress', async () => {
       logModel.findOne.mockResolvedValueOnce({
         id: 'wl-open',
@@ -601,7 +653,7 @@ describe('WorkoutLogService (smoke — not exhaustive)', () => {
     beforeEach(() => {
       assignedWorkoutModel.findByPk.mockResolvedValueOnce(aw);
       assignedWorkoutModel.findOne.mockResolvedValueOnce({
-        assignment: { clientId: 'me' },
+        assignment: { clientId: 'me', status: 'ACTIVE' },
       });
       // Latest 1RM for ex-1 = 100kg.
       oneRepMaxModel.findAll.mockResolvedValueOnce([
@@ -1408,8 +1460,12 @@ describe('WorkoutLogService (smoke — not exhaustive)', () => {
       expect(service.estimateOneRepMaxEpley(15, 80)).toBeNull();
       expect(service.estimateOneRepMaxEpley(0, 80)).toBeNull();
     });
-    it('estimates 100kg × 1 = 100', () => {
-      expect(service.estimateOneRepMaxEpley(1, 100)).toBeCloseTo(103.33, 1);
+    it('takes a single as its own max: 100kg × 1 = 100', () => {
+      expect(service.estimateOneRepMaxEpley(1, 100)).toBe(100);
+    });
+    it('estimates nothing past what can be stored (a typo, 1000 for 100)', () => {
+      expect(service.estimateOneRepMaxEpley(12, 9000)).toBeNull();
+      expect(service.estimateOneRepMaxEpley(5, 1000)).toBeCloseTo(1166.67, 1);
     });
     it('estimates 80kg × 5 ≈ 93.33', () => {
       expect(service.estimateOneRepMaxEpley(5, 80)).toBeCloseTo(93.33, 1);
@@ -3194,7 +3250,7 @@ describe('WorkoutLogService (smoke — not exhaustive)', () => {
 
     it('404s when the workout was never started (no log row)', async () => {
       assignedWorkoutModel.findOne.mockResolvedValueOnce({
-        assignment: { clientId: 'me' },
+        assignment: { clientId: 'me', status: 'ACTIVE' },
       });
       logModel.findOne.mockResolvedValueOnce(null);
       await expect(service.findByAssignedWorkout('aw-1', 'me')).rejects.toThrow(
@@ -3204,7 +3260,7 @@ describe('WorkoutLogService (smoke — not exhaustive)', () => {
 
     it('returns the latest log when one exists', async () => {
       assignedWorkoutModel.findOne.mockResolvedValueOnce({
-        assignment: { clientId: 'me' },
+        assignment: { clientId: 'me', status: 'ACTIVE' },
       });
       logModel.findOne.mockResolvedValueOnce({ id: 'wl-1' });
       const out = await service.findByAssignedWorkout('aw-1', 'me');
@@ -3398,6 +3454,65 @@ describe('WorkoutLogService (smoke — not exhaustive)', () => {
         }),
         { transaction: fakeTx },
       );
+    });
+  });
+
+  describe('complete — what can set a record', () => {
+    const open = () => ({
+      id: 'wl-1',
+      userId: 'me',
+      status: WorkoutLogStatus.InProgress,
+      startedAt: new Date(Date.now() - 3_600_000),
+      pausedSeconds: 0,
+      pausedAt: null,
+      programAssignmentId: null,
+      assignedWorkoutId: null,
+      update: jest.fn().mockResolvedValue(undefined),
+      get() {
+        return this;
+      },
+    });
+
+    it('leaves warm-ups out, as the set menu promises', async () => {
+      logModel.findByPk.mockResolvedValueOnce(open());
+      loggedSetModel.findOne.mockResolvedValueOnce(null);
+      loggedExerciseModel.findAll.mockResolvedValueOnce([
+        {
+          exerciseId: 'bench',
+          exercise: { kind: 'STRENGTH' },
+          sets: [
+            { isCompleted: true, setType: 'WARMUP', reps: 1, weightKg: 100 },
+            { isCompleted: true, setType: 'NORMAL', reps: 5, weightKg: 85 },
+          ],
+        },
+      ]);
+      oneRepMaxModel.findAll.mockResolvedValueOnce([]);
+
+      await service.complete('wl-1', {}, 'me');
+
+      // 85 × 5 by Epley, not the warm-up single's 100.
+      expect(oneRepMaxModel.create).toHaveBeenCalledWith(
+        expect.objectContaining({ exerciseId: 'bench', weightKg: 99.17 }),
+        { transaction: fakeTx },
+      );
+    });
+
+    it('gives a bodyweight exercise no record, whatever weight was added', async () => {
+      logModel.findByPk.mockResolvedValueOnce(open());
+      loggedSetModel.findOne.mockResolvedValueOnce(null);
+      loggedExerciseModel.findAll.mockResolvedValueOnce([
+        {
+          exerciseId: 'pull-up',
+          exercise: { kind: 'BODYWEIGHT' },
+          sets: [
+            { isCompleted: true, setType: 'NORMAL', reps: 8, weightKg: 20 },
+          ],
+        },
+      ]);
+
+      await service.complete('wl-1', {}, 'me');
+
+      expect(oneRepMaxModel.create).not.toHaveBeenCalled();
     });
   });
 

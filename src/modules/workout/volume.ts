@@ -124,14 +124,45 @@ export function volumeOfSets(sets: readonly VolumeSet[]): VolumeTotals {
   return totals;
 }
 
-/** Whole percent `current` is above (or below) `previous`; null without a base. */
+/**
+ * Past this a percent says more about how small the base was than about
+ * the change ("+1,820%" after one light set last time): no percent then,
+ * and the app says the change in its own unit. The app holds the same line.
+ */
+export const MAX_SHOWN_PERCENT = 300;
+
+/**
+ * Whole percent `current` is above (or below) `previous`; null without a
+ * base, or past `MAX_SHOWN_PERCENT`.
+ */
 export function changePercent(
   current: number,
   previous: number | null,
 ): number | null {
   if (previous == null || previous <= 0) return null;
-  return Math.round(((current - previous) / previous) * 100);
+  const percent = Math.round(((current - previous) / previous) * 100);
+  if (percent > MAX_SHOWN_PERCENT) {
+    return null;
+  }
+  return percent;
 }
+
+/**
+ * Whether an exercise's kg joins a total across exercises (a workout's,
+ * a week's): not a bodyweight movement, which is measured in reps (its
+ * added weight is not what it moves, see `UNITS_BY_KIND`). Otherwise the
+ * hero said 2,400 kg while the rows said "Bench 1,800 kg · Dips 30 reps".
+ * @Arguments kind?
+ */
+export function countsInKgTotal(kind: string | null | undefined): boolean {
+  return kind !== ExerciseKind.Bodyweight;
+}
+
+/**
+ * `countsInKgTotal` in SQL, on an `ex` (exercise) alias LEFT JOINed on
+ * `le.exercise_id`: a custom exercise with no catalog row counts.
+ */
+export const KG_TOTAL_EXERCISE_SQL = `(ex.kind IS NULL OR ex.kind <> 'BODYWEIGHT')`;
 
 /**
  * `countsTowardVolume` in SQL, on the `ls` (logged_set) alias every

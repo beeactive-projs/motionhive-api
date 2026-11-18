@@ -17,7 +17,7 @@ import {
   literal,
 } from 'sequelize';
 import { Sequelize } from 'sequelize-typescript';
-import { User } from './entities/user.entity';
+import { User, USER_SAFE_ATTRIBUTES } from './entities/user.entity';
 import {
   SocialAccount,
   SocialProvider,
@@ -226,6 +226,19 @@ export class UserService {
       fitnessLevel: user.fitnessLevel,
     });
     return { ...UserService.toProfileDto(user), onboarding };
+  }
+
+  /**
+   * A person's own account as it may leave the server: the
+   * `USER_SAFE_ATTRIBUTES` fields only, never the password hash, a token or
+   * the lockout counters. For answers that carry the saved row back.
+   */
+  static toOwnAccount(user: User): Partial<Record<keyof User, unknown>> {
+    const account: Partial<Record<keyof User, unknown>> = {};
+    for (const key of USER_SAFE_ATTRIBUTES) {
+      account[key] = user[key];
+    }
+    return account;
   }
 
   /**

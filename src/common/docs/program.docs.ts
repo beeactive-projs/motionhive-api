@@ -292,6 +292,28 @@ export const ProgramDocs = {
     ],
   } as ApiEndpointOptions,
 
+  setSupersets: {
+    summary: 'Link or unlink exercises of a program day as supersets',
+    description:
+      'Owner only. Send every exercise of the day whose `supersetGroupId` ' +
+      'changed: neighbours sharing a value are one superset, null takes an ' +
+      'exercise out of any. Saved in one transaction, all or nothing: if ' +
+      'any id is not an exercise of this day, nothing changes and the ' +
+      'answer is 404. A superset left with one exercise is undone in the ' +
+      'same transaction. At most 100 exercises, no repeats.',
+    auth: true,
+    responses: [
+      { status: 204, description: 'Saved' },
+      { status: 400, description: 'Invalid body' },
+      {
+        status: 404,
+        description:
+          'No such program or day, or not yours (`workout.programNotFound`, `workout.workoutNotFound`), or an exercise not in it (`exercise.notFound`)',
+      },
+      ApiStandardResponses.Unauthorized,
+    ],
+  } as ApiEndpointOptions,
+
   updateExercise: {
     summary: 'Update an exercise slot',
     description:

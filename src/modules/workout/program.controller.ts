@@ -31,6 +31,7 @@ import { ListProgramsQueryDto } from './dto/list-programs.query.dto';
 import { CopyProgramWeekDto } from './dto/copy-program-week.dto';
 import { CopyProgramDayDto } from './dto/copy-program-day.dto';
 import { ReorderPrescribedRowsDto } from './dto/reorder-prescribed-rows.dto';
+import { SetPrescribedSupersetsDto } from './dto/set-prescribed-supersets.dto';
 import { ReorderProgramWorkoutsDto } from './dto/reorder-program-workouts.dto';
 import { UpdatePrescribedExerciseDto } from './dto/update-prescribed-exercise.dto';
 import { UpdatePrescribedSetDto } from './dto/update-prescribed-set.dto';
@@ -271,6 +272,28 @@ export class ProgramController {
     @Body() dto: CreatePrescribedExerciseDto,
   ) {
     return this.programService.addExercise(id, workoutId, dto, req.user.id);
+  }
+
+  /** Link or unlink several exercises of a day as supersets, in one transaction. */
+  @Patch(':id/workouts/:workoutId/supersets')
+  @HttpCode(204)
+  @Throttle({ default: { limit: 200, ttl: 3_600_000 } })
+  @ApiEndpoint({
+    ...ProgramDocs.setSupersets,
+    body: SetPrescribedSupersetsDto,
+  })
+  async setSupersets(
+    @Request() req: AuthenticatedRequest,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Param('workoutId', ParseUUIDPipe) workoutId: string,
+    @Body() dto: SetPrescribedSupersetsDto,
+  ): Promise<void> {
+    await this.programService.setSupersets(
+      id,
+      workoutId,
+      dto.exercises,
+      req.user.id,
+    );
   }
 
   // Before ':id/workouts/:workoutId/exercises/:exerciseId', like reorderWorkouts.

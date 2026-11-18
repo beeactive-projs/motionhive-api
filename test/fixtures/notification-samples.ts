@@ -711,6 +711,43 @@ export const NOTIFICATION_SAMPLES: NotificationSample[] = [
       }),
   },
   {
+    audience: 'client',
+    variant: 'coach with no name yet',
+    build: () =>
+      workout.programAssignedForClient({
+        clientId: U,
+        assignmentId: 'a-1',
+        programName: 'Forță 8 săptămâni',
+        startDate: '2026-06-22',
+        instructorName: null,
+      }),
+  },
+  {
+    audience: 'instructor',
+    variant: 'client with no name yet',
+    build: () =>
+      workout.clientCompletedWorkoutForInstructor({
+        instructorId: U,
+        clientId: 'c-1',
+        workoutLogId: 'l-1',
+        clientName: null,
+        workoutName: 'Ziua 1: Picioare',
+        setsCompleted: 12,
+      }),
+  },
+  {
+    audience: 'instructor',
+    variant: 'client with no name yet',
+    build: () =>
+      workout.clientCompletedPlanForInstructor({
+        instructorId: U,
+        clientId: 'c-1',
+        clientName: null,
+        programName: 'Forță 8 săptămâni',
+        workoutsCompleted: 24,
+      }),
+  },
+  {
     audience: 'instructor',
     variant: '1 set',
     build: () =>

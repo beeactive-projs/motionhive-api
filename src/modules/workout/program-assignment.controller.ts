@@ -49,11 +49,10 @@ export class ProgramAssignmentController {
     @Request() req: AuthenticatedRequest,
     @Body() dto: AssignProgramDto,
   ) {
-    const instructorName =
-      [req.user.firstName, req.user.lastName]
-        .filter(Boolean)
-        .join(' ')
-        .trim() || 'Your coach';
+    const instructorName = [req.user.firstName, req.user.lastName]
+      .filter(Boolean)
+      .join(' ')
+      .trim();
     return this.assignmentService.assignProgramToClient(
       req.user.id,
       instructorName,

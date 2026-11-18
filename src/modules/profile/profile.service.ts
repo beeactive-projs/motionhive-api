@@ -335,16 +335,14 @@ export class ProfileService {
   async updateFullProfile(userId: string, dto: UpdateFullProfileDto) {
     return this.sequelize.transaction(async (tx) => {
       const results: {
-        account?: User;
+        account?: Partial<Record<keyof User, unknown>>;
         instructor?: InstructorProfile;
       } = {};
 
       if (dto.account && Object.keys(dto.account).length > 0) {
-        results.account = await this.userService.updateUser(
-          userId,
-          dto.account,
-          tx,
-        );
+        const user = await this.userService.updateUser(userId, dto.account, tx);
+        // The saved row goes back without its secrets (password hash, tokens).
+        results.account = UserService.toOwnAccount(user);
       }
 
       if (dto.instructor && Object.keys(dto.instructor).length > 0) {

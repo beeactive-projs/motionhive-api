@@ -1,5 +1,6 @@
 import {
   NO_VOLUME,
+  countsInKgTotal,
   VolumeUnit,
   changePercent,
   volumeIn,
@@ -83,5 +84,17 @@ describe('volume', () => {
     expect(changePercent(3600, 3940)).toBe(-9);
     expect(changePercent(100, 0)).toBeNull();
     expect(changePercent(100, null)).toBeNull();
+    // A tiny base: "+1,820%" says nothing about the training.
+    expect(changePercent(1920, 100)).toBeNull();
+    expect(changePercent(400, 100)).toBe(300);
+  });
+});
+
+describe('countsInKgTotal', () => {
+  it('keeps a bodyweight movement out of a kg total, added weight or not', () => {
+    expect(countsInKgTotal('BODYWEIGHT')).toBe(false);
+    expect(countsInKgTotal('STRENGTH')).toBe(true);
+    // A custom exercise with no catalog kind counts by its kg.
+    expect(countsInKgTotal(null)).toBe(true);
   });
 });

@@ -223,6 +223,44 @@ describe('ProfileService (smoke — not exhaustive)', () => {
 
   // ───── Clients may mention me (allowClientMentions) ──────────────
 
+  describe('PATCH /profile/me, the account section', () => {
+    it('answers with the saved account and none of its secrets', async () => {
+      userService.updateUser.mockResolvedValueOnce({
+        id: me,
+        email: 'me@example.com',
+        firstName: 'Ana',
+        lastName: 'Pop',
+        city: 'Cluj-Napoca',
+        countryCode: 'RO',
+        passwordHash: '$2b$12$secret',
+        emailVerificationToken: 'verify-token',
+        passwordResetToken: 'reset-token',
+        failedLoginAttempts: 2,
+        lockedUntil: null,
+      });
+
+      const out = await service.updateFullProfile(me, {
+        account: { city: 'Cluj-Napoca', countryCode: 'RO' },
+      });
+
+      expect(out.account).toMatchObject({
+        id: me,
+        firstName: 'Ana',
+        city: 'Cluj-Napoca',
+        countryCode: 'RO',
+      });
+      for (const secret of [
+        'passwordHash',
+        'emailVerificationToken',
+        'passwordResetToken',
+        'failedLoginAttempts',
+        'lockedUntil',
+      ]) {
+        expect(out.account).not.toHaveProperty(secret);
+      }
+    });
+  });
+
   describe('allowClientMentions', () => {
     it('saves the switch through PATCH /profile/me, in the same transaction', async () => {
       const update = jest.fn().mockResolvedValue(undefined);
