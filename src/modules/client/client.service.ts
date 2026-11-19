@@ -28,12 +28,14 @@ import { InstructorProfile } from '../profile/entities/instructor-profile.entity
 import { RoleService } from '../role/role.service';
 import { User, USER_SAFE_ATTRIBUTES } from '../user/entities/user.entity';
 import { NotificationService } from '../notification/notification.service';
+import { UserBlock } from '../messaging/entities/user-block.entity';
 import {
   clientRequestReceived,
   clientRequestAccepted,
   clientRequestDeclined,
   clientInvitationReceived,
   clientRelationshipEndedForInstructor,
+  coachEndedForClient,
 } from './notifications';
 import {
   ClientInviteEmailStatus,
@@ -117,6 +119,33 @@ function carriedNote(
   return request.coachNote && !relationship.notes
     ? { notes: request.coachNote }
     : {};
+}
+
+/**
+ * A person's name for a notification, or null when there is none: the
+ * message then words it in the reader's language.
+ */
+function fullNameOrNull(
+  user:
+    | { firstName?: string | null; lastName?: string | null }
+    | null
+    | undefined,
+): string | null {
+  if (!user) {
+    return null;
+  }
+  const parts: string[] = [];
+  if (user.firstName) {
+    parts.push(user.firstName);
+  }
+  if (user.lastName) {
+    parts.push(user.lastName);
+  }
+  const name = parts.join(' ').trim();
+  if (!name) {
+    return null;
+  }
+  return name;
 }
 
 // ---------------------------------------------------------------------------
@@ -994,38 +1023,14 @@ export class ClientService {
     // Check no pending request already exists between these two users
     await this.assertNoPendingRequest(instructorId, toUserId);
 
+    await this.assertNotBlocked(instructorId, toUserId);
+
     // Create the relationship record (PENDING) and request in a transaction
     const result = await this.sequelize.transaction(async (transaction) => {
-      // Reuse a prior row for this pair if one exists (e.g. ARCHIVED from
-      // an ended collaboration). Resetting it to PENDING keeps a single
-      // canonical row per (instructor, client) pair so acceptRequest doesn't
-      // see duplicates.
-      const existing = await this.instructorClientModel.findOne({
-        where: { instructorId, clientId: toUserId },
-        transaction,
-      });
-
-      if (existing) {
-        throw new BadRequestException(apiError('client.alreadyYourClient'));
-        //   await existing.update(
-        //     {
-        //       status: InstructorClientStatus.PENDING,
-        //       initiatedBy: InitiatedBy.INSTRUCTOR,
-        //       startedAt: null,
-        //     },
-        //     { transaction },
-        //   );
-        // } else {
-        //   await this.instructorClientModel.create(
-        //     {
-        //       instructorId,
-        //       clientId: toUserId,
-        //       status: InstructorClientStatus.PENDING,
-        //       initiatedBy: InitiatedBy.INSTRUCTOR,
-        //     },
-        //     { transaction },
-        //   );
-      }
+      // A former client (an ARCHIVED row) can be invited again: the row
+      // stays as it is until they accept, and acceptRequest turns that
+      // same row ACTIVE, so the pair keeps one row. An ACTIVE client was
+      // refused above by assertNoActiveRelationship.
 
       // Create client_request record
       const expiresAt = new Date();
@@ -1143,6 +1148,8 @@ export class ClientService {
 
     // Check no pending request
     await this.assertNoPendingRequest(instructorId, userId);
+
+    await this.assertNotBlocked(instructorId, userId);
 
     // Create client_request record
     const expiresAt = new Date();
@@ -1694,6 +1701,16 @@ export class ClientService {
 
     const previousStatus = relationship.status;
 
+    // Only the client can say yes to coaching again: a coach brings back
+    // a former client with an invitation, never by flipping the status.
+    // Setting ACTIVE on a row that is already ACTIVE changes nothing.
+    if (
+      updates.status === InstructorClientStatus.ACTIVE &&
+      previousStatus !== InstructorClientStatus.ACTIVE
+    ) {
+      throw new ConflictException(apiError('client.restoreNeedsInvitation'));
+    }
+
     const updateData: Partial<Pick<InstructorClient, 'notes' | 'status'>> = {};
 
     if (updates.notes !== undefined) {
@@ -1725,6 +1742,15 @@ export class ClientService {
             'ClientService',
           ),
       );
+      const coachName = fullNameOrNull(relationship.instructor);
+      await this.notificationService
+        .notify(coachEndedForClient(clientId, coachName))
+        .catch((err: Error) =>
+          this.logger.error(
+            `Failed to notify client on collaboration-ended: ${err.message}`,
+            'ClientService',
+          ),
+        );
     }
 
     return relationship;
@@ -1908,6 +1934,30 @@ export class ClientService {
     });
   }
 
+  /**
+   * The requests a user sent to coaches that still wait on an answer. The
+   * coach comes with the few fields a request row shows, never their email
+   * or phone.
+   */
+  async getSentRequests(userId: string): Promise<ClientRequest[]> {
+    return this.clientRequestModel.findAll({
+      where: {
+        fromUserId: userId,
+        type: ClientRequestType.CLIENT_TO_INSTRUCTOR,
+        status: ClientRequestStatus.PENDING,
+        expiresAt: { [Op.gt]: new Date() },
+      },
+      include: [
+        {
+          model: User,
+          as: 'toUser',
+          attributes: ['id', 'firstName', 'lastName', 'avatarUrl', 'handle'],
+        },
+      ],
+      order: [['createdAt', 'DESC']],
+    });
+  }
+
   // =====================================================
   // TOKEN-BASED INVITE ENDPOINTS
   // =====================================================
@@ -2049,6 +2099,14 @@ export class ClientService {
     const instructorId = request.fromUserId;
     const clientId = userId;
 
+    // A coach opening their own invitation link would become their own
+    // client.
+    if (instructorId === clientId) {
+      throw new BadRequestException(
+        apiError('client.cannotAcceptOwnInvitation'),
+      );
+    }
+
     await this.sequelize.transaction(async (transaction) => {
       // Bind the newly registered user to the email-only invitation
       await request.update(
@@ -2094,6 +2152,22 @@ export class ClientService {
       `User ${userId} accepted invitation via token (instructor: ${instructorId})`,
       'ClientService',
     );
+
+    // notify-after-commit: the coach learns who said yes, as with an
+    // invitation accepted in the app.
+    const accepter = await User.findByPk(userId, {
+      attributes: ['firstName', 'lastName'],
+    });
+    await this.notificationService
+      .notify(
+        clientRequestAccepted(instructorId, fullNameOrNull(accepter), true),
+      )
+      .catch((err: Error) =>
+        this.logger.error(
+          `Failed to notify coach on invitation accepted by link: ${err.message}`,
+          'ClientService',
+        ),
+      );
 
     return { message: 'Invitation accepted successfully.' };
   }
@@ -2142,6 +2216,25 @@ export class ClientService {
             : 'client.alreadyTheirClient',
         ),
       );
+    }
+  }
+
+  /**
+   * Refuse a new invitation or request between two people when either
+   * blocked the other. The message does not say who blocked whom.
+   */
+  private async assertNotBlocked(userA: string, userB: string): Promise<void> {
+    const block = await UserBlock.findOne({
+      where: {
+        [Op.or]: [
+          { blockerId: userA, blockedId: userB },
+          { blockerId: userB, blockedId: userA },
+        ],
+      },
+      attributes: ['id'],
+    });
+    if (block?.id) {
+      throw new ForbiddenException(apiError('client.blockedPair'));
     }
   }
 

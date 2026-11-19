@@ -133,6 +133,16 @@ export const NOTIFICATION_SAMPLES: NotificationSample[] = [
   {
     audience: 'client',
     variant: 'typical',
+    build: () => client.coachEndedForClient(U, 'Dan Ionescu'),
+  },
+  {
+    audience: 'client',
+    variant: 'no name',
+    build: () => client.coachEndedForClient(U, null),
+  },
+  {
+    audience: 'client',
+    variant: 'typical',
     build: () => client.coachLeftForClient(U, 'Dan Ionescu'),
   },
   {

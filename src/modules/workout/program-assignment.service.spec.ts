@@ -992,9 +992,11 @@ describe('ProgramAssignmentService (smoke — not exhaustive)', () => {
       assignmentModel.findByPk.mockResolvedValueOnce({
         id: 'a-1',
         instructorId: me,
+        clientId: 'client-1',
         status: ProgramAssignmentStatus.Completed,
         update: jest.fn(),
       });
+      instructorClientModel.findOne.mockResolvedValueOnce({ id: 'rel-1' });
       await expect(
         service.update('a-1', { status: ProgramAssignmentStatus.Active }, me),
       ).rejects.toThrow(BadRequestException);
@@ -1005,9 +1007,11 @@ describe('ProgramAssignmentService (smoke — not exhaustive)', () => {
       assignmentModel.findByPk.mockResolvedValueOnce({
         id: 'a-1',
         instructorId: me,
+        clientId: 'client-1',
         status: ProgramAssignmentStatus.Active,
         update,
       });
+      instructorClientModel.findOne.mockResolvedValueOnce({ id: 'rel-1' });
       await service.update(
         'a-1',
         { status: ProgramAssignmentStatus.Paused },
@@ -1016,6 +1020,78 @@ describe('ProgramAssignmentService (smoke — not exhaustive)', () => {
       expect(update).toHaveBeenCalledWith(
         expect.objectContaining({ status: ProgramAssignmentStatus.Paused }),
       );
+    });
+  });
+
+  // ─── One program's clients ───────────────────────────────────────
+
+  describe('listForInstructor', () => {
+    it("narrows to one program's assignments on the server", async () => {
+      assignmentModel.findAndCountAll.mockResolvedValueOnce({
+        rows: [],
+        count: 0,
+      });
+
+      await service.listForInstructor(me, { programId: 'prog-1', limit: 100 });
+
+      expect(assignmentModel.findAndCountAll).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            instructorId: me,
+            masterProgramId: 'prog-1',
+          }),
+          limit: 100,
+        }),
+      );
+    });
+  });
+
+  // ─── A former coach lets go of the plan ──────────────────────────
+
+  describe('after the coaching ended', () => {
+    function plan() {
+      return {
+        id: 'a-1',
+        instructorId: me,
+        clientId: 'client-1',
+        status: ProgramAssignmentStatus.Active,
+        update: jest.fn(),
+        destroy: jest.fn(),
+        workouts: [],
+      };
+    }
+
+    it('refuses the former coach a pause, a delete or the full plan', async () => {
+      const row = plan();
+      assignmentModel.findByPk.mockResolvedValue(row);
+      instructorClientModel.findOne.mockResolvedValue(null);
+
+      await expect(
+        service.update('a-1', { status: ProgramAssignmentStatus.Paused }, me),
+      ).rejects.toThrow(NotFoundException);
+      await expect(service.softDelete('a-1', me)).rejects.toThrow(
+        NotFoundException,
+      );
+      await expect(service.findById('a-1', me)).rejects.toThrow(
+        NotFoundException,
+      );
+      expect(row.update).not.toHaveBeenCalled();
+      expect(row.destroy).not.toHaveBeenCalled();
+      expect(instructorClientModel.findOne).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({ status: 'ACTIVE' }),
+        }),
+      );
+    });
+
+    it('still lets the client read their plan', async () => {
+      assignmentModel.findByPk.mockResolvedValueOnce(plan());
+      instructorClientModel.findOne.mockClear();
+
+      await expect(service.findById('a-1', 'client-1')).resolves.toMatchObject({
+        id: 'a-1',
+      });
+      expect(instructorClientModel.findOne).not.toHaveBeenCalled();
     });
   });
 

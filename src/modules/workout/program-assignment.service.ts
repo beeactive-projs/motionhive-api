@@ -287,6 +287,7 @@ export class ProgramAssignmentService {
       deletedAt: null,
       ...(query.status ? { status: query.status } : {}),
       ...(query.clientId ? { clientId: query.clientId } : {}),
+      ...(query.programId ? { masterProgramId: query.programId } : {}),
       ...this._searchWhere(query.search),
     };
     const { rows, count } = await this.assignmentModel.findAndCountAll({
@@ -438,6 +439,7 @@ export class ProgramAssignmentService {
     if (assignment.instructorId !== userId && assignment.clientId !== userId) {
       throw new NotFoundException(apiError('workout.assignmentNotFound'));
     }
+    await this._assertStillCoaching(assignment, userId);
     return assignment;
   }
 
@@ -1179,7 +1181,35 @@ export class ProgramAssignmentService {
     if (!assignment || assignment.instructorId !== instructorId) {
       throw new NotFoundException(apiError('workout.assignmentNotFound'));
     }
+    await this._assertStillCoaching(assignment, instructorId);
     return assignment;
+  }
+
+  /**
+   * A coach holds a client's plan only while they coach them: once the
+   * relationship ends, the plan (a copy that stays with the client) is
+   * no longer theirs to read in full, pause, resume or delete. 404, as
+   * `assertActiveCoachOf`, so a past relationship is not revealed. The
+   * client's own reads, and a coach's plan for themself, pass.
+   */
+  private async _assertStillCoaching(
+    assignment: ProgramAssignment,
+    userId: string,
+  ): Promise<void> {
+    if (assignment.clientId === userId) {
+      return;
+    }
+    const link = await this.instructorClientModel.findOne({
+      where: {
+        instructorId: userId,
+        clientId: assignment.clientId,
+        status: InstructorClientStatus.ACTIVE,
+      },
+      attributes: ['id'],
+    });
+    if (!link?.id) {
+      throw new NotFoundException(apiError('workout.assignmentNotFound'));
+    }
   }
 
   /**

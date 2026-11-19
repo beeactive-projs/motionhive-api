@@ -29,6 +29,16 @@ export class ListAssignmentsQueryDto extends PaginationDto {
 
   @ApiPropertyOptional({
     description:
+      'Only the assignments made from this program (instructor surface ' +
+      'only), so a program page lists all of its clients, not those among ' +
+      'the newest assignments across every program.',
+  })
+  @IsOptional()
+  @IsUUID('4')
+  programId?: string;
+
+  @ApiPropertyOptional({
+    description:
       'Case-insensitive match on the program name as it was assigned. ' +
       'Matches the snapshot rather than the live program, so a renamed ' +
       'program is still found by the name the client was given.',

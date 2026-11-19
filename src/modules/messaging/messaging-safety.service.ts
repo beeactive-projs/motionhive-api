@@ -105,9 +105,10 @@ export class MessagingSafetyService {
     // The three checks are independent reads, so they share one round
     // trip; the verdicts are then applied in precedence order —
     // suspension, then block, then the new-account rule.
-    const [suspended, blocked, throttled] = await Promise.all([
+    const [suspended, blocked, blockedByMe, throttled] = await Promise.all([
       this.isMessagingSuspended(senderId),
       this.isBlocked(recipientId, senderId),
+      this.isBlocked(senderId, recipientId),
       this.senderIsThrottledByAccountAge(
         senderId,
         recipientId,
@@ -124,6 +125,16 @@ export class MessagingSafetyService {
 
     if (blocked) {
       return { kind: 'silentDrop', reason: 'BLOCKED_BY_RECIPIENT' };
+    }
+
+    // A block works both ways: the person who blocked cannot keep
+    // writing to someone who can no longer write back. They know they
+    // blocked, so this is said plainly rather than dropped.
+    if (blockedByMe) {
+      return {
+        kind: 'forbidden',
+        reason: apiError('messaging.youBlockedThem'),
+      };
     }
 
     if (throttled) {
@@ -168,6 +179,23 @@ export class MessagingSafetyService {
     if (blockerId === blockedId) return false;
     const row = await this.userBlockModel.findOne({
       where: { blockerId, blockedId },
+      attributes: ['id'],
+    });
+    return !!row;
+  }
+
+  /** True when either of the two has blocked the other. */
+  async isBlockedEitherWay(userA: string, userB: string): Promise<boolean> {
+    if (userA === userB) {
+      return false;
+    }
+    const row = await this.userBlockModel.findOne({
+      where: {
+        [Op.or]: [
+          { blockerId: userA, blockedId: userB },
+          { blockerId: userB, blockedId: userA },
+        ],
+      },
       attributes: ['id'],
     });
     return !!row;

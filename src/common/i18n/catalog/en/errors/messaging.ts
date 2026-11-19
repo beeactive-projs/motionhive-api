@@ -11,6 +11,7 @@ export const messaging = {
     'You can send up to {max, plural, one {# message} other {# messages}} a minute. Wait a moment and try again.',
   tooManyMessagesInConversation:
     'Too many messages in this conversation. Wait a moment and try again.',
+  youBlockedThem: 'You blocked this person. Unblock them to send a message.',
   cannotLoadOlderMessages:
     "We couldn't load older messages. Refresh the conversation and try again.",
   invalidDate: 'Choose a valid date and time.',

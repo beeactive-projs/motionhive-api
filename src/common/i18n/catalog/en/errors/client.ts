@@ -32,4 +32,9 @@ export const client = {
   importDailyLimit:
     '{remaining, plural, =0 {You cannot send more invitations today.} one {You can send # more invitation today.} other {You can send # more invitations today.}} Import fewer people or try again tomorrow.',
   alreadyLeftCoach: 'You have already stopped training with this coach.',
+  restoreNeedsInvitation:
+    'Your coaching with this person has ended. Invite them again: they become your client once they accept.',
+  cannotAcceptOwnInvitation:
+    'This is your own invitation, so you cannot accept it.',
+  blockedPair: 'You cannot work together with this person on MotionHive.',
 };

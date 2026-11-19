@@ -9,7 +9,14 @@ import {
 import { InjectModel } from '@nestjs/sequelize';
 import { WINSTON_MODULE_NEST_PROVIDER } from 'nest-winston';
 import { randomUUID } from 'crypto';
-import { col, fn, Op, Transaction, UniqueConstraintError } from 'sequelize';
+import {
+  col,
+  fn,
+  literal,
+  Op,
+  Transaction,
+  UniqueConstraintError,
+} from 'sequelize';
 import { Sequelize } from 'sequelize-typescript';
 import {
   buildPaginatedResponse,
@@ -311,7 +318,10 @@ export class MessagingService {
       recipientId,
     );
 
-    await this.rateLimit.assertSendAllowed(senderId, conversation.id);
+    await this.rateLimit.assertConversationSendAllowed(
+      senderId,
+      conversation.id,
+    );
 
     // Capture the previous-message timestamp BEFORE the update writes
     // the new one. This drives the email "quiet-period" gate — if the
@@ -544,11 +554,25 @@ export class MessagingService {
     limit: number,
   ): Promise<PaginatedResponse<ConversationListItem>> {
     const offset = (page - 1) * limit;
+    const me = this.sequelize.escape(userId);
 
     const { rows, count } = await this.participantModel.findAndCountAll({
       where: {
         userId,
         leftAt: null,
+        // A chat with someone this user blocked stays out of the inbox
+        // while the block lasts, so it does not come back on the next
+        // load after the app hid it.
+        [Op.and]: [
+          literal(`NOT EXISTS (
+            SELECT 1
+            FROM conversation_participant other
+            JOIN user_block b
+              ON b.blocker_id = ${me} AND b.blocked_id = other.user_id
+            WHERE other.conversation_id = "ConversationParticipant"."conversation_id"
+              AND other.user_id <> ${me}
+          )`),
+        ],
         // A chat the user deleted stays out of the inbox until something
         // newer than the delete arrives.
         [Op.or]: [

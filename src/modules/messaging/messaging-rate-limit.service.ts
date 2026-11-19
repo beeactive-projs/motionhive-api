@@ -92,6 +92,26 @@ export class MessagingRateLimitService implements OnModuleDestroy {
   }
 
   /**
+   * The per-conversation soft throttle alone, for the second check of a
+   * send whose per-user slot `assertSendAllowed(userId)` already took:
+   * asking that one again would count the same message twice against
+   * the per-minute ceiling.
+   */
+  // eslint-disable-next-line @typescript-eslint/require-await
+  async assertConversationSendAllowed(
+    userId: string,
+    conversationId: string,
+  ): Promise<void> {
+    this.assertWindow(
+      Date.now(),
+      `c:${userId}:${conversationId}`,
+      MessagingRateLimitService.CONV_PER_SECOND_WINDOW_MS,
+      MessagingRateLimitService.CONV_PER_SECOND_LIMIT,
+      apiError('messaging.tooManyMessagesInConversation'),
+    );
+  }
+
+  /**
    * Returns the current send count in the per-user 60s window. Used by
    * the velocity-alarm tracker to decide whether to flag the user.
    */

@@ -120,6 +120,22 @@ export function coachLeftForClient(
   };
 }
 
+/**
+ * Client: their coach ended the coaching (archived them). The plans they
+ * were given are copies, so they stay; the message says so.
+ */
+export function coachEndedForClient(
+  clientId: string,
+  coachName: string | null,
+): NotifyParams {
+  return {
+    userId: clientId,
+    type: NotificationType.CLIENT_RELATIONSHIP_ENDED,
+    message: { key: 'client.coachEnded', params: { name: coachName } },
+    data: { screen: 'profile', queryParams: { tab: 'coaches' } },
+  };
+}
+
 /** Instructor — client ended the coaching relationship. */
 export function clientRelationshipEndedForInstructor(
   instructorId: string,

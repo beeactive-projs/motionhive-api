@@ -241,6 +241,28 @@ describe('MessagingSafetyService — Stage 3', () => {
       expect(v.kind).toBe('silentDrop');
     });
 
+    it('refuses, plainly, a send to someone the sender blocked', async () => {
+      defaultNoSuspension();
+      // Only sender → recipient is blocked.
+      blockModel.findOne.mockImplementation(
+        (opts: { where: { blockerId: string } }) => {
+          if (opts.where.blockerId === sender) {
+            return Promise.resolve({ id: 'b1' });
+          }
+          return Promise.resolve(null);
+        },
+      );
+      mockSenderAge(1000);
+      defaultNoActiveLink();
+      const v = await service.canMessage(sender, recipient);
+      expect(v).toEqual({
+        kind: 'forbidden',
+        reason: expect.objectContaining({
+          messageKey: 'messaging.youBlockedThem',
+        }),
+      });
+    });
+
     it('new-account sender with no ACTIVE link → forbidden', async () => {
       defaultNoSuspension();
       defaultNoBlock();
@@ -278,7 +300,7 @@ describe('MessagingSafetyService — Stage 3', () => {
       expect(v.kind).toBe('forbidden');
     });
 
-    it('runs the three checks in parallel but applies them in precedence order', async () => {
+    it('runs the checks in parallel but applies them in precedence order', async () => {
       // All three fire on one round trip; the verdict must still be the
       // most serious one, not whichever resolved first.
       suspensionModel.findOne.mockResolvedValue({ id: 's1' });
@@ -290,7 +312,8 @@ describe('MessagingSafetyService — Stage 3', () => {
 
       expect(v.kind).toBe('forbidden');
       expect(suspensionModel.findOne).toHaveBeenCalledTimes(1);
-      expect(blockModel.findOne).toHaveBeenCalledTimes(1);
+      // One block lookup per direction.
+      expect(blockModel.findOne).toHaveBeenCalledTimes(2);
     });
 
     it('skips the sender lookup when the caller already has createdAt', async () => {
