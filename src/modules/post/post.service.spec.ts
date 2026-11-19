@@ -82,6 +82,9 @@ describe('PostService', () => {
   let searchIndex: { upsertPost: jest.Mock; removeIfExists: jest.Mock };
   let notificationService: { notify: jest.Mock; notifyMany: jest.Mock };
   let mediaStorage: {
+    keyFromUrl: jest.Mock;
+    isInFolder: jest.Mock;
+    buildUserFolder: jest.Mock;
     isOwnedUrl: jest.Mock;
     assertOwnedUrls: jest.Mock;
     extractPublicId: jest.Mock;
@@ -153,7 +156,27 @@ describe('PostService', () => {
       notify: jest.fn().mockResolvedValue(undefined),
       notifyMany: jest.fn().mockResolvedValue(undefined),
     };
+    // The key layout of MediaStorageService: <host>/motionhive/<env>/...
+    const keyFromUrl = (url: string): string | null => {
+      const prefix = 'https://img.motionhive.fit/';
+      if (!url.startsWith(prefix)) {
+        return null;
+      }
+      return url.slice(prefix.length);
+    };
     mediaStorage = {
+      keyFromUrl: jest.fn().mockImplementation(keyFromUrl),
+      isInFolder: jest
+        .fn()
+        .mockImplementation((url: string, folder: string) =>
+          (keyFromUrl(url) ?? '').startsWith(`${folder}/`),
+        ),
+      buildUserFolder: jest
+        .fn()
+        .mockImplementation(
+          (resource: string, uid: string) =>
+            `motionhive/development/${resource}/${uid}`,
+        ),
       isOwnedUrl: jest.fn().mockReturnValue(true),
       assertOwnedUrls: jest.fn(),
       extractPublicId: jest.fn().mockReturnValue('mock-id'),
@@ -426,6 +449,24 @@ describe('PostService', () => {
       expect(groupModel.findAll).not.toHaveBeenCalled();
     });
 
+    it("refuses another person's picture, and a file of another post", async () => {
+      for (const url of [
+        'https://img.motionhive.fit/motionhive/development/avatars/victim/face.jpg',
+        'https://img.motionhive.fit/motionhive/development/posts/victim/staging.png',
+        'https://img.motionhive.fit/motionhive/development/posts/user-1/other-post/a.png',
+      ]) {
+        await expect(
+          service.createPost(authorId, {
+            content: 'x',
+            groupIds: ['g1'],
+            mediaUrls: [url],
+          }),
+        ).rejects.toThrow(BadRequestException);
+      }
+      expect(mediaStorage.deleteByUrl).not.toHaveBeenCalled();
+      expect(mediaStorage.cloneByUrl).not.toHaveBeenCalled();
+    });
+
     it('clones each staging image into the per-post folder, then deletes staging', async () => {
       groupModel.findAll.mockResolvedValue([
         { id: 'g1', memberPostPolicy: MemberPostPolicy.OPEN },
@@ -446,12 +487,12 @@ describe('PostService', () => {
         content: 'x',
         groupIds: ['g1'],
         mediaUrls: [
-          'https://img.motionhive.fit/motionhive/test/posts/staging.png',
+          'https://img.motionhive.fit/motionhive/development/posts/user-1/staging.png',
         ],
       });
 
       expect(mediaStorage.cloneByUrl).toHaveBeenCalledWith(
-        'https://img.motionhive.fit/motionhive/test/posts/staging.png',
+        'https://img.motionhive.fit/motionhive/development/posts/user-1/staging.png',
         expect.objectContaining({
           resource: 'posts',
           userId: authorId,
@@ -460,11 +501,11 @@ describe('PostService', () => {
       );
       expect(updateSpy).toHaveBeenCalledWith({
         mediaUrls: [
-          'https://img.motionhive.fit/motionhive/test/posts/staging.png#cloned',
+          'https://img.motionhive.fit/motionhive/development/posts/user-1/staging.png#cloned',
         ],
       });
       expect(mediaStorage.deleteByUrl).toHaveBeenCalledWith(
-        'https://img.motionhive.fit/motionhive/test/posts/staging.png',
+        'https://img.motionhive.fit/motionhive/development/posts/user-1/staging.png',
       );
     });
   });
@@ -521,21 +562,107 @@ describe('PostService', () => {
         id: postId,
         authorId,
         mediaUrls: [
-          'https://img.motionhive.fit/motionhive/test/posts/a.png',
-          'https://img.motionhive.fit/motionhive/test/posts/b.png',
+          'https://img.motionhive.fit/motionhive/development/posts/user-1/post-1/a.png',
+          'https://img.motionhive.fit/motionhive/development/posts/user-1/post-1/b.png',
         ],
         update: jest.fn().mockResolvedValue(undefined),
       };
       postModel.findByPk.mockResolvedValue(post);
 
       await service.updatePost(authorId, postId, {
-        mediaUrls: ['https://img.motionhive.fit/motionhive/test/posts/b.png'],
+        mediaUrls: [
+          'https://img.motionhive.fit/motionhive/development/posts/user-1/post-1/b.png',
+        ],
       });
 
       expect(mediaStorage.deleteByUrl).toHaveBeenCalledTimes(1);
       expect(mediaStorage.deleteByUrl).toHaveBeenCalledWith(
-        'https://img.motionhive.fit/motionhive/test/posts/a.png',
+        'https://img.motionhive.fit/motionhive/development/posts/user-1/post-1/a.png',
       );
+    });
+
+    it("never deletes a picture that is not the post's own, even when dropped", async () => {
+      const victim =
+        'https://img.motionhive.fit/motionhive/development/avatars/victim/face.jpg';
+      const post = {
+        id: postId,
+        authorId,
+        // Planted before the fix: someone else's file on this post.
+        mediaUrls: [victim],
+        update: jest.fn().mockResolvedValue(undefined),
+      };
+      postModel.findByPk.mockResolvedValue(post);
+
+      await service.updatePost(authorId, postId, { mediaUrls: [] });
+
+      expect(mediaStorage.deleteByUrl).not.toHaveBeenCalled();
+    });
+
+    it("refuses to put someone else's picture on a post", async () => {
+      postModel.findByPk.mockResolvedValue({
+        id: postId,
+        authorId,
+        mediaUrls: null,
+        update: jest.fn(),
+      });
+
+      await expect(
+        service.updatePost(authorId, postId, {
+          mediaUrls: [
+            'https://img.motionhive.fit/motionhive/development/avatars/victim/face.jpg',
+          ],
+        }),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it("sends a member's edit of an approved post back for review", async () => {
+      const post = {
+        id: postId,
+        authorId,
+        groupId: 'g1',
+        approvalState: PostApprovalState.APPROVED,
+        mediaUrls: null,
+        update: jest.fn().mockResolvedValue(undefined),
+      };
+      postModel.findByPk.mockResolvedValue(post);
+      groupModel.findByPk.mockResolvedValue({
+        id: 'g1',
+        memberPostPolicy: MemberPostPolicy.APPROVAL_REQUIRED,
+      });
+      memberModel.findOne.mockResolvedValue({ role: GroupMemberRole.MEMBER });
+      memberModel.findAll.mockResolvedValue([]);
+
+      await service.updatePost(authorId, postId, { content: 'rewritten' });
+
+      expect(post.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          content: 'rewritten',
+          approvalState: PostApprovalState.PENDING,
+        }),
+      );
+    });
+
+    it("leaves a moderator's edit approved", async () => {
+      const post = {
+        id: postId,
+        authorId,
+        groupId: 'g1',
+        approvalState: PostApprovalState.APPROVED,
+        mediaUrls: null,
+        update: jest.fn().mockResolvedValue(undefined),
+      };
+      postModel.findByPk.mockResolvedValue(post);
+      groupModel.findByPk.mockResolvedValue({
+        id: 'g1',
+        memberPostPolicy: MemberPostPolicy.APPROVAL_REQUIRED,
+      });
+      memberModel.findOne.mockResolvedValue({
+        role: GroupMemberRole.MODERATOR,
+      });
+
+      await service.updatePost(authorId, postId, { content: 'fixed a typo' });
+
+      expect(post.update).toHaveBeenCalledWith({ content: 'fixed a typo' });
     });
 
     it('rejects edits from non-author', async () => {
@@ -561,7 +688,9 @@ describe('PostService', () => {
         authorId,
         groupId: 'g1',
         deletedAt: null,
-        mediaUrls: ['https://img.motionhive.fit/motionhive/test/posts/a.png'],
+        mediaUrls: [
+          'https://img.motionhive.fit/motionhive/development/posts/user-1/post-1/a.png',
+        ],
         update: jest.fn().mockResolvedValue(undefined),
         destroy: jest.fn().mockResolvedValue(undefined),
         ...overrides,
@@ -673,7 +802,9 @@ describe('PostService', () => {
         authorId: 'author-1',
         groupId: 'g1',
         approvalState: PostApprovalState.PENDING,
-        mediaUrls: ['https://img.motionhive.fit/motionhive/test/posts/a.png'],
+        mediaUrls: [
+          'https://img.motionhive.fit/motionhive/development/posts/user-1/post-1/a.png',
+        ],
         update: jest.fn().mockResolvedValue(undefined),
         destroy: jest.fn().mockResolvedValue(undefined),
       };
@@ -719,6 +850,29 @@ describe('PostService', () => {
 
   // ─────────────── addComment ───────────────
 
+  describe('getComments', () => {
+    it('counts comments, not comment and reply rows', async () => {
+      postModel.findByPk.mockResolvedValue({
+        id: 'post-1',
+        authorId: 'author-2',
+        groupId: 'g1',
+        approvalState: PostApprovalState.APPROVED,
+      });
+      memberModel.findOne.mockResolvedValue({
+        userId: 'user-1',
+        groupId: 'g1',
+        leftAt: null,
+      });
+      commentModel.findAndCountAll.mockResolvedValue({ rows: [], count: 0 });
+
+      await service.getComments('user-1', 'post-1', 1, 20);
+
+      expect(commentModel.findAndCountAll).toHaveBeenCalledWith(
+        expect.objectContaining({ distinct: true }),
+      );
+    });
+  });
+
   describe('addComment', () => {
     const userId = 'user-1';
     const postId = 'post-1';
@@ -740,6 +894,22 @@ describe('PostService', () => {
         id: 'c1',
         author: { id: userId, firstName: 'A', lastName: 'B', avatarUrl: null },
       });
+    });
+
+    it("never sends the commenter's email or phone back to the group", async () => {
+      await service.addComment(userId, postId, { content: 'hello' });
+
+      const reread = commentModel.findByPk.mock.calls.at(-1)?.[1] as {
+        include: { as: string; attributes: string[] }[];
+      };
+      const author = reread.include.find((inc) => inc.as === 'author');
+      expect(author?.attributes).toEqual([
+        'id',
+        'firstName',
+        'lastName',
+        'avatarUrl',
+        'handle',
+      ]);
     });
 
     it('allows a top-level comment and notifies the post author', async () => {

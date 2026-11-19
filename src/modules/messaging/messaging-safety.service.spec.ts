@@ -192,6 +192,21 @@ describe('MessagingSafetyService — Stage 3', () => {
     });
   });
 
+  describe('listBlocks', () => {
+    it('lists blocked people as cards, never their email or phone', async () => {
+      blockModel.findAll.mockResolvedValue([]);
+
+      await service.listBlocks('a');
+
+      const opts = blockModel.findAll.mock.calls[0][0] as {
+        include: { attributes: string[] }[];
+      };
+      expect(opts.include[0].attributes).not.toContain('email');
+      expect(opts.include[0].attributes).not.toContain('phone');
+      expect(opts.include[0].attributes).toContain('handle');
+    });
+  });
+
   describe('unblock', () => {
     it('404 when no block row exists', async () => {
       blockModel.findOne.mockResolvedValue(null);

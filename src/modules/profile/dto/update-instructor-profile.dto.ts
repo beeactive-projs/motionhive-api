@@ -1,12 +1,13 @@
 import {
+  ArrayMaxSize,
+  IsArray,
+  IsBoolean,
+  IsNumber,
   IsOptional,
   IsString,
-  IsArray,
-  IsNumber,
-  IsBoolean,
+  Max,
   MaxLength,
   Min,
-  Max,
   ValidateNested,
 } from 'class-validator';
 import { Type } from 'class-transformer';
@@ -15,12 +16,16 @@ import { SocialLinksDto } from './create-instructor-profile.dto';
 
 class CertificationDto {
   @IsString()
+  @MaxLength(200)
   name: string;
 
   @IsString()
+  @MaxLength(200)
   issuer: string;
 
   @IsNumber()
+  @Min(1900)
+  @Max(2100)
   year: number;
 }
 
@@ -48,6 +53,10 @@ export class UpdateInstructorProfileDto {
   })
   @IsArray()
   @IsString({ each: true })
+  // Bounds well past the apps' 20 of 60 characters: public text that
+  // feeds the directory's facets and search.
+  @ArrayMaxSize(50)
+  @MaxLength(100, { each: true })
   @IsOptional()
   specializations?: string[];
 
@@ -58,6 +67,7 @@ export class UpdateInstructorProfileDto {
   @IsArray()
   @ValidateNested({ each: true })
   @Type(() => CertificationDto)
+  @ArrayMaxSize(30)
   @IsOptional()
   certifications?: CertificationDto[];
 

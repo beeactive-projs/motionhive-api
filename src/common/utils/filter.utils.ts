@@ -248,8 +248,16 @@ export function buildFilterOptions(
   // --- ORDER ----------------------------------------------------------------
 
   // sortField can be an array in PrimeNG multi-sort mode — use the first element.
-  const effectiveSortField =
-    (Array.isArray(sortField) ? sortField[0] : sortField) ?? defaultSortField;
+  const askedSortField = Array.isArray(sortField) ? sortField[0] : sortField;
+  // Sorting follows the same allowlist as filtering: any other field (a
+  // hidden column such as `client.passwordHash`) would order rows by it, an
+  // oracle on what the caller may not read, and an unknown one answered 500.
+  let effectiveSortField = defaultSortField;
+  if (askedSortField) {
+    if (!allowedFields || allowedFields.includes(askedSortField)) {
+      effectiveSortField = askedSortField;
+    }
+  }
   const direction: 'ASC' | 'DESC' = sortOrder === -1 ? 'DESC' : 'ASC';
 
   let order: Order;

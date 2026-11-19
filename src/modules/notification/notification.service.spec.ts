@@ -4,7 +4,12 @@ import { ConfigService } from '@nestjs/config';
 import { Sequelize } from 'sequelize-typescript';
 import { WINSTON_MODULE_NEST_PROVIDER } from 'nest-winston';
 
-import { NotificationService, NotificationType } from './notification.service';
+import {
+  MAX_PUSH_BODY,
+  pushBody,
+  NotificationService,
+  NotificationType,
+} from './notification.service';
 import {
   Notification,
   NotificationAudienceType,
@@ -559,5 +564,19 @@ describe('NotificationService', () => {
         }),
       ).rejects.toThrow(/empty userIds/);
     });
+  });
+});
+
+describe('pushBody', () => {
+  it('leaves a short body as it is', () => {
+    expect(pushBody('See you at 5pm')).toBe('See you at 5pm');
+  });
+
+  it('shortens a long body at a word, with an ellipsis, under the limit', () => {
+    const note = 'Great work today everyone. '.repeat(40);
+    const body = pushBody(note);
+    expect(body.length).toBeLessThanOrEqual(MAX_PUSH_BODY + 1);
+    expect(body.endsWith('…')).toBe(true);
+    expect(body.endsWith(' …')).toBe(false);
   });
 });

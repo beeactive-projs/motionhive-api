@@ -7,6 +7,8 @@ export const invitation = {
   expired: 'Invitation has expired.',
   alreadyAnswered: 'Invitation has already been responded to.',
   wrongEmail: 'This invitation was sent to a different email address.',
+  verifyEmailFirst:
+    'Confirm your email address first, with the link we sent you, or open the invitation from its email.',
   cannotCancelAccepted: 'Cannot cancel an already accepted invitation.',
   cannotResendAccepted: 'Cannot resend an already accepted invitation.',
   accountNotFound: "We couldn't find your account. Sign in again.",

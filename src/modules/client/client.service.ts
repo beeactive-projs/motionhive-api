@@ -1345,6 +1345,7 @@ export class ClientService {
           request.fromUserId,
           responderName,
           requesterIsInstructor,
+          clientId,
         ),
       )
       .catch((err: Error) =>
@@ -2107,6 +2108,14 @@ export class ClientService {
       );
     }
 
+    // The same rule as every other invitation and request.
+    await this.assertNotBlocked(instructorId, clientId);
+
+    // Already this coach's client (a forwarded link, a second address):
+    // the request is answered, the relationship and its start stay as
+    // they are, and the coach is not told something that already was.
+    let alreadyClient = false;
+
     await this.sequelize.transaction(async (transaction) => {
       // Bind the newly registered user to the email-only invitation
       await request.update(
@@ -2124,7 +2133,9 @@ export class ClientService {
         transaction,
       });
 
-      if (existingRelationship) {
+      if (existingRelationship?.status === InstructorClientStatus.ACTIVE) {
+        alreadyClient = true;
+      } else if (existingRelationship) {
         await existingRelationship.update(
           {
             status: InstructorClientStatus.ACTIVE,
@@ -2153,6 +2164,10 @@ export class ClientService {
       'ClientService',
     );
 
+    if (alreadyClient) {
+      return { message: 'Invitation accepted successfully.' };
+    }
+
     // notify-after-commit: the coach learns who said yes, as with an
     // invitation accepted in the app.
     const accepter = await User.findByPk(userId, {
@@ -2160,7 +2175,12 @@ export class ClientService {
     });
     await this.notificationService
       .notify(
-        clientRequestAccepted(instructorId, fullNameOrNull(accepter), true),
+        clientRequestAccepted(
+          instructorId,
+          fullNameOrNull(accepter),
+          true,
+          clientId,
+        ),
       )
       .catch((err: Error) =>
         this.logger.error(

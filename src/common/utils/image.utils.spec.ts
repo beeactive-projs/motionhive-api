@@ -119,9 +119,17 @@ describe('stripJpegMetadata', () => {
 
 describe('IMAGE_UPLOAD_OPTIONS', () => {
   it('makes multer stop reading at the image limit, one file per request', () => {
-    expect(IMAGE_UPLOAD_OPTIONS.limits).toEqual({
+    expect(IMAGE_UPLOAD_OPTIONS.limits).toMatchObject({
       fileSize: MAX_IMAGE_MB * 1024 * 1024,
       files: 1,
+    });
+  });
+
+  it('bounds the text fields too, so a request of fields cannot fill memory', () => {
+    expect(IMAGE_UPLOAD_OPTIONS.limits).toMatchObject({
+      fields: 4,
+      fieldSize: 1024,
+      parts: 5,
     });
   });
 });

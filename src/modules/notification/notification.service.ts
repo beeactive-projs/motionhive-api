@@ -101,6 +101,22 @@ export interface NotifyResult {
  * in-app + email delivery. Push and SMS channels are stubbed (set to
  * `'skipped:not_implemented'`) until those workers land.
  */
+/** The longest push body sent; longer text ends in an ellipsis. */
+export const MAX_PUSH_BODY = 300;
+
+/** A body short enough for a lock screen, cut at a word where it can be. */
+export function pushBody(body: string): string {
+  if (body.length <= MAX_PUSH_BODY) {
+    return body;
+  }
+  const cut = body.slice(0, MAX_PUSH_BODY);
+  const lastSpace = cut.lastIndexOf(' ');
+  if (lastSpace > MAX_PUSH_BODY * 0.6) {
+    return `${cut.slice(0, lastSpace)}…`;
+  }
+  return `${cut}…`;
+}
+
 @Injectable()
 export class NotificationService {
   constructor(
@@ -359,7 +375,9 @@ export class NotificationService {
           receiptId: receipt.id,
           userId,
           title: text.title,
-          body: text.body,
+          // A push is a glimpse, and APNs refuses a payload over 4 KB: the
+          // whole text is in the app and the email.
+          body: pushBody(text.body),
           data: toPushData(notification.data),
           collapseKey:
             input.collapseKey ?? notification.fingerprint ?? undefined,

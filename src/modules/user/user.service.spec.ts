@@ -210,3 +210,105 @@ describe('UserService.searchUsers', () => {
     expect(sqlOf(tokens[0])[1]).toBe(foldedLike('"User"."handle"', 'el_na'));
   });
 });
+
+describe('UserService sign in protection', () => {
+  function setup(model: Record<string, jest.Mock>) {
+    const sequelize = { escape: (value: unknown) => `'${String(value)}'` };
+    const cryptoService = { hashToken: (token: string) => `hash(${token})` };
+    const service = new UserService(
+      model as never,
+      undefined as never,
+      sequelize as never,
+      undefined as never,
+      cryptoService as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+    );
+    return { service };
+  }
+
+  // Read, add one and save let parallel wrong passwords all pass the lock
+  // check and write the same count. (Checked on Postgres: 20 parallel
+  // claims on one row let exactly 5 through.)
+  it('takes a try in one update that refuses a locked account', async () => {
+    const update = jest
+      .fn()
+      .mockResolvedValue([1, [{ failedLoginAttempts: 3 }]]);
+    const { service } = setup({ update, findByPk: jest.fn() });
+
+    const attempt = await service.claimLoginAttempt('u-1');
+
+    expect(attempt).toEqual({ allowed: true, failedAttempts: 3 });
+    const [values, options] = update.mock.calls[0] as [
+      Record<string, { val: string }>,
+      { where: Record<string | symbol, unknown>; returning: boolean },
+    ];
+    expect(values.failedLoginAttempts.val).toBe('"failed_login_attempts" + 1');
+    expect(values.lockedUntil.val).toContain(
+      '"failed_login_attempts" + 1 >= 5',
+    );
+    expect(options.where.id).toBe('u-1');
+    expect(options.where[Op.or]).toBeDefined();
+    expect(options.returning).toBe(true);
+  });
+
+  it('says until when an account is locked', async () => {
+    const lockedUntil = new Date(Date.now() + 60_000);
+    const { service } = setup({
+      update: jest.fn().mockResolvedValue([0, []]),
+      findByPk: jest.fn().mockResolvedValue({ id: 'u-1', lockedUntil }),
+    });
+
+    await expect(service.claimLoginAttempt('u-1')).resolves.toEqual({
+      allowed: false,
+      lockedUntil,
+    });
+  });
+
+  // The claim counts in the database; a save of the instance, which can
+  // still read unlocked, wrote nothing and left the account locked.
+  it('clears the count and the lock on the row itself', async () => {
+    const update = jest.fn().mockResolvedValue([1]);
+    const { service } = setup({ update });
+    const setDataValue = jest.fn();
+
+    await service.resetFailedAttempts({ id: 'u-1', setDataValue } as never);
+
+    expect(update).toHaveBeenCalledWith(
+      { failedLoginAttempts: 0, lockedUntil: null },
+      { where: { id: 'u-1' } },
+    );
+  });
+
+  // The stored hash was accepted as a token too, so anyone who could read
+  // the database could reset any account with a pending reset.
+  it('matches a reset token only by its hash', async () => {
+    const findOne = jest.fn().mockResolvedValue(null);
+    const { service } = setup({ findOne });
+
+    await service.findByPasswordResetToken(' plain ');
+
+    expect(findOne).toHaveBeenCalledTimes(1);
+    expect(findOne).toHaveBeenCalledWith({
+      where: { passwordResetToken: 'hash(plain)' },
+    });
+  });
+
+  it('refuses a reset token past its expiry, or with none', async () => {
+    const findOne = jest.fn();
+    const { service } = setup({ findOne });
+
+    findOne.mockResolvedValueOnce({
+      passwordResetExpires: new Date(Date.now() - 1),
+    });
+    await expect(service.findByPasswordResetToken('t')).resolves.toBeNull();
+    findOne.mockResolvedValueOnce({ passwordResetExpires: null });
+    await expect(service.findByPasswordResetToken('t')).resolves.toBeNull();
+    const live = { passwordResetExpires: new Date(Date.now() + 60_000) };
+    findOne.mockResolvedValueOnce(live);
+    await expect(service.findByPasswordResetToken('t')).resolves.toBe(live);
+  });
+});

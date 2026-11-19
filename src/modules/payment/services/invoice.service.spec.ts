@@ -10,12 +10,14 @@ import {
 } from '@nestjs/common';
 
 import { InvoiceService } from './invoice.service';
+import { CreateInvoiceDto } from '../dto/create-invoice.dto';
 import { Invoice, InvoiceStatus } from '../entities/invoice.entity';
 import { Payment } from '../entities/payment.entity';
 import { StripeAccount } from '../entities/stripe-account.entity';
 import { StripeCustomer } from '../entities/stripe-customer.entity';
 import { Subscription } from '../entities/subscription.entity';
 import { User } from '../../user/entities/user.entity';
+import { InstructorClient } from '../../client/entities/instructor-client.entity';
 import { StripeService } from './stripe.service';
 import { CustomerService } from './customer.service';
 import { EmailService } from '../../../common/services/email.service';
@@ -355,6 +357,20 @@ describe('InvoiceService.updateDraft', () => {
       'client-1',
       'user-1',
     ]);
+  });
+
+  describe('createOneOff, by account', () => {
+    it('refuses to bill someone who was never their client, before anything is saved', async () => {
+      jest.spyOn(InstructorClient, 'findOne').mockResolvedValue(null);
+
+      await expect(
+        service.createOneOff('user-1', {
+          clientUserId: 'stranger',
+          lineItems: [{ description: 'Session', amountCents: 5000 }],
+        } as CreateInvoiceDto),
+      ).rejects.toThrow(NotFoundException);
+      expect(invoiceModel.create).not.toHaveBeenCalled();
+    });
   });
 });
 

@@ -84,6 +84,13 @@ describe('BlogService (smoke — not exhaustive)', () => {
   const mediaStorage = {
     uploadImage: jest.fn(),
     deleteByUrl: jest.fn().mockResolvedValue(undefined),
+    // MediaStorageService's key layout: <host>/motionhive/<env>/<resource>/...
+    buildResourceFolder: jest.fn(
+      (resource: string) => `motionhive/test/${resource}`,
+    ),
+    isInFolder: jest.fn((url: string, folder: string) =>
+      url.startsWith(`https://img.motionhive.fit/${folder}/`),
+    ),
   };
   // Keyed config: unknown keys (e.g. WEBSITE_DEPLOY_HOOK_URL) resolve to the
   // caller's fallback, so publish paths never fire a real rebuild fetch.
@@ -301,20 +308,47 @@ describe('BlogService (smoke — not exhaustive)', () => {
       expect(patch.publishedAt).toBeInstanceOf(Date);
     });
 
-    it('purges the previous Cloudinary cover when coverImage is replaced', async () => {
-      const post = makePost({ coverImage: 'https://cdn/old.jpg' });
+    it('purges the previous cover when coverImage is replaced', async () => {
+      const post = makePost({
+        coverImage:
+          'https://img.motionhive.fit/motionhive/test/blog/me/old.jpg',
+      });
       blogPostModel.findByPk.mockResolvedValueOnce(post);
       blogPostModel.findByPk.mockResolvedValueOnce(post);
 
       await service.update(
         'p-1',
-        { coverImage: 'https://cdn/new.jpg' },
+        {
+          coverImage:
+            'https://img.motionhive.fit/motionhive/test/blog/me/new.jpg',
+        },
         { userId: me, roles: ['WRITER'] },
       );
 
       expect(mediaStorage.deleteByUrl).toHaveBeenCalledWith(
-        'https://cdn/old.jpg',
+        'https://img.motionhive.fit/motionhive/test/blog/me/old.jpg',
       );
+    });
+
+    it('never deletes a cover that is not a blog upload', async () => {
+      // An avatar's link set as a cover: let go, not deleted.
+      const post = makePost({
+        coverImage:
+          'https://img.motionhive.fit/motionhive/test/avatars/victim/face.jpg',
+      });
+      blogPostModel.findByPk.mockResolvedValueOnce(post);
+      blogPostModel.findByPk.mockResolvedValueOnce(post);
+
+      await service.update(
+        'p-1',
+        {
+          coverImage:
+            'https://img.motionhive.fit/motionhive/test/blog/me/new.jpg',
+        },
+        { userId: me, roles: ['WRITER'] },
+      );
+
+      expect(mediaStorage.deleteByUrl).not.toHaveBeenCalled();
     });
 
     it("forbids a WRITER from editing another author's post", async () => {
@@ -347,14 +381,17 @@ describe('BlogService (smoke — not exhaustive)', () => {
 
   describe('delete', () => {
     it('soft-deletes an owned post and purges the cover', async () => {
-      const post = makePost({ coverImage: 'https://cdn/old.jpg' });
+      const post = makePost({
+        coverImage:
+          'https://img.motionhive.fit/motionhive/test/blog/me/old.jpg',
+      });
       blogPostModel.findByPk.mockResolvedValueOnce(post);
 
       await service.delete('p-1', { userId: me, roles: ['WRITER'] });
 
       expect(post.destroy).toHaveBeenCalledTimes(1);
       expect(mediaStorage.deleteByUrl).toHaveBeenCalledWith(
-        'https://cdn/old.jpg',
+        'https://img.motionhive.fit/motionhive/test/blog/me/old.jpg',
       );
     });
 

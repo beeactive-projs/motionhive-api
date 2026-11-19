@@ -51,6 +51,9 @@ export const payment = {
     'Before you can mark this invoice paid, the client has to agree to immediate access and waive their 14-day right of withdrawal. Ask them to pay it online.',
   markPaidFailed: 'Stripe could not mark this invoice paid. Try again.',
 
+  clientNotFound:
+    "This person isn't your client. Bill someone without an account by email.",
+
   // Paying an invoice (client)
   cannotPayInvoice: 'You cannot pay this invoice.',
   invoiceVoided: 'This invoice was voided and can no longer be paid.',
@@ -75,6 +78,8 @@ export const payment = {
     "{status, select, pending {This payment hasn't gone through yet, so it can't be refunded.} failed {This payment failed, so there is nothing to refund.} refunded {This payment has already been refunded.} partially_refunded {This payment has already been partly refunded.} other {This payment can't be refunded.}}",
   refundWindowExpired: 'The {days}-day refund window has expired.',
   refundTooLarge: 'Refund amount exceeds the original payment.',
+  refundBalanceTooLow:
+    "Your Stripe balance can't cover this refund yet. Try again once the next payment has arrived.",
   notRefundableHere:
     "This payment wasn't made through Stripe, so it can't be refunded here.",
 };

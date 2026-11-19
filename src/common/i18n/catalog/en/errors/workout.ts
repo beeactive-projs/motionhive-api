@@ -1,4 +1,6 @@
 export const workout = {
+  planTooLarge:
+    'This plan would hold more than {max, number} sets. Schedule fewer weeks or days, or a shorter routine.',
   // ─── Not found ───────────────────────────────────────────────────
   programNotFound: 'Program not found.',
   routineNotFound: 'Routine not found.',

@@ -1,9 +1,11 @@
 import {
+  ArrayMaxSize,
+  ArrayMinSize,
+  ArrayUnique,
   IsArray,
   IsIn,
   IsInt,
   IsISO8601,
-  IsNumber,
   IsOptional,
   Max,
   Min,
@@ -27,9 +29,14 @@ export class RecurrenceRuleDto {
       'Day-of-week 1=Mon..7=Sun. Required for WEEKLY, forbidden otherwise.',
     type: [Number],
   })
+  // At least one day: an empty list made the weekly expansion loop forever
+  // on the request thread (and again in the daily sweep once stored).
   @ValidateIf((o: RecurrenceRuleDto) => o.frequency === 'WEEKLY')
   @IsArray()
-  @IsNumber({}, { each: true })
+  @ArrayMinSize(1)
+  @ArrayMaxSize(7)
+  @ArrayUnique()
+  @IsInt({ each: true })
   @Min(1, { each: true })
   @Max(7, { each: true })
   daysOfWeek?: number[];

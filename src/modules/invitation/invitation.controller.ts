@@ -68,7 +68,12 @@ export class InvitationController {
     @Param('id', ParseUUIDPipe) id: string,
     @Request() req: AuthenticatedRequest,
   ) {
-    return this.invitationService.acceptMine(id, req.user.id, req.user.email);
+    return this.invitationService.acceptMine(
+      id,
+      req.user.id,
+      req.user.email,
+      req.user.isEmailVerified,
+    );
   }
 
   @Post('mine/:id/decline')
@@ -77,7 +82,12 @@ export class InvitationController {
     @Param('id', ParseUUIDPipe) id: string,
     @Request() req: AuthenticatedRequest,
   ) {
-    return this.invitationService.declineMine(id, req.user.email);
+    return this.invitationService.declineMine(
+      id,
+      req.user.id,
+      req.user.email,
+      req.user.isEmailVerified,
+    );
   }
 
   @Get('pending')
@@ -87,7 +97,9 @@ export class InvitationController {
     @Query() pagination: PaginationDto,
   ) {
     return this.invitationService.getMyPendingInvitations(
+      req.user.id,
       req.user.email,
+      req.user.isEmailVerified,
       pagination.page,
       pagination.limit,
     );

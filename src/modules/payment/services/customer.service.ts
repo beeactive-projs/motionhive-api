@@ -108,12 +108,16 @@ export class CustomerService {
     const normalized = email.trim().toLowerCase();
 
     // First check if a registered user already exists with this email —
-    // if yes, prefer the registered-user row over a fresh guest row.
+    // if yes, prefer the registered-user row over a fresh guest row. Only
+    // a verified address: an account that merely typed this email at
+    // sign-up must not receive invoices meant for its owner. Until then
+    // the bill goes to the email, and joins the account at verification.
     const existingUser = await this.userModel.findOne({
       where: { email: normalized },
+      attributes: ['id', 'isEmailVerified'],
       transaction: tx,
     });
-    if (existingUser) {
+    if (existingUser?.isEmailVerified) {
       return this.getOrCreateForUser(existingUser.id, tx);
     }
 

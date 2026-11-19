@@ -52,3 +52,13 @@ export class UserThrottlerGuard extends ThrottlerGuard {
     return Promise.resolve(req.ip ?? 'unknown');
   }
 }
+
+/**
+ * Counts a route by the caller's address whatever token rides along: for the
+ * routes used before signing in (login, register, password reset, sign in
+ * with a provider). Keyed by user there, a token from each of a few
+ * throwaway accounts gave one address a fresh budget per token.
+ */
+export function byAddress(req: ThrottledRequest): string {
+  return req.ip ?? 'unknown';
+}

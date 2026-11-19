@@ -323,12 +323,17 @@ export class MessagingService {
       conversation.id,
     );
 
-    // Capture the previous-message timestamp BEFORE the update writes
-    // the new one. This drives the email "quiet-period" gate — if the
-    // conversation has been silent for > EMAIL_QUIET_PERIOD_MS we'll
-    // email the recipient; otherwise they're presumably still engaged
-    // and we stay out of their inbox.
-    const previousMessageAt: Date | null = conversation.lastMessageAt;
+    // The email "quiet-period" gate reads the SENDER's previous message,
+    // before this one is written: a sender who wrote within the hour is
+    // mid-conversation, and their first message already went out by email.
+    // (It read the conversation's last message, whoever sent it, so a coach
+    // who wrote at 10:00 and left was never emailed the 10:20 reply.)
+    const senderPrevious = await this.messageModel.findOne({
+      where: { conversationId: conversation.id, senderId },
+      order: [['createdAt', 'DESC']],
+      attributes: ['createdAt'],
+    });
+    const previousMessageAt: Date | null = senderPrevious?.createdAt ?? null;
 
     const storedBody = this.setMessageBody(trimmed);
     const preview = trimmed.length > 200 ? trimmed.slice(0, 200) : trimmed;

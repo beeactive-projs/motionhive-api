@@ -49,6 +49,8 @@ describe('AuthService.registerWithFacebook', () => {
   let logger: ReturnType<typeof makeSilentLogger>;
   let service: AuthService;
 
+  let linkClientRequests: jest.SpyInstance;
+
   const newUser = {
     id: 'u-new',
     email: identity.email,
@@ -97,7 +99,9 @@ describe('AuthService.registerWithFacebook', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
-    jest.spyOn(ClientRequest, 'update').mockResolvedValue([0] as never);
+    linkClientRequests = jest
+      .spyOn(ClientRequest, 'update')
+      .mockResolvedValue([0] as never);
     jest.spyOn(Invitation, 'count').mockResolvedValue(0 as never);
     fetchMock = jest.spyOn(global, 'fetch');
     fetchMock.mockRejectedValue(new Error('no network in tests'));
@@ -170,6 +174,14 @@ describe('AuthService.registerWithFacebook', () => {
       );
       expect(tx.commit).toHaveBeenCalled();
       expect(result.accessToken).toBe('jwt.signed');
+    });
+
+    it('links nothing sent to the email: Facebook never vouches for it', async () => {
+      await service.registerWithFacebook(dto);
+
+      // A new account whose address nobody proved gets none of the
+      // invitations or bills sent to that address.
+      expect(linkClientRequests).not.toHaveBeenCalled();
     });
 
     it('makes no Graph call', async () => {

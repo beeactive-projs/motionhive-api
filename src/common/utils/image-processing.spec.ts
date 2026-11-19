@@ -4,6 +4,8 @@ import {
   MAX_IMAGE_EDGE,
   PRIVATE_THUMB_HEIGHT,
   PRIVATE_THUMB_WIDTH,
+  MAX_INPUT_PIXELS,
+  heicDeclaredPixels,
   isHeic,
   normaliseImage,
   privatePhotoVariants,
@@ -18,6 +20,27 @@ jest.mock('heic-convert', () =>
       .toBuffer(),
   ),
 );
+
+/** An `ispe` box: the width and height a HEIF image item declares. */
+function ispe(width: number, height: number): Buffer {
+  const box = Buffer.alloc(20);
+  box.writeUInt32BE(20, 0);
+  box.write('ispe', 4, 'latin1');
+  box.writeUInt32BE(0, 8);
+  box.writeUInt32BE(width, 12);
+  box.writeUInt32BE(height, 16);
+  return box;
+}
+
+/** The start of a HEIC file, with the extents it declares. */
+function heicFile(...extents: Buffer[]): Buffer {
+  return Buffer.concat([
+    Buffer.from([0, 0, 0, 24]),
+    Buffer.from('ftypheic', 'latin1'),
+    Buffer.alloc(16),
+    ...extents,
+  ]);
+}
 
 /** A photo the way a phone writes it: big, with a GPS position inside. */
 async function phonePhoto(width = 4000, height = 3000): Promise<Buffer> {
@@ -80,15 +103,31 @@ describe('normaliseImage', () => {
   });
 
   it('reads an iPhone HEIC through the converter', async () => {
-    const heic = Buffer.concat([
-      Buffer.from([0, 0, 0, 24]),
-      Buffer.from('ftypheic', 'latin1'),
-      Buffer.alloc(16),
-    ]);
+    // A 12 MP grid photo: one extent for the picture, one per 512 tile.
+    const heic = heicFile(ispe(512, 512), ispe(4032, 3024));
     expect(isHeic(heic)).toBe(true);
     const out = await normaliseImage(heic);
     expect(out.extension).toBe('jpg');
     expect((await sharp(out.buffer).metadata()).width).toBe(40);
+  });
+
+  it('refuses a HEIC that declares more pixels than any phone takes, before decoding', async () => {
+    const convert = jest.requireMock<jest.Mock>('heic-convert');
+    convert.mockClear();
+
+    await expect(
+      normaliseImage(heicFile(ispe(60_000, 60_000))),
+    ).rejects.toThrow();
+    await expect(normaliseImage(heicFile())).rejects.toThrow();
+    expect(convert).not.toHaveBeenCalled();
+  });
+
+  it('reads the largest extent a HEIC declares', () => {
+    expect(heicDeclaredPixels(heicFile(ispe(512, 512), ispe(8064, 6048)))).toBe(
+      8064 * 6048,
+    );
+    expect(8064 * 6048).toBeLessThan(MAX_INPUT_PIXELS);
+    expect(heicDeclaredPixels(heicFile())).toBeNull();
   });
 
   it('refuses bytes that are not a picture', async () => {

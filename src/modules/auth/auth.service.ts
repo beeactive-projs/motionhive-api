@@ -203,20 +203,31 @@ export class AuthService {
           ),
         );
 
-      this.linkPendingInvitations(user.id, user.email).catch((err) =>
-        this.logger.error(
-          `Failed to link pending invitations: ${err.message}`,
-          'AuthService',
-        ),
-      );
-
-      this.linkGuestStripeCustomers(user.id, user.email);
+      // Nothing addressed to this email is linked yet: the address is not
+      // proven until the link in that email is opened (`verifyEmail`).
+      // Linking here let anyone sign up with someone else's address and
+      // receive their client invitations and billing records.
 
       return this.buildAuthResponse(user, tokens, roleNames);
     } catch (error) {
       await transaction.rollback();
       throw error;
     }
+  }
+
+  /**
+   * What was sent to an address before its account existed: client
+   * invitations and guest billing records. Only once the address is
+   * proven (verified, or vouched for by the sign-in provider).
+   */
+  private linkAddressedToEmail(userId: string, email: string): void {
+    this.linkGuestStripeCustomers(userId, email);
+    this.linkPendingInvitations(userId, email).catch((err: Error) =>
+      this.logger.error(
+        `Failed to link pending invitations: ${err.message}`,
+        'AuthService',
+      ),
+    );
   }
 
   /**
@@ -251,13 +262,19 @@ export class AuthService {
       throw new UnauthorizedException(apiError('auth.invalidCredentials'));
     }
 
-    if (this.userService.isAccountLocked(user)) {
-      const minutes = Math.max(
-        1,
-        Math.ceil((user.lockedUntil!.getTime() - Date.now()) / 60_000),
-      );
+    // The try is taken before the password is compared, so a burst of
+    // parallel guesses gets five, not one each before the lock lands.
+    const attempt = await this.userService.claimLoginAttempt(user.id);
+    if (!attempt.allowed) {
+      let minutes = 1;
+      if (attempt.lockedUntil) {
+        minutes = Math.max(
+          1,
+          Math.ceil((attempt.lockedUntil.getTime() - Date.now()) / 60_000),
+        );
+      }
       this.logger.warn(
-        `Login attempt on locked account: ${user.email}`,
+        `Login attempt on locked account: ${user.id}`,
         'AuthService',
       );
       throw new UnauthorizedException(
@@ -271,22 +288,24 @@ export class AuthService {
     );
 
     if (!isPasswordValid) {
-      await this.userService.incrementFailedAttempts(user);
-
       this.logger.warn(
-        `Failed login attempt for: ${user.email} (${user.failedLoginAttempts + 1} attempts)`,
+        `Failed login attempt for: ${user.id} (${attempt.failedAttempts} attempts)`,
         'AuthService',
       );
 
       throw new UnauthorizedException(apiError('auth.invalidCredentials'));
     }
 
+    // The right password clears the count before anything else can refuse
+    // the sign in: a person in their deletion cooling-off must not lock
+    // themselves out by trying again.
+    await this.userService.resetFailedAttempts(user);
+
     // Only now that the password is proven: an account in its deletion
     // cooling-off answers with the offer to keep it instead of tokens.
     // Asking earlier would tell anyone the account is being deleted.
     await this.accountDeletionService.assertSignInAllowed(user);
 
-    await this.userService.resetFailedAttempts(user);
     await user.update({ lastLoginAt: new Date() });
 
     const tokens = await this.generateAndStoreTokens(user.id, user.email);
@@ -636,16 +655,9 @@ export class AuthService {
         'AuthService',
       );
 
-      if (this.configService.get('NODE_ENV') !== 'production') {
-        const frontendUrl =
-          this.configService.get('FRONTEND_URL') || 'http://localhost:4200';
-        const resetLink = `${frontendUrl}/auth/new-password?token=${resetToken}`;
-        return {
-          message:
-            'If your email is registered, you will receive a password reset link.',
-          resetLink,
-        };
-      }
+      // The link goes only by email. It was also returned here whenever
+      // NODE_ENV was not "production", its default, so on any server left
+      // on the default anyone could reset any account with one request.
     }
 
     return {
@@ -698,6 +710,10 @@ export class AuthService {
     await this.userService.markEmailVerified(user);
 
     this.logger.log(`Email verified for user: ${user.email}`, 'AuthService');
+
+    // The address is theirs now: what was sent to it before they signed
+    // up joins the account.
+    this.linkAddressedToEmail(user.id, user.email);
 
     this.emailService
       .sendWelcomeEmail(user.email, user.firstName, toLocale(user.language))
@@ -1067,17 +1083,11 @@ export class AuthService {
     // Link any pre-existing guest stripe_customer rows. Only on the
     // new-user path — existing users have either already been linked
     // at first signup OR are covered by the one-time backfill.
-    if (isNewUser) {
-      this.linkGuestStripeCustomers(user.id, user.email);
-      // Invitations sent to this address before the account existed, as
-      // on the email sign-up. A relay address matches none, which is fine:
-      // client invite links work by their token.
-      this.linkPendingInvitations(user.id, user.email).catch((err: Error) =>
-        this.logger.error(
-          `Failed to link pending invitations: ${err.message}`,
-          'AuthService',
-        ),
-      );
+    // Only when the provider vouched for the address (Google's and
+    // Apple's `email_verified`; Facebook never does). A relay address
+    // matches none, which is fine: client invite links work by their token.
+    if (isNewUser && user.isEmailVerified) {
+      this.linkAddressedToEmail(user.id, user.email);
     }
 
     const tokens = await this.generateAndStoreTokens(user.id, user.email);

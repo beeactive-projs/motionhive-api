@@ -22,6 +22,7 @@ import { Product, ProductType } from '../entities/product.entity';
 import { User, USER_SAFE_ATTRIBUTES } from '../../user/entities/user.entity';
 import { StripeAccount } from '../entities/stripe-account.entity';
 import { ConfigService } from '@nestjs/config';
+import { assertBillableClient } from './billable-client';
 import { StripeService } from './stripe.service';
 import { CustomerService } from './customer.service';
 import { EmailService } from '../../../common/services/email.service';
@@ -48,6 +49,20 @@ function subTs(raw: SubRaw, field: string): Date | null {
   const v = raw[field];
   return typeof v === 'number' ? new Date(v * 1000) : null;
 }
+
+/**
+ * What a coach sees of a subscriber in the subscriptions table and detail:
+ * the client's card and the email the billing goes to. Never their phone,
+ * city or timezone.
+ */
+const SUBSCRIBER_ATTRIBUTES: Array<keyof User> = [
+  'id',
+  'firstName',
+  'lastName',
+  'email',
+  'avatarUrl',
+  'handle',
+];
 
 @Injectable()
 export class SubscriptionService {
@@ -87,6 +102,7 @@ export class SubscriptionService {
     if (!product || product.instructorId !== instructorId) {
       throw new NotFoundException(apiError('payment.productNotFound'));
     }
+    await assertBillableClient(instructorId, dto.clientUserId);
     if (product.type !== ProductType.SUBSCRIPTION) {
       throw new BadRequestException(apiError('payment.productNotSubscription'));
     }
@@ -495,7 +511,7 @@ export class SubscriptionService {
         {
           model: User,
           as: 'client',
-          attributes: USER_SAFE_ATTRIBUTES,
+          attributes: SUBSCRIBER_ATTRIBUTES,
         },
         {
           model: Product,
@@ -529,7 +545,7 @@ export class SubscriptionService {
         {
           model: User,
           as: 'client',
-          attributes: USER_SAFE_ATTRIBUTES,
+          attributes: SUBSCRIBER_ATTRIBUTES,
         },
         {
           model: Product,

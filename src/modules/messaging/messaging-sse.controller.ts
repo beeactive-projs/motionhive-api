@@ -17,7 +17,7 @@ import { StreamAckDto } from './dto/stream-ack.dto';
 import { MessagingStreamTicketService } from './auth/messaging-stream-ticket.service';
 import {
   MessagingEventsService,
-  MessagingStreamEvent,
+  StreamFrame,
 } from './messaging-events.service';
 import { MessagingStreamAckService } from './messaging-stream-ack.service';
 import { SseJwtGuard } from './auth/sse-jwt.guard';
@@ -87,7 +87,7 @@ export class MessagingSseController {
   stream(
     @Request() req: AuthenticatedRequest,
     @Headers('last-event-id') lastEventId?: string,
-  ): Observable<{ id: string; data: MessagingStreamEvent }> {
+  ): Observable<StreamFrame> {
     // EventSource sets Last-Event-ID automatically on reconnect with
     // the id of the most recently seen event. We feed it into the
     // subscription so the replay buffer can fill the gap before the

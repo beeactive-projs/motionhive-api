@@ -1,4 +1,11 @@
-import { IsOptional, IsString, IsNumber, Min, Max } from 'class-validator';
+import {
+  MaxLength,
+  IsOptional,
+  IsString,
+  IsNumber,
+  Min,
+  Max,
+} from 'class-validator';
 import { ApiPropertyOptional } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
 import { CategoryIdsFilter } from '../../category/dto/category-ids';
@@ -10,6 +17,7 @@ export class DiscoverInstructorsDto {
   })
   @IsString()
   @IsOptional()
+  @MaxLength(100)
   search?: string;
 
   @ApiPropertyOptional({
@@ -18,6 +26,7 @@ export class DiscoverInstructorsDto {
   })
   @IsString()
   @IsOptional()
+  @MaxLength(100)
   city?: string;
 
   @ApiPropertyOptional({
@@ -26,6 +35,7 @@ export class DiscoverInstructorsDto {
   })
   @IsString()
   @IsOptional()
+  @MaxLength(3)
   country?: string;
 
   @CategoryIdsFilter('Coaches who coach any of these categories')

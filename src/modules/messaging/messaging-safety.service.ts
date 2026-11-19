@@ -19,7 +19,7 @@ import {
   ClientRequest,
   ClientRequestStatus,
 } from '../client/entities/client-request.entity';
-import { User, USER_SAFE_ATTRIBUTES } from '../user/entities/user.entity';
+import { User, USER_CARD_ATTRIBUTES } from '../user/entities/user.entity';
 import { ConversationParticipant } from './entities/conversation-participant.entity';
 import { MessagingSuspension } from './entities/messaging-suspension.entity';
 import { UserBlock, UserBlockReason } from './entities/user-block.entity';
@@ -307,7 +307,9 @@ export class MessagingSafetyService {
         {
           model: User,
           as: 'blocked',
-          attributes: USER_SAFE_ATTRIBUTES,
+          // A card, never the person's email or phone: anyone can block
+          // anyone, so this list read every account's contact details.
+          attributes: USER_CARD_ATTRIBUTES,
         },
       ],
       order: [['createdAt', 'DESC']],

@@ -556,6 +556,16 @@ export const NOTIFICATION_SAMPLES: NotificationSample[] = [
   },
   {
     audience: 'group member',
+    variant: 'deleted',
+    build: () => group.groupDeletedForMembers(G),
+  },
+  {
+    audience: 'group member',
+    variant: 'deleted, no group name',
+    build: () => group.groupDeletedForMembers(G0),
+  },
+  {
+    audience: 'group member',
     variant: 'typical',
     build: () => group.groupClosedForMembers(G),
   },
@@ -895,6 +905,18 @@ export const NOTIFICATION_SAMPLES: NotificationSample[] = [
   },
 
   // ── exercise ──
+  {
+    audience: 'instructor',
+    variant: 'no name',
+    build: () =>
+      exercise.exerciseForkedForOwner({
+        ownerId: U,
+        exerciseId: 'e-1',
+        exerciseName: 'Genuflexiuni bulgărești',
+        forkedByName: null,
+        newForkCount: 2,
+      }),
+  },
   {
     audience: 'instructor',
     variant: '1 copy',

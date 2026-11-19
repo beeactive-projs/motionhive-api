@@ -2,7 +2,7 @@ import { Reflector } from '@nestjs/core';
 import { JwtService } from '@nestjs/jwt';
 import { ThrottlerModuleOptions, ThrottlerStorage } from '@nestjs/throttler';
 
-import { UserThrottlerGuard } from './user-throttler.guard';
+import { UserThrottlerGuard, byAddress } from './user-throttler.guard';
 
 describe('UserThrottlerGuard', () => {
   const jwt = { verify: jest.fn() } as unknown as JwtService & {
@@ -44,5 +44,19 @@ describe('UserThrottlerGuard', () => {
   it('keys anonymous requests by the address', async () => {
     await expect(tracker({ ip: '10.0.0.2' })).resolves.toBe('10.0.0.2');
     expect(jwt.verify).not.toHaveBeenCalled();
+  });
+});
+
+describe('byAddress', () => {
+  // Keyed by user, a token from each of a few throwaway accounts gave one
+  // address a fresh login budget per token.
+  it('counts by the address even when a valid token rides along', () => {
+    expect(
+      byAddress({
+        ip: '203.0.113.7',
+        headers: { authorization: 'Bearer valid' },
+      }),
+    ).toBe('203.0.113.7');
+    expect(byAddress({})).toBe('unknown');
   });
 });

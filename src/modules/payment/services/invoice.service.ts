@@ -20,6 +20,7 @@ import { StripeAccount } from '../entities/stripe-account.entity';
 import { StripeCustomer } from '../entities/stripe-customer.entity';
 import { Subscription } from '../entities/subscription.entity';
 import { User } from '../../user/entities/user.entity';
+import { assertBillableClient } from './billable-client';
 import { StripeService } from './stripe.service';
 import { CustomerService } from './customer.service';
 import { OrphanedWebhookError } from './webhook-errors';
@@ -204,6 +205,9 @@ export class InvoiceService {
     }
     if (hasGuest && !dto.guestName) {
       throw new BadRequestException(apiError('payment.guestNameRequired'));
+    }
+    if (dto.clientUserId) {
+      await assertBillableClient(instructorId, dto.clientUserId);
     }
 
     // Stripe rejects past timestamps for `due_date`. Reject here with a

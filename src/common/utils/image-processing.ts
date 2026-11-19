@@ -19,6 +19,14 @@ export interface ProcessedImage {
 /** The longest edge a stored picture keeps; the apps never show more. */
 export const MAX_IMAGE_EDGE = 2048;
 
+/**
+ * The most pixels an upload may decode to: about 50 megapixels, so a 48 MP
+ * iPhone photo (8064 × 6048) passes. Past it, a few megabytes that declare
+ * huge dimensions would make the decoder allocate gigabytes and block the
+ * event loop (HEIC is decoded in JavaScript, on the main thread).
+ */
+export const MAX_INPUT_PIXELS = 50_000_000;
+
 const JPEG_QUALITY = 82;
 const WEBP_QUALITY = 85;
 
@@ -52,6 +60,28 @@ export function isHeic(buf: Buffer): boolean {
   );
 }
 
+/**
+ * The largest image a HEIF file declares, from its `ispe` (image spatial
+ * extents) boxes: `[size][ispe][version+flags][width][height]`, big endian.
+ * The spec requires one per image item; a grid photo also has one per tile,
+ * so the largest is the whole picture. Null when there is none.
+ */
+export function heicDeclaredPixels(buf: Buffer): number | null {
+  let largest: number | null = null;
+  let at = buf.indexOf('ispe', 0, 'latin1');
+  while (at !== -1) {
+    const dims = at + 8;
+    if (dims + 8 <= buf.length) {
+      const pixels = buf.readUInt32BE(dims) * buf.readUInt32BE(dims + 4);
+      if (largest === null || pixels > largest) {
+        largest = pixels;
+      }
+    }
+    at = buf.indexOf('ispe', at + 4, 'latin1');
+  }
+  return largest;
+}
+
 export function isGif(buf: Buffer): boolean {
   return buf.length >= 6 && buf.toString('latin1', 0, 4) === 'GIF8';
 }
@@ -73,15 +103,27 @@ export async function normaliseImage(buf: Buffer): Promise<ProcessedImage> {
   }
   let input = buf;
   if (isHeic(buf)) {
+    // Checked before decoding: the decoder sizes its buffer from these.
+    const pixels = heicDeclaredPixels(buf);
+    if (pixels === null || pixels > MAX_INPUT_PIXELS) {
+      throw new Error(`HEIC declares ${pixels ?? 'no'} pixels`);
+    }
     input = await heicToJpeg(buf);
   }
-  const image = sharp(input, { failOn: 'error' }).rotate().resize({
-    width: MAX_IMAGE_EDGE,
-    height: MAX_IMAGE_EDGE,
-    fit: 'inside',
-    withoutEnlargement: true,
-  });
-  const { hasAlpha } = await sharp(input).metadata();
+  const image = sharp(input, {
+    failOn: 'error',
+    limitInputPixels: MAX_INPUT_PIXELS,
+  })
+    .rotate()
+    .resize({
+      width: MAX_IMAGE_EDGE,
+      height: MAX_IMAGE_EDGE,
+      fit: 'inside',
+      withoutEnlargement: true,
+    });
+  const { hasAlpha } = await sharp(input, {
+    limitInputPixels: MAX_INPUT_PIXELS,
+  }).metadata();
   if (hasAlpha) {
     return {
       buffer: await image.webp({ quality: WEBP_QUALITY }).toBuffer(),
@@ -107,7 +149,7 @@ export async function privatePhotoVariants(
   jpeg: Buffer,
 ): Promise<{ full: Buffer; thumb: Buffer }> {
   const [full, thumb] = await Promise.all([
-    sharp(jpeg, { failOn: 'error' })
+    sharp(jpeg, { failOn: 'error', limitInputPixels: MAX_INPUT_PIXELS })
       .rotate()
       .resize({
         width: MAX_IMAGE_EDGE,
@@ -117,7 +159,7 @@ export async function privatePhotoVariants(
       })
       .jpeg({ quality: JPEG_QUALITY, mozjpeg: true })
       .toBuffer(),
-    sharp(jpeg, { failOn: 'error' })
+    sharp(jpeg, { failOn: 'error', limitInputPixels: MAX_INPUT_PIXELS })
       .rotate()
       .resize({
         width: PRIVATE_THUMB_WIDTH,

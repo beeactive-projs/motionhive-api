@@ -134,6 +134,20 @@ describe('MediaStorageService links', () => {
     expect(service.buildPrivateFolder('workout-photos', 'u1')).toBe(
       'motionhive/test/workout-photos/u1',
     );
+    expect(service.buildResourceFolder('blog')).toBe('motionhive/test/blog');
+  });
+
+  it('tells a file inside a folder from one beside it', () => {
+    const own = service.publicUrl('motionhive/test/posts/u1/p1/a.jpg');
+    expect(service.isInFolder(own, 'motionhive/test/posts/u1')).toBe(true);
+    // Same prefix, another person: not inside.
+    expect(service.isInFolder(own, 'motionhive/test/posts/u')).toBe(false);
+    expect(
+      service.isInFolder(
+        'https://evil.example.com/motionhive/test/posts/u1/a.jpg',
+        'motionhive/test/posts/u1',
+      ),
+    ).toBe(false);
   });
 });
 

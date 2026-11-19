@@ -2,6 +2,9 @@ import { Injectable } from '@nestjs/common';
 import { DateTime } from 'luxon';
 import type { RecurrenceRule } from '../entities/session-template.entity';
 
+/** About 20 years of weeks: the weekly loop never scans more than this. */
+const MAX_WEEKS_SCANNED = 1_040;
+
 export interface ComputeResult {
   dates: Date[];
   truncated: boolean;
@@ -36,11 +39,25 @@ export class RecurrenceService {
     };
 
     if (rule.frequency === 'WEEKLY') {
-      const sortedDays = [...(rule.daysOfWeek ?? [])].sort((a, b) => a - b);
+      // Only real weekdays, once each. With none (a rule stored before the
+      // DTO required one) there is nothing to generate: an empty list used
+      // to loop forever, since no week ever adds a date.
+      const sortedDays = [...new Set(rule.daysOfWeek ?? [])]
+        .filter((day) => Number.isInteger(day) && day >= 1 && day <= 7)
+        .sort((a, b) => a - b);
+      if (sortedDays.length === 0) {
+        return { dates: [], truncated: false };
+      }
       let cursor = origin;
+      // A backstop on the week count, far past any cap a caller passes.
+      let weeksLeft = MAX_WEEKS_SCANNED;
 
-      while (results.length < limit && results.length < cap) {
+      while (results.length < limit && results.length < cap && weeksLeft > 0) {
+        weeksLeft -= 1;
         const weekStart = cursor.startOf('week');
+        if (stopDate && weekStart > stopDate) {
+          break;
+        }
 
         for (const dow of sortedDays) {
           const candidate = weekStart.plus({ days: dow - 1 }).set({

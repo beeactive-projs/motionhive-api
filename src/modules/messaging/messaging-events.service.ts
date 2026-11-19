@@ -1,8 +1,8 @@
 import { Injectable, OnModuleDestroy } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { randomUUID } from 'crypto';
-import { from, fromEvent, interval, merge, Observable } from 'rxjs';
-import { filter, map } from 'rxjs/operators';
+import { from, fromEvent, interval, merge, Observable, timer } from 'rxjs';
+import { filter, map, takeUntil, tap } from 'rxjs/operators';
 
 /**
  * Live-event types delivered over the SSE stream.
@@ -68,9 +68,30 @@ export interface ConversationClearedPayload {
  * `subscribeForUser` doesn't peek into payload shapes.
  */
 interface BusEnvelope {
+  /** The id the event is buffered under, sent as its SSE `id:`. */
+  id: string;
   recipientIds: string[];
   event: MessagingStreamEvent;
 }
+
+/**
+ * One SSE frame. A heartbeat repeats the id of the last event this stream
+ * sent: Nest numbers a frame that has none, which would move the browser's
+ * Last-Event-ID off the replay buffer.
+ */
+export interface StreamFrame {
+  id?: string;
+  data: MessagingStreamEvent;
+}
+
+/**
+ * How long one stream lives. The account is checked when a stream opens
+ * (a fresh ticket each time), so a stream that never ended kept
+ * delivering after a password reset, a sign out everywhere or a
+ * suspension. The apps reconnect on their own, with a new ticket, and
+ * re-read what came in meanwhile.
+ */
+export const STREAM_LIFETIME_MS = 15 * 60 * 1000;
 
 /** Heartbeat cadence: every 25s. Slightly under most proxy idle timeouts. */
 const HEARTBEAT_INTERVAL_MS = 25_000;
@@ -207,33 +228,45 @@ export class MessagingEventsService implements OnModuleDestroy {
   subscribeForUser(
     userId: string,
     lastEventId?: string,
-  ): Observable<{ id: string; data: MessagingStreamEvent }> {
+  ): Observable<StreamFrame> {
     const replay = lastEventId
       ? this.replayEventsAfter(userId, lastEventId)
       : [];
 
+    // The last event id this stream sent, which heartbeats repeat.
+    let lastSentId: string | undefined = lastEventId;
+    const remember = tap((frame: StreamFrame) => {
+      lastSentId = frame.id;
+    });
+
+    // Live events go out under the id they were buffered with, so the
+    // Last-Event-ID a reconnecting browser sends finds them. (Each used to
+    // get a fresh id, so replay never matched and always came back empty.)
     const events$ = fromEvent<BusEnvelope>(this.events, BUS_CHANNEL).pipe(
       filter((envelope) => envelope.recipientIds.includes(userId)),
-      map((envelope) => envelope.event),
+      map(
+        (envelope): StreamFrame => ({ id: envelope.id, data: envelope.event }),
+      ),
+      remember,
     );
 
     const heartbeat$ = interval(HEARTBEAT_INTERVAL_MS).pipe(
-      map<number, MessagingStreamEvent>(() => ({
-        type: 'heartbeat',
-        payload: { ts: Date.now() },
-      })),
+      map(
+        (): StreamFrame => ({
+          id: lastSentId,
+          data: { type: 'heartbeat', payload: { ts: Date.now() } },
+        }),
+      ),
     );
 
-    // Replay first (preserves the original ids so the FE doesn't see
-    // duplicate ids on reconnect), then the live stream with fresh ids.
+    // Replay first, then the live stream, ids kept throughout.
     const replay$ = from(
-      replay.map((entry) => ({ id: entry.id, data: entry.event })),
-    );
-    const live$ = merge(events$, heartbeat$).pipe(
-      map((event) => ({ id: randomUUID(), data: event })),
-    );
+      replay.map((entry): StreamFrame => ({ id: entry.id, data: entry.event })),
+    ).pipe(remember);
 
-    return merge(replay$, live$);
+    return merge(replay$, events$, heartbeat$).pipe(
+      takeUntil(timer(STREAM_LIFETIME_MS)),
+    );
   }
 
   /**
@@ -250,7 +283,7 @@ export class MessagingEventsService implements OnModuleDestroy {
 
   private publish(recipientIds: string[], event: MessagingStreamEvent): void {
     if (recipientIds.length === 0) return;
-    const envelope: BusEnvelope = { recipientIds, event };
+    const envelope: Omit<BusEnvelope, 'id'> = { recipientIds, event };
     // Pre-assign an id so the replay buffer and the live emission
     // share the same identifier for the same event. The live observable
     // re-assigns its own id via map() below, but for *replay* we want
@@ -261,7 +294,7 @@ export class MessagingEventsService implements OnModuleDestroy {
     for (const userId of recipientIds) {
       this.appendToReplay(userId, { id, event, recordedAt });
     }
-    this.events.emit(BUS_CHANNEL, envelope);
+    this.events.emit(BUS_CHANNEL, { ...envelope, id });
   }
 
   private appendToReplay(userId: string, entry: ReplayEntry): void {

@@ -20,6 +20,8 @@ export const session: Catalog['errors']['session'] = {
 
   pendingParticipantNotFound: 'Nu am găsit cererea de rezervare.',
   participantNotFound: 'Nu am găsit participantul.',
+  attendanceConfirmedOnly:
+    'Doar persoanele cu loc confirmat pot fi marcate ca prezente.',
   attendanceBeforeStart: 'Poți marca prezența doar după ce începe sesiunea.',
 
   invalidTimezone: 'Alege un fus orar valid.',

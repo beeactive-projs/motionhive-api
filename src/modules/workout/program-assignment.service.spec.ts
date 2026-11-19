@@ -21,7 +21,10 @@ import { AssignedSet } from './entities/assigned-set.entity';
 import { AssignedWorkout } from './entities/assigned-workout.entity';
 import { Program } from './entities/program.entity';
 import { ProgramAssignment } from './entities/program-assignment.entity';
-import { ProgramAssignmentStatus } from './entities/workout.enums';
+import {
+  ProgramAssignmentStatus,
+  ProgramRepeatMode,
+} from './entities/workout.enums';
 import { ProgramAssignmentService } from './program-assignment.service';
 import { NotificationType } from '../notification/notification.service';
 import {
@@ -720,6 +723,31 @@ describe('ProgramAssignmentService (smoke — not exhaustive)', () => {
           '2026-08-06',
         ),
       ).rejects.toThrow(NotFoundException);
+    });
+
+    it('refuses a schedule that would copy more sets than any real plan, before writing', async () => {
+      // 50 exercises of 30 sets, every day for two years: over a million rows.
+      const exercises = Array.from({ length: 50 }, (_, i) => ({
+        id: `px-${i}`,
+        sets: Array.from({ length: 30 }, (_, j) => ({ id: `ps-${i}-${j}` })),
+      }));
+      programModel.findByPk.mockResolvedValueOnce(
+        routine({ workouts: [{ id: 'pw-1', notes: null, exercises }] }),
+      );
+
+      await expect(
+        service.scheduleRoutine(
+          'me',
+          {
+            programId: 'p-1',
+            daysOfWeek: [1, 2, 3, 4, 5, 6, 7],
+            repeatMode: ProgramRepeatMode.Block,
+            repeatWeeks: 104,
+          },
+          '2026-08-06',
+        ),
+      ).rejects.toThrow(BadRequestException);
+      expect(assignmentModel.create).not.toHaveBeenCalled();
     });
 
     it('refuses a block schedule with no length', async () => {

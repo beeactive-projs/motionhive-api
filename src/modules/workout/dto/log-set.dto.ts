@@ -43,12 +43,14 @@ export class LogSetDto {
   @IsOptional()
   @IsInt()
   @Min(0)
+  @Max(86400)
   durationSeconds?: number;
 
   @ApiPropertyOptional({ example: 1000, minimum: 0 })
   @IsOptional()
   @IsInt()
   @Min(0)
+  @Max(1000000)
   distanceMeters?: number;
 
   @ApiPropertyOptional({ example: 8, minimum: 1, maximum: 10 })
@@ -62,6 +64,7 @@ export class LogSetDto {
   @IsOptional()
   @IsInt()
   @Min(0)
+  @Max(10)
   rir?: number;
 
   /** The rest actually taken after this set, in seconds. */
@@ -76,6 +79,7 @@ export class LogSetDto {
   @IsOptional()
   @IsInt()
   @Min(0)
+  @Max(86400)
   restAfterSeconds?: number | null;
 
   /** How the rest was measured. BREAK stores no rest. */

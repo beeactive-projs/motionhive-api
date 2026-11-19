@@ -9,6 +9,7 @@ import { InjectModel } from '@nestjs/sequelize';
 import { WINSTON_MODULE_NEST_PROVIDER } from 'nest-winston';
 import { Sequelize } from 'sequelize-typescript';
 import { Op, Transaction } from 'sequelize';
+import { DateTime } from 'luxon';
 import { stripHtml } from '../../../common/utils/text.utils';
 import { apiError } from '../../../common/i18n';
 import { VenueService } from '../../venue/venue.service';
@@ -194,6 +195,23 @@ export class SessionLifecycleService {
           { transaction: tx },
         );
         cancelledIds.push(inst.id);
+      }
+
+      // "This and later": the series ends before this session, so the
+      // nightly top-up generates nothing after it. It used to stay open,
+      // and the cancelled sessions came back as new ones the next night.
+      // Past sessions keep their history.
+      if (dto.scope === 'thisAndFuture' && root.template.recurrenceRule) {
+        const lastDay = DateTime.fromJSDate(root.startAt, { zone: 'utc' })
+          .setZone(root.template.timezone)
+          .minus({ days: 1 })
+          .toISODate();
+        const { endAfterOccurrences: _count, ...rule } =
+          root.template.recurrenceRule;
+        await root.template.update(
+          { recurrenceRule: { ...rule, endDate: lastDay ?? undefined } },
+          { transaction: tx },
+        );
       }
 
       // Cancel the template too on scope=series.

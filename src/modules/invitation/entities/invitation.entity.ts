@@ -46,6 +46,18 @@ export class Invitation extends Model {
   })
   declare email: string;
 
+  /**
+   * The account an in-app invitation was made for (migration 086), which
+   * answers it in the app without a verified email. Null for an invitation
+   * sent by email: its link proves the address.
+   */
+  @ForeignKey(() => User)
+  @Column({
+    type: DataType.CHAR(36),
+    allowNull: true,
+  })
+  declare inviteeId: string | null;
+
   @ForeignKey(() => Role)
   @Column({
     type: DataType.CHAR(36),

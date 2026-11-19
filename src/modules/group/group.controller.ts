@@ -387,7 +387,9 @@ export class GroupController {
     @Param('token') token: string,
     @Request() req: AuthenticatedRequest,
   ) {
-    await this.groupService.joinViaLink(token, req.user.id);
-    return { message: 'You have joined the group' };
+    const member = await this.groupService.joinViaLink(token, req.user.id);
+    // The group, so the app can open it (the web read `groupId` from here
+    // and, without it, landed on the list).
+    return { message: 'You have joined the group', groupId: member.groupId };
   }
 }

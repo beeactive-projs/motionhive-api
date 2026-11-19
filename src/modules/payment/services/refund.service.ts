@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   Inject,
   Injectable,
@@ -21,6 +22,14 @@ import { CreateRefundDto } from '../dto/create-refund.dto';
 import { apiError } from '../../../common/i18n';
 
 export const MAX_REFUND_WINDOW_DAYS = 14;
+
+/** Stripe's answer when an account's balance can't cover a transfer or reversal. */
+function isInsufficientBalance(err: unknown): boolean {
+  if (typeof err !== 'object' || err === null) {
+    return false;
+  }
+  return (err as { code?: unknown }).code === 'balance_insufficient';
+}
 
 @Injectable()
 export class RefundService {
@@ -72,8 +81,16 @@ export class RefundService {
       throw new BadRequestException(apiError('payment.notRefundableHere'));
     }
 
+    // Every charge here is a destination charge (`transfer_data.destination`
+    // on invoices and subscriptions), so the money sits with the coach.
+    // `reverse_transfer` takes the refund back from them; without it the
+    // platform's balance paid every refund and the coach kept the money.
+    // `refund_application_fee` returns the platform's cut in proportion,
+    // so the coach is not charged a fee on money they gave back.
     const refundParams: Record<string, unknown> = {
       amount: refundAmount,
+      reverse_transfer: true,
+      ...(payment.applicationFeeCents > 0 && { refund_application_fee: true }),
       ...(dto.reason && { reason: 'requested_by_customer' }),
       metadata: {
         beeactive_reason: dto.reason ?? 'instructor_initiated',
@@ -87,13 +104,23 @@ export class RefundService {
       refundParams.payment_intent = payment.stripePaymentIntentId;
     }
 
-    await this.stripeService.stripe.refunds.create(refundParams, {
-      idempotencyKey: this.stripeService.buildIdempotencyKey(
-        'refund',
-        payment.id,
-        `${refundAmount}`,
-      ),
-    });
+    try {
+      await this.stripeService.stripe.refunds.create(refundParams, {
+        idempotencyKey: this.stripeService.buildIdempotencyKey(
+          'refund',
+          payment.id,
+          `${refundAmount}`,
+        ),
+      });
+    } catch (err: unknown) {
+      // With a transfer reversal, Stripe refuses outright (rather than
+      // leaving the refund pending) when the coach's balance can't cover
+      // it. Said plainly; anything else stays as Stripe answered.
+      if (isInsufficientBalance(err)) {
+        throw new ConflictException(apiError('payment.refundBalanceTooLow'));
+      }
+      throw err;
+    }
 
     payment.amountRefundedCents = alreadyRefunded + refundAmount;
     payment.status =

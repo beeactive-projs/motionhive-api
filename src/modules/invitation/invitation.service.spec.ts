@@ -1,3 +1,4 @@
+import { Op } from 'sequelize';
 /* eslint-disable @typescript-eslint/unbound-method -- jest assertion idiom expects on the mock spy reference; safe in tests. */
 import {
   BadRequestException,
@@ -476,11 +477,14 @@ describe('InvitationService', () => {
         invitationModel as ModelMock & { bulkCreate: jest.Mock }
       ).bulkCreate;
       const [rows, options] = bulkCreate.mock.calls[0] as [
-        Array<{ email: string; groupId: string }>,
+        Array<{ email: string; groupId: string; inviteeId: string }>,
         { transaction: unknown },
       ];
       expect(rows).toHaveLength(1);
       expect(rows[0].email).toBe('ana@x.com');
+      // Made for that account, so it answers it whether or not its email
+      // is verified.
+      expect(rows[0].inviteeId).toBe('c-1');
       expect(options.transaction).toBe(tx);
       expect(notificationService.notifyMany).toHaveBeenCalledWith(
         ['c-1'],
@@ -529,6 +533,7 @@ describe('InvitationService', () => {
         'inv-1',
         'user-1',
         'Invitee@X.com',
+        true,
       );
 
       expect(result.groupId).toBe('g-1');
@@ -539,10 +544,10 @@ describe('InvitationService', () => {
       invitationModel.findByPk.mockResolvedValue(myInvite());
 
       await expect(
-        service.acceptMine('inv-1', 'user-2', 'other@x.com'),
+        service.acceptMine('inv-1', 'user-2', 'other@x.com', true),
       ).rejects.toBeInstanceOf(NotFoundException);
       await expect(
-        service.declineMine('inv-1', 'other@x.com'),
+        service.declineMine('inv-1', 'user-2', 'other@x.com', true),
       ).rejects.toBeInstanceOf(NotFoundException);
       expect(groupService.addMember).not.toHaveBeenCalled();
     });
@@ -552,11 +557,58 @@ describe('InvitationService', () => {
       invitationModel.findByPk.mockResolvedValue(invite);
       jest.spyOn(User, 'findByPk').mockResolvedValue(null);
 
-      await service.declineMine('inv-1', 'invitee@x.com');
+      await service.declineMine('inv-1', 'user-1', 'invitee@x.com', true);
 
       expect(invite.update).toHaveBeenCalledWith(
         expect.objectContaining({ declinedAt: expect.any(Date) as Date }),
       );
+    });
+
+    it('waits for a verified address: an email typed at sign-up proves nothing', async () => {
+      invitationModel.findByPk.mockResolvedValue(myInvite());
+
+      await expect(
+        service.acceptMine('inv-1', 'user-1', 'invitee@x.com', false),
+      ).rejects.toBeInstanceOf(ForbiddenException);
+      await expect(
+        service.declineMine('inv-1', 'user-1', 'invitee@x.com', false),
+      ).rejects.toBeInstanceOf(ForbiddenException);
+      expect(groupService.addMember).not.toHaveBeenCalled();
+
+      invitationModel.findAndCountAll.mockResolvedValue({ rows: [], count: 0 });
+      await service.getMyPendingInvitations('user-1', 'invitee@x.com', false);
+      // Only the invitations made for this account, none by email.
+      const opts = invitationModel.findAndCountAll.mock.calls[0][0] as {
+        where: Record<symbol, unknown[]>;
+      };
+      expect(opts.where[Op.or]).toEqual([{ inviteeId: 'user-1' }]);
+    });
+
+    it('lets a client answer an invitation made for their account, verified or not', async () => {
+      invitationModel.findByPk.mockResolvedValue(
+        myInvite({ inviteeId: 'user-1' }),
+      );
+
+      const result = await service.acceptMine(
+        'inv-1',
+        'user-1',
+        'invitee@x.com',
+        false,
+      );
+
+      expect(result.groupId).toBe('g-1');
+      expect(groupService.addMember).toHaveBeenCalledWith('g-1', 'user-1', tx);
+    });
+
+    it('never lets another account answer an invitation made for someone', async () => {
+      invitationModel.findByPk.mockResolvedValue(
+        myInvite({ inviteeId: 'user-1' }),
+      );
+
+      await expect(
+        service.acceptMine('inv-1', 'user-2', 'someone@else.com', true),
+      ).rejects.toBeInstanceOf(NotFoundException);
+      expect(groupService.addMember).not.toHaveBeenCalled();
     });
   });
 });

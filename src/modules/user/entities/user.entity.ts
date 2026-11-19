@@ -278,6 +278,21 @@ export class User extends Model {
 }
 
 /**
+ * What another person may see of someone on a card: a comment, a post,
+ * a blocked-people row. No email, phone, city or language: those follow
+ * the person's privacy settings and never ride along on a card.
+ * (`USER_SAFE_ATTRIBUTES` is safe only in the sense of no secrets; it is
+ * for the person's own reads.)
+ */
+export const USER_CARD_ATTRIBUTES: Array<keyof User> = [
+  'id',
+  'firstName',
+  'lastName',
+  'avatarUrl',
+  'handle',
+];
+
+/**
  * Safe primitive User fields for use in Sequelize `attributes` arrays.
  * Excludes secrets (passwordHash, tokens, lockout fields) and JSONB columns.
  * Import this instead of hand-rolling field lists in includes/queries.

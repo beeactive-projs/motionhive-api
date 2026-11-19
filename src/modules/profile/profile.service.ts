@@ -283,6 +283,11 @@ export class ProfileService {
       return profile;
     } catch (error) {
       await transaction.rollback();
+      // A second tap on "Become a coach" that raced the first: the
+      // profile exists, said as such rather than as a server error.
+      if (error instanceof UniqueConstraintError) {
+        throw new ConflictException(apiError('profile.coachProfileExists'));
+      }
       throw error;
     }
   }

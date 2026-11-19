@@ -21,6 +21,8 @@ export const session = {
   // Participants (the coach's side)
   pendingParticipantNotFound: 'Pending participant not found.',
   participantNotFound: 'Participant not found.',
+  attendanceConfirmedOnly:
+    'Only people who had a confirmed place can be marked as attended.',
   attendanceBeforeStart:
     'Attendance can only be set after the session has started.',
 

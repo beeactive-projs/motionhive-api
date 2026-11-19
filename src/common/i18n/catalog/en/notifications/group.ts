@@ -7,6 +7,10 @@ export const group = {
     title: 'Removed from group',
     body: 'You\'ve been removed from {group, select, null {a group} other {"{group}"}}.',
   },
+  deleted: {
+    title: 'A group was deleted',
+    body: '{group, select, null {A group you were in} other {"{group}"}} was deleted by the person who ran it.',
+  },
   closed: {
     title: 'A group was closed',
     body: '{group, select, null {A group you were in} other {"{group}"}} was closed because the person who ran it left MotionHive.',

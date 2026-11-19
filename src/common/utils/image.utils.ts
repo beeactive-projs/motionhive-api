@@ -138,7 +138,17 @@ export const MAX_IMAGE_MB = 5;
  * words in the caller's language.
  */
 export const IMAGE_UPLOAD_OPTIONS: MulterOptions = {
-  limits: { fileSize: MAX_IMAGE_MB * 1024 * 1024, files: 1 },
+  limits: {
+    fileSize: MAX_IMAGE_MB * 1024 * 1024,
+    files: 1,
+    // The apps send the file alone. Without these, busboy took any number
+    // of 1 MB text fields and multer kept each in `req.body`, so one
+    // request could fill the API's memory.
+    fields: 4,
+    fieldSize: 1024,
+    fieldNameSize: 100,
+    parts: 5,
+  },
 };
 
 /**

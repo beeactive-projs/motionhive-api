@@ -66,18 +66,21 @@ export class CreateProgramSetDto {
   @IsOptional()
   @IsInt()
   @Min(0)
+  @Max(86400)
   targetDurationSeconds?: number;
 
   @ApiPropertyOptional({ minimum: 0 })
   @IsOptional()
   @IsInt()
   @Min(0)
+  @Max(1000000)
   targetDistanceMeters?: number;
 
   @ApiPropertyOptional({ minimum: 0 })
   @IsOptional()
   @IsInt()
   @Min(0)
+  @Max(86400)
   restAfterSeconds?: number;
 }
 
@@ -139,6 +142,7 @@ export class CreateProgramExerciseDto {
   @IsOptional()
   @IsInt()
   @Min(0)
+  @Max(86400)
   restAfterSeconds?: number;
 }
 

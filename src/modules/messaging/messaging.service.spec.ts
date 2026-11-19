@@ -1302,18 +1302,23 @@ describe('MessagingService — Stage 2 core', () => {
       expect(arg ?? null).toBeNull();
     });
 
-    it('previous-message timestamp from an existing conversation drives the gate', async () => {
-      // Build a scenario with an existing conversation whose
-      // lastMessageAt is in the recent past — the gate should be
-      // called with that Date instance.
-      const prev = new Date(Date.now() - 5 * 60_000); // 5 min ago
+    it("the sender's own previous message drives the gate, not the other side's", async () => {
+      // The recipient wrote 2 minutes ago (the conversation's last message),
+      // but the sender's own previous message is 3 hours old: the gate reads
+      // the sender's, so the recipient, who may have left, gets the email.
+      const prev = new Date(Date.now() - 3 * 60 * 60_000);
+      const recipientsLast = new Date(Date.now() - 2 * 60_000);
       userFindByPkSpy.mockResolvedValue({
         id: recipient,
         firstName: 'Bob',
         lastName: 'Builder',
         avatarUrl: null,
       });
-      conv.findOne.mockResolvedValue({ id: 'conv-x', lastMessageAt: prev });
+      conv.findOne.mockResolvedValue({
+        id: 'conv-x',
+        lastMessageAt: recipientsLast,
+      });
+      msg.findOne.mockResolvedValueOnce({ createdAt: prev });
       const row = {
         id: 'm-2',
         conversationId: 'conv-x',
@@ -1353,6 +1358,11 @@ describe('MessagingService — Stage 2 core', () => {
       expect(rateLimit.shouldSuppressMessageEmail).toHaveBeenCalledTimes(1);
       const arg = rateLimit.shouldSuppressMessageEmail.mock.calls[0][0];
       expect(arg).toBe(prev);
+      expect(msg.findOne).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { conversationId: 'conv-x', senderId: sender },
+        }),
+      );
     });
 
     it('silent-drop path: NO notification fired (recipient blocked sender)', async () => {

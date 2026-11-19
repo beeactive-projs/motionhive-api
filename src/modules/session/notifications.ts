@@ -108,7 +108,8 @@ export function bookingDeclinedForUser(
       key: 'session.bookingDeclined',
       params: { title: session.title, reason: reason || null },
     },
-    data: { screen: 'user/sessions' },
+    // A declined booking is listed with the cancelled ones.
+    data: { screen: 'user/sessions', queryParams: { tab: 'cancelled' } },
   };
 }
 
@@ -128,7 +129,7 @@ export function bookingDeclinedSessionFullForUser(
       key: 'session.bookingDeclinedFull',
       params: { title: session.title },
     },
-    data: { screen: 'user/sessions' },
+    data: { screen: 'user/sessions', queryParams: { tab: 'cancelled' } },
   };
 }
 
@@ -228,8 +229,10 @@ export function sessionFollowUpForUser(
       key: 'session.followUp',
       params: {
         title: session.title,
-        // The instructor's own words, shown as written.
-        text: message.length > 240 ? `${message.slice(0, 240)}…` : message,
+        // The instructor's own words, whole: in the app and the email they
+        // read as written (the API takes 2,000 characters); only the push
+        // is shortened, as every push is.
+        text: message,
       },
     },
     data: { screen: 'sessions', entityId: session.id },

@@ -60,6 +60,18 @@ export function groupClosedForMembers(group: GroupRef): NotifyManyParams {
   };
 }
 
+/**
+ * Members — the person who ran the group deleted it. The group is gone, so
+ * this lands on the list.
+ */
+export function groupDeletedForMembers(group: GroupRef): NotifyManyParams {
+  return {
+    type: NotificationType.GROUP_CLOSED,
+    message: { key: 'group.deleted', params: { group: group.name } },
+    data: { screen: 'groups' },
+  };
+}
+
 /** Member was removed from the group — they no longer have access. */
 export function groupMemberRemoved(
   removedUserId: string,

@@ -21,7 +21,7 @@ import {
 } from '../group/entities/group-member.entity';
 import { GroupService } from '../group/group.service';
 import { PostWorkout, WorkoutLogService } from '../workout/workout-log.service';
-import { User, USER_SAFE_ATTRIBUTES } from '../user/entities/user.entity';
+import { User, USER_CARD_ATTRIBUTES } from '../user/entities/user.entity';
 import { CreatePostDto } from './dto/create-post.dto';
 import { UpdatePostDto } from './dto/update-post.dto';
 import { ModerationDecision, ModeratePostDto } from './dto/moderate-post.dto';
@@ -131,7 +131,7 @@ export class PostService {
     }
 
     if (dto.mediaUrls?.length) {
-      this.mediaStorage.assertOwnedUrls(dto.mediaUrls);
+      this.assertOwnUploads(authorId, dto.mediaUrls);
     }
     if (dto.workoutLogId) {
       await this.workoutLogService.assertShareable(dto.workoutLogId, authorId);
@@ -297,6 +297,68 @@ export class PostService {
     return post;
   }
 
+  // ─── Pictures: only the poster's own ──────────────────────────────
+
+  /** Where a person's uploads wait to go on a post: `…/posts/<userId>/<file>`. */
+  private stagingFolder(userId: string): string {
+    return this.mediaStorage.buildUserFolder('posts', userId);
+  }
+
+  /** One of our files, directly in `folder` (not in one of its subfolders). */
+  private isDirectlyIn(url: string, folder: string): boolean {
+    if (!this.mediaStorage.isInFolder(url, folder)) {
+      return false;
+    }
+    const key = this.mediaStorage.keyFromUrl(url) ?? '';
+    return !key.slice(folder.length + 1).includes('/');
+  }
+
+  /**
+   * A post takes the poster's own uploads (and, on an edit, the pictures it
+   * already has). It used to take any of our links, then delete the
+   * "upload" once copied: a member could have anyone's avatar or another
+   * post's photo deleted by putting its link in a post.
+   */
+  private assertOwnUploads(
+    userId: string,
+    urls: string[],
+    alreadyOnPost: readonly string[] = [],
+  ): void {
+    this.mediaStorage.assertOwnedUrls(urls);
+    const staging = this.stagingFolder(userId);
+    for (const url of urls) {
+      if (alreadyOnPost.includes(url)) {
+        continue;
+      }
+      if (!this.isDirectlyIn(url, staging)) {
+        throw new BadRequestException(apiError('common.imageNotUploaded'));
+      }
+    }
+  }
+
+  /** An approved post by a member (not staff) in a group that reviews posts. */
+  private async editNeedsReview(post: Post, userId: string): Promise<boolean> {
+    if (post.approvalState !== PostApprovalState.APPROVED || !post.groupId) {
+      return false;
+    }
+    const [group, membership] = await Promise.all([
+      this.groupModel.findByPk(post.groupId, {
+        attributes: ['id', 'memberPostPolicy'],
+      }),
+      this.memberModel.findOne({
+        where: { groupId: post.groupId, userId, leftAt: null },
+        attributes: ['role'],
+      }),
+    ]);
+    if (group?.memberPostPolicy !== MemberPostPolicy.APPROVAL_REQUIRED) {
+      return false;
+    }
+    const isStaff =
+      membership?.role === GroupMemberRole.OWNER ||
+      membership?.role === GroupMemberRole.MODERATOR;
+    return !isStaff;
+  }
+
   /** Notify staff of every group where this fan-out produced a PENDING post. */
   private async notifyAuthorsForPending(
     authorId: string,
@@ -401,7 +463,7 @@ export class PostService {
         {
           model: User,
           as: 'author',
-          attributes: USER_SAFE_ATTRIBUTES,
+          attributes: USER_CARD_ATTRIBUTES,
         },
         {
           model: Group,
@@ -435,7 +497,7 @@ export class PostService {
         {
           model: User,
           as: 'author',
-          attributes: USER_SAFE_ATTRIBUTES,
+          attributes: USER_CARD_ATTRIBUTES,
         },
         {
           model: Group,
@@ -484,7 +546,7 @@ export class PostService {
         {
           model: User,
           as: 'author',
-          attributes: USER_SAFE_ATTRIBUTES,
+          attributes: USER_CARD_ATTRIBUTES,
         },
         {
           model: PostComment,
@@ -494,7 +556,7 @@ export class PostService {
             {
               model: User,
               as: 'author',
-              attributes: USER_SAFE_ATTRIBUTES,
+              attributes: USER_CARD_ATTRIBUTES,
             },
           ],
         },
@@ -505,6 +567,9 @@ export class PostService {
       ],
       offset,
       limit,
+      // Comments, not comment-and-reply rows: without it a comment with
+      // three replies counted three, and Show more never ran out.
+      distinct: true,
     });
 
     return buildPaginatedResponse(rows, count, page, limit);
@@ -528,22 +593,45 @@ export class PostService {
       throw new BadRequestException(apiError('post.nothingToUpdate'));
     }
 
-    if (dto.mediaUrls?.length) {
-      this.mediaStorage.assertOwnedUrls(dto.mediaUrls);
-    }
-
     const previousMedia = post.mediaUrls ?? [];
+
+    if (dto.mediaUrls?.length) {
+      // New uploads of their own, or the pictures the post already has.
+      this.assertOwnUploads(userId, dto.mediaUrls, previousMedia);
+    }
 
     const updates: Partial<Post> = {};
     if (dto.content !== undefined) updates.content = dto.content;
     if (dto.mediaUrls !== undefined) {
       updates.mediaUrls = dto.mediaUrls.length === 0 ? null : dto.mediaUrls;
     }
+    // In a group that reviews members' posts, an edit is reviewed too: an
+    // approved post could otherwise be rewritten into anything. Staff edits
+    // stay approved, as their posts are.
+    const backToReview = await this.editNeedsReview(post, userId);
+    if (backToReview) {
+      updates.approvalState = PostApprovalState.PENDING;
+    }
     await post.update(updates);
+    if (backToReview) {
+      await this.notifyAuthorsForPending(userId, [post]);
+    }
 
     if (dto.mediaUrls !== undefined) {
       const nextSet = new Set(dto.mediaUrls);
-      const orphaned = previousMedia.filter((url) => !nextSet.has(url));
+      // Only ever files of this post or the author's own uploads: a link
+      // that came in from elsewhere is dropped from the post, never deleted.
+      const postFolder = this.mediaStorage.buildPostFolder(userId, postId);
+      const staging = this.stagingFolder(userId);
+      const orphaned = previousMedia.filter((url) => {
+        if (nextSet.has(url)) {
+          return false;
+        }
+        return (
+          this.mediaStorage.isInFolder(url, postFolder) ||
+          this.isDirectlyIn(url, staging)
+        );
+      });
       await Promise.all(
         orphaned.map((url) => this.mediaStorage.deleteByUrl(url)),
       );
@@ -711,7 +799,7 @@ export class PostService {
         {
           model: User,
           as: 'author',
-          attributes: USER_SAFE_ATTRIBUTES,
+          attributes: USER_CARD_ATTRIBUTES,
         },
       ],
     }) as Promise<PostComment>;
@@ -910,7 +998,7 @@ export class PostService {
         {
           model: User,
           as: 'author',
-          attributes: USER_SAFE_ATTRIBUTES,
+          attributes: USER_CARD_ATTRIBUTES,
         },
       ],
       order: [['postedAt', 'DESC']],
@@ -988,7 +1076,7 @@ export class PostService {
         {
           model: User,
           as: 'author',
-          attributes: USER_SAFE_ATTRIBUTES,
+          attributes: USER_CARD_ATTRIBUTES,
         },
       ],
     });

@@ -142,7 +142,9 @@ export class CheckoutService {
     const portal =
       await this.stripeService.stripe.billingPortal.sessions.create({
         customer: customer.stripeCustomerId,
-        return_url: `${frontendUrl}/client/billing`,
+        // The web's billing tab; `/client/billing` was never a route, so
+        // leaving the portal landed on Not found.
+        return_url: `${frontendUrl}/profile?tab=billing`,
       });
     return { url: portal.url };
   }

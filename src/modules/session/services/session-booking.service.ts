@@ -597,6 +597,16 @@ export class SessionBookingService {
       if (!participant) {
         throw new NotFoundException(apiError('session.participantNotFound'));
       }
+      // Attendance belongs to people who had a seat: a cancelled, declined
+      // or waitlisted booking marked "attended" skewed the counts.
+      if (
+        dto.attended !== undefined &&
+        participant.status !== SessionParticipantStatus.Confirmed
+      ) {
+        throw new BadRequestException(
+          apiError('session.attendanceConfirmedOnly'),
+        );
+      }
 
       const updates: Partial<SessionParticipant> = {};
       if (dto.attended !== undefined) {

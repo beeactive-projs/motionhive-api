@@ -6,6 +6,7 @@ import {
   MessageCreatedPayload,
   MessagingEventsService,
   MessagingStreamEvent,
+  STREAM_LIFETIME_MS,
 } from './messaging-events.service';
 
 describe('MessagingEventsService — Stage 7', () => {
@@ -173,7 +174,7 @@ describe('MessagingEventsService — Stage 7', () => {
       const secondId = buf[1].id;
 
       // Reconnect with the first event as the last seen.
-      const collected: { id: string; type: string }[] = [];
+      const collected: { id: string | undefined; type: string }[] = [];
       const sub = service
         .subscribeForUser('alice', firstId)
         .pipe(filter((e) => e.data.type !== 'heartbeat'))
@@ -184,12 +185,61 @@ describe('MessagingEventsService — Stage 7', () => {
 
       await new Promise((r) => setImmediate(r));
 
-      // Should see: replay of m2 (id == secondId), then the live m3
-      // (with a fresh id assigned by the live observable).
+      // Should see: replay of m2 (id == secondId), then the live m3,
+      // sent under the id it was buffered with.
       expect(collected).toHaveLength(2);
       expect(collected[0].id).toBe(secondId);
-      expect(collected[1].id).not.toBe(secondId);
+      const live = service.getReplayBufferForTests('alice').at(-1);
+      expect(collected[1].id).toBe(live?.id);
       sub.unsubscribe();
+    });
+
+    it('sends a live event under its buffered id, so a reconnect can replay after it', async () => {
+      const ids: (string | undefined)[] = [];
+      const sub = service
+        .subscribeForUser('alice')
+        .pipe(filter((e) => e.data.type !== 'heartbeat'))
+        .subscribe((e) => ids.push(e.id));
+
+      service.emitMessageCreated(['alice'], makePayload('c1', 'm1'));
+      await new Promise((r) => setImmediate(r));
+
+      expect(ids).toEqual([service.getReplayBufferForTests('alice')[0].id]);
+      sub.unsubscribe();
+    });
+
+    it('lets a heartbeat repeat the last event id, so the replay cursor stays put', () => {
+      jest.useFakeTimers();
+      const frames: { id?: string; type: string }[] = [];
+      const sub = service
+        .subscribeForUser('alice')
+        .subscribe((e) => frames.push({ id: e.id, type: e.data.type }));
+
+      service.emitMessageCreated(['alice'], makePayload('c1', 'm1'));
+      jest.advanceTimersByTime(25_000);
+
+      const eventId = service.getReplayBufferForTests('alice')[0].id;
+      expect(frames.at(-1)).toEqual({ id: eventId, type: 'heartbeat' });
+      sub.unsubscribe();
+      jest.useRealTimers();
+    });
+
+    it('ends a stream after its lifetime, so the account is checked again', () => {
+      jest.useFakeTimers();
+      let completed = false;
+      const sub = service.subscribeForUser('alice').subscribe({
+        complete: () => {
+          completed = true;
+        },
+      });
+
+      jest.advanceTimersByTime(STREAM_LIFETIME_MS - 1);
+      expect(completed).toBe(false);
+      jest.advanceTimersByTime(1);
+      expect(completed).toBe(true);
+
+      sub.unsubscribe();
+      jest.useRealTimers();
     });
 
     it('unknown lastEventId yields no replay (FE refetches to fill the gap)', async () => {

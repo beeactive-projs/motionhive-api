@@ -13,6 +13,7 @@ import {
 import { AuthGuard } from '@nestjs/passport';
 import { ApiTags } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
+import { byAddress } from '../../common/guards/user-throttler.guard';
 import type { Response } from 'express';
 import { AuthService } from './auth.service';
 import type { AuthenticatedRequest } from '../../common/types/authenticated-request';
@@ -37,23 +38,24 @@ export class AuthController {
   constructor(private readonly authService: AuthService) {}
 
   @Post('register')
-  @Throttle({ default: { limit: 7, ttl: 900_000 } })
+  @Throttle({ default: { limit: 7, ttl: 900_000, getTracker: byAddress } })
   @ApiEndpoint({ ...AuthDocs.register, body: RegisterDto })
   async register(@Body() registerDto: RegisterDto) {
     return this.authService.register(registerDto);
   }
 
   @Post('login')
-  // Paired with account-level lockout (5 failed attempts → 15-min lock in
-  // UserService.incrementFailedAttempts). This throttle is the IP-level
-  // cap: stops a single IP hammering login across many accounts.
+  // Paired with account-level lockout (5 tries → 15-min lock, taken in one
+  // UPDATE by UserService.claimLoginAttempt before the password is
+  // compared). This throttle is the IP-level cap: stops a single IP
+  // hammering login across many accounts, whatever token rides along.
   //
   // Keyed by IP, because a login carries no token yet — so everyone behind
   // one egress shares the budget. A gym's wifi, an office or carrier NAT can
   // put dozens of members on a single address, and at 10 the eleventh person
   // to arrive was refused. The account lockout is what actually stops a
   // brute force against one account; this only has to stop a flood.
-  @Throttle({ default: { limit: 40, ttl: 900_000 } })
+  @Throttle({ default: { limit: 40, ttl: 900_000, getTracker: byAddress } })
   @ApiEndpoint({ ...AuthDocs.login, body: LoginDto })
   async login(@Body() loginDto: LoginDto) {
     return this.authService.login(loginDto);
@@ -64,7 +66,7 @@ export class AuthController {
    * answered. Signs the person in on success.
    */
   @Post('restore-account')
-  @Throttle({ default: { limit: 10, ttl: 900_000 } })
+  @Throttle({ default: { limit: 10, ttl: 900_000, getTracker: byAddress } })
   @ApiEndpoint({ ...AuthDocs.restoreAccount, body: RestoreAccountDto })
   async restoreAccount(@Body() dto: RestoreAccountDto) {
     return this.authService.restoreAccount(dto.ticket);
@@ -115,35 +117,35 @@ export class AuthController {
   }
 
   @Post('forgot-password')
-  @Throttle({ default: { limit: 7, ttl: 900_000 } })
+  @Throttle({ default: { limit: 7, ttl: 900_000, getTracker: byAddress } })
   @ApiEndpoint({ ...AuthDocs.forgotPassword, body: ForgotPasswordDto })
   async forgotPassword(@Body() forgotPasswordDto: ForgotPasswordDto) {
     return this.authService.forgotPassword(forgotPasswordDto);
   }
 
   @Post('reset-password')
-  @Throttle({ default: { limit: 7, ttl: 900_000 } })
+  @Throttle({ default: { limit: 7, ttl: 900_000, getTracker: byAddress } })
   @ApiEndpoint({ ...AuthDocs.resetPassword, body: ResetPasswordDto })
   async resetPassword(@Body() resetPasswordDto: ResetPasswordDto) {
     return this.authService.resetPassword(resetPasswordDto);
   }
 
   @Post('verify-email')
-  @Throttle({ default: { limit: 7, ttl: 900_000 } })
+  @Throttle({ default: { limit: 7, ttl: 900_000, getTracker: byAddress } })
   @ApiEndpoint({ ...AuthDocs.verifyEmail, body: VerifyEmailDto })
   async verifyEmail(@Body() verifyEmailDto: VerifyEmailDto) {
     return this.authService.verifyEmail(verifyEmailDto);
   }
 
   @Get('verify-email')
-  @Throttle({ default: { limit: 7, ttl: 900_000 } })
+  @Throttle({ default: { limit: 7, ttl: 900_000, getTracker: byAddress } })
   async verifyEmailGet(@Query('token') token: string, @Res() res: Response) {
     const { status, html } = await this.authService.verifyEmailHtml(token);
     res.status(status).send(html);
   }
 
   @Post('resend-verification')
-  @Throttle({ default: { limit: 7, ttl: 900_000 } })
+  @Throttle({ default: { limit: 7, ttl: 900_000, getTracker: byAddress } })
   @ApiEndpoint({
     ...AuthDocs.resendVerification,
     body: ResendVerificationDto,
@@ -155,21 +157,21 @@ export class AuthController {
   }
 
   @Post('google')
-  @Throttle({ default: { limit: 10, ttl: 900000 } })
+  @Throttle({ default: { limit: 10, ttl: 900000, getTracker: byAddress } })
   @ApiEndpoint({ ...AuthDocs.google, body: GoogleAuthDto })
   async google(@Body() dto: GoogleAuthDto) {
     return this.authService.registerWithGoogle(dto.idToken, dto.language);
   }
 
   @Post('apple')
-  @Throttle({ default: { limit: 10, ttl: 900000 } })
+  @Throttle({ default: { limit: 10, ttl: 900000, getTracker: byAddress } })
   @ApiEndpoint({ ...AuthDocs.apple, body: AppleAuthDto })
   async apple(@Body() dto: AppleAuthDto) {
     return this.authService.registerWithApple(dto);
   }
 
   @Post('facebook')
-  @Throttle({ default: { limit: 10, ttl: 900000 } })
+  @Throttle({ default: { limit: 10, ttl: 900000, getTracker: byAddress } })
   @ApiEndpoint({ ...AuthDocs.facebook, body: FacebookAuthDto })
   async facebook(@Body() dto: FacebookAuthDto) {
     return this.authService.registerWithFacebook(dto);

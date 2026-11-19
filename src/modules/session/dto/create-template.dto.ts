@@ -115,6 +115,8 @@ export class CreateTemplateDto {
   @IsOptional()
   @IsInt()
   @Min(0)
+  // 999,999.99 in any currency: shown on Discover, so bounded.
+  @Max(99_999_999)
   priceAmountCents?: number;
 
   @ApiPropertyOptional({

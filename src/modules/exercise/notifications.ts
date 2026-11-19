@@ -32,7 +32,8 @@ export function exerciseForkedForOwner(input: {
   ownerId: string;
   exerciseId: string;
   exerciseName: string;
-  forkedByName: string;
+  /** Null when the coach has no name: the message says "Another coach". */
+  forkedByName: string | null;
   newForkCount: number;
 }): NotifyParams {
   return {

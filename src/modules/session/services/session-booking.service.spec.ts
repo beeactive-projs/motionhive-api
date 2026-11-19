@@ -660,6 +660,21 @@ describe('SessionBookingService', () => {
       );
     });
 
+    it('refuses to mark attendance for someone without a confirmed place', async () => {
+      instanceModel.findOne.mockResolvedValue(
+        makeInstance({ startAt: new Date(Date.now() - 60_000) }),
+      );
+      const p = makeParticipant({ status: SessionParticipantStatus.Cancelled });
+      participantModel.findOne.mockResolvedValue(p);
+
+      await expect(
+        service.patchParticipant('usr-instr', 'inst-1', 'p-1', {
+          attended: true,
+        }),
+      ).rejects.toThrow(BadRequestException);
+      expect((p as { update: jest.Mock }).update).not.toHaveBeenCalled();
+    });
+
     it('C17: 404 when caller is not the instructor (no leak)', async () => {
       instanceModel.findOne.mockResolvedValue(
         makeInstance({ instructorId: 'usr-instr' }),

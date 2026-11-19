@@ -13,6 +13,7 @@ import {
   Order,
   QueryTypes,
   Transaction,
+  UniqueConstraintError,
   WhereOptions,
   literal,
 } from 'sequelize';
@@ -502,7 +503,7 @@ export class ExerciseService {
 
     const slug = await this.allocateSlug(source.name, principal.userId);
 
-    const fork = await this.sequelize.transaction(async (tx) => {
+    const fork = await this.forkInTransaction(async (tx) => {
       const cloned = await this.exerciseModel.create(
         {
           name: source.name,
@@ -1125,7 +1126,8 @@ export class ExerciseService {
           ownerId: source.ownerId,
           exerciseId: source.id,
           exerciseName: source.name,
-          forkedByName: principal.displayName ?? 'Another instructor',
+          // Null when they have no name: the message words it per language.
+          forkedByName: principal.displayName ?? null,
           newForkCount,
         }),
       );
@@ -1134,6 +1136,24 @@ export class ExerciseService {
         `EXERCISE_FORKED notification failed for ${source.id}: ${(err as Error).message}`,
         'ExerciseService',
       );
+    }
+  }
+
+  /**
+   * The fork's transaction, where a racing double tap that passed the check
+   * above meets the partial UNIQUE index (migration 048): said as the same
+   * 409 as the check, not as a server error.
+   */
+  private async forkInTransaction<T>(
+    work: (tx: Transaction) => Promise<T>,
+  ): Promise<T> {
+    try {
+      return await this.sequelize.transaction(work);
+    } catch (err) {
+      if (err instanceof UniqueConstraintError) {
+        throw new ConflictException(apiError('exercise.alreadyForked'));
+      }
+      throw err;
     }
   }
 }

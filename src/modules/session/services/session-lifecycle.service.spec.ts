@@ -167,6 +167,40 @@ describe('SessionLifecycleService', () => {
       expect(notifyService.notify).toHaveBeenCalledTimes(2);
     });
 
+    it('ends the series before a this-and-later cancel, so the nightly top-up adds nothing after it', async () => {
+      const templateUpdate = jest.fn().mockResolvedValue(undefined);
+      const root = makeInst({
+        id: 'root',
+        // 18:00 on Tuesday 16 June in Bucharest.
+        startAt: new Date('2026-06-16T15:00:00Z'),
+        template: {
+          update: templateUpdate,
+          recurrenceRule: {
+            frequency: 'WEEKLY',
+            interval: 1,
+            daysOfWeek: [2],
+            endAfterOccurrences: 20,
+          },
+        } as Partial<SessionTemplate>,
+      });
+      instanceModel.findOne.mockResolvedValue(root);
+      instanceModel.findAll.mockResolvedValue([root]);
+
+      await service.cancel('usr-instr', 'root', { scope: 'thisAndFuture' });
+
+      expect(templateUpdate).toHaveBeenCalledWith(
+        {
+          recurrenceRule: {
+            frequency: 'WEEKLY',
+            interval: 1,
+            daysOfWeek: [2],
+            endDate: '2026-06-15',
+          },
+        },
+        expect.anything(),
+      );
+    });
+
     it('D3: scope=series cancels template + future instances', async () => {
       const root = makeInst();
       instanceModel.findOne.mockResolvedValue(root);

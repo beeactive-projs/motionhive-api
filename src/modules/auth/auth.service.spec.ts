@@ -20,6 +20,8 @@ import { AccountDeletionService } from '../account-deletion/account-deletion.ser
 import { AppleIdentityService } from './apple/apple-identity.service';
 import { AppleAccountService } from './apple/apple-account.service';
 import { FacebookIdentityService } from './facebook/facebook-identity.service';
+import { ClientRequest } from '../client/entities/client-request.entity';
+import { Invitation } from '../invitation/entities/invitation.entity';
 
 // AuthService smoke tests — not exhaustive. The goal is to catch
 // "login is completely broken" regressions, not to re-test bcrypt.
@@ -30,9 +32,9 @@ describe('AuthService (smoke)', () => {
     findByEmail: jest.Mock;
     findById: jest.Mock;
     validatePassword: jest.Mock;
-    isAccountLocked: jest.Mock;
-    incrementFailedAttempts: jest.Mock;
+    claimLoginAttempt: jest.Mock;
     resetFailedAttempts: jest.Mock;
+    generatePasswordResetToken: jest.Mock;
     generateEmailVerificationToken: jest.Mock;
   };
   let roleService: {
@@ -66,9 +68,11 @@ describe('AuthService (smoke)', () => {
       findByEmail: jest.fn(),
       findById: jest.fn(),
       validatePassword: jest.fn(),
-      isAccountLocked: jest.fn().mockReturnValue(false),
-      incrementFailedAttempts: jest.fn().mockResolvedValue(undefined),
+      claimLoginAttempt: jest
+        .fn()
+        .mockResolvedValue({ allowed: true, failedAttempts: 1 }),
       resetFailedAttempts: jest.fn().mockResolvedValue(undefined),
+      generatePasswordResetToken: jest.fn().mockResolvedValue('plain-token'),
       generateEmailVerificationToken: jest
         .fn()
         .mockResolvedValue('verify-token'),
@@ -153,6 +157,66 @@ describe('AuthService (smoke)', () => {
     }).compile();
 
     service = moduleRef.get(AuthService);
+    customerService = moduleRef.get(CustomerService);
+    linkClientRequests = jest
+      .spyOn(ClientRequest, 'update')
+      .mockResolvedValue([0] as never);
+    jest.spyOn(Invitation, 'count').mockResolvedValue(0 as never);
+  });
+
+  let customerService: { linkGuestToUser: jest.Mock };
+  let linkClientRequests: jest.SpyInstance;
+
+  describe('what was sent to an address joins the account only once it is proven', () => {
+    it('links nothing at sign up: the email is only typed, not proven', async () => {
+      userService.create.mockResolvedValue({
+        id: 'u-1',
+        email: 'victim@example.com',
+        firstName: 'Not',
+        lastName: 'Them',
+        isEmailVerified: false,
+      });
+
+      await service.register({
+        email: 'victim@example.com',
+        password: 'StrongPass1!',
+        firstName: 'Not',
+        lastName: 'Them',
+      } as never);
+
+      expect(linkClientRequests).not.toHaveBeenCalled();
+      expect(customerService.linkGuestToUser).not.toHaveBeenCalled();
+    });
+
+    it('links them when the link in the email is opened', async () => {
+      const user = {
+        id: 'u-1',
+        email: 'jane@example.com',
+        firstName: 'Jane',
+        language: 'en',
+        isEmailVerified: false,
+      };
+      Object.assign(userService, {
+        findByEmailVerificationToken: jest.fn().mockResolvedValue(user),
+        markEmailVerified: jest.fn().mockResolvedValue(undefined),
+      });
+      Object.assign(emailService, {
+        sendWelcomeEmail: jest.fn().mockResolvedValue(undefined),
+      });
+
+      await service.verifyEmail({ token: 'verify-token' });
+
+      expect(customerService.linkGuestToUser).toHaveBeenCalledWith(
+        'u-1',
+        'jane@example.com',
+      );
+      expect(linkClientRequests).toHaveBeenCalledWith(
+        { toUserId: 'u-1' },
+        expect.objectContaining({
+          where: expect.objectContaining({ invitedEmail: 'jane@example.com' }),
+        }),
+      );
+    });
   });
 
   it('register creates user, assigns USER role, and returns token pair', async () => {
@@ -221,7 +285,7 @@ describe('AuthService (smoke)', () => {
     expect(result).toHaveProperty('refreshToken');
   });
 
-  it('login with wrong password increments failed attempts and throws Unauthorized', async () => {
+  it('login with wrong password counts the try and throws Unauthorized', async () => {
     const userRow = {
       id: 'u-1',
       email: 'jane@example.com',
@@ -235,8 +299,80 @@ describe('AuthService (smoke)', () => {
       service.login({ email: 'jane@example.com', password: 'wrong' }),
     ).rejects.toBeInstanceOf(UnauthorizedException);
 
-    expect(userService.incrementFailedAttempts).toHaveBeenCalledWith(userRow);
+    expect(userService.claimLoginAttempt).toHaveBeenCalledWith('u-1');
     expect(userService.resetFailedAttempts).not.toHaveBeenCalled();
+  });
+
+  // The try is taken before the password is compared: parallel guesses
+  // all passed the old read-then-check and wrote the same count.
+  it('refuses a locked account without comparing the password', async () => {
+    const lockedUntil = new Date(Date.now() + 10 * 60_000);
+    userService.findByEmail.mockResolvedValue({
+      id: 'u-1',
+      email: 'jane@example.com',
+      failedLoginAttempts: 0,
+      lockedUntil: null,
+    });
+    userService.claimLoginAttempt.mockResolvedValueOnce({
+      allowed: false,
+      lockedUntil,
+    });
+
+    const attempt = service.login({
+      email: 'jane@example.com',
+      password: 'right',
+    });
+
+    await expect(attempt).rejects.toMatchObject({
+      response: {
+        messageKey: 'auth.accountLocked',
+        messageParams: { minutes: 10 },
+      },
+    });
+    expect(userService.validatePassword).not.toHaveBeenCalled();
+  });
+
+  it('clears the count on the right password, before a pending deletion can refuse', async () => {
+    const userRow = {
+      id: 'u-1',
+      email: 'jane@example.com',
+      failedLoginAttempts: 4,
+      lockedUntil: null,
+    };
+    userService.findByEmail.mockResolvedValue(userRow);
+    userService.validatePassword.mockResolvedValue(true);
+    accountDeletion.assertSignInAllowed.mockRejectedValueOnce(
+      new ForbiddenException('scheduled'),
+    );
+
+    await expect(
+      service.login({ email: 'jane@example.com', password: 'right' }),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+
+    expect(userService.resetFailedAttempts).toHaveBeenCalledWith(userRow);
+  });
+
+  // NODE_ENV defaults to "development": on any server left on the default,
+  // the reply carried the reset link, so one request took any account.
+  it('never returns the reset link, whatever NODE_ENV says', async () => {
+    const sendPasswordResetEmail = jest.fn().mockResolvedValue(undefined);
+    Object.assign(emailService, { sendPasswordResetEmail });
+    userService.findByEmail.mockResolvedValue({
+      id: 'u-1',
+      email: 'jane@example.com',
+      language: 'en',
+    });
+
+    const result = await service.forgotPassword({ email: 'jane@example.com' });
+
+    expect(configService.get('NODE_ENV')).toBeUndefined();
+    expect(result).not.toHaveProperty('resetLink');
+    expect(JSON.stringify(result)).not.toContain('plain-token');
+    expect(sendPasswordResetEmail).toHaveBeenCalledWith(
+      'jane@example.com',
+      'plain-token',
+      'en',
+    );
   });
 
   it('asks about a pending deletion only once the password is proven', async () => {

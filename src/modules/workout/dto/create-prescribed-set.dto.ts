@@ -76,12 +76,14 @@ export class CreatePrescribedSetDto {
   @IsOptional()
   @IsInt()
   @Min(0)
+  @Max(86400)
   targetDurationSeconds?: number;
 
   @ApiPropertyOptional({ example: 1000, minimum: 0 })
   @IsOptional()
   @IsInt()
   @Min(0)
+  @Max(1000000)
   targetDistanceMeters?: number;
 
   // ── Intensity ────────────────────────────────────────────────────
@@ -97,6 +99,7 @@ export class CreatePrescribedSetDto {
   @IsOptional()
   @IsInt()
   @Min(0)
+  @Max(10)
   targetRir?: number;
 
   // ── Pacing ───────────────────────────────────────────────────────
@@ -105,6 +108,7 @@ export class CreatePrescribedSetDto {
   @IsOptional()
   @IsInt()
   @Min(0)
+  @Max(86400)
   restAfterSeconds?: number;
 
   @ApiPropertyOptional({

@@ -10,7 +10,7 @@ export const InvitationDocs = {
   create: {
     summary: 'Send an invitation',
     description:
-      'Invite someone to join your group. Owner only. Returns an invitationLink for testing. Sends email when provider is configured.',
+      'Invite someone to join your group. Owner only. The link goes to the invitee by email only.',
     auth: true,
     responses: [
       {
@@ -23,8 +23,6 @@ export const InvitationDocs = {
             groupId: 'group-uuid',
             expiresAt: '2026-02-22T00:00:00.000Z',
           },
-          invitationLink:
-            'http://localhost:4200/accept-invitation?token=abc123...',
         },
       },
       { status: 400, description: 'Active invitation already exists' },

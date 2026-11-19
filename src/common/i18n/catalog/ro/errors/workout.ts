@@ -1,6 +1,8 @@
 import type { Catalog } from '../..';
 
 export const workout: Catalog['errors']['workout'] = {
+  planTooLarge:
+    'Planul ar avea peste {max, number} de serii. Programează mai puține săptămâni sau zile, ori o rutină mai scurtă.',
   // ─── Not found ───────────────────────────────────────────────────
   programNotFound: 'Nu am găsit programul.',
   routineNotFound: 'Nu am găsit rutina.',

@@ -1,3 +1,4 @@
+import { NotFoundException } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { getModelToken } from '@nestjs/sequelize';
 import { ConfigService } from '@nestjs/config';
@@ -12,6 +13,7 @@ import {
 import { Product, ProductType } from '../entities/product.entity';
 import { StripeAccount } from '../entities/stripe-account.entity';
 import { User } from '../../user/entities/user.entity';
+import { InstructorClient } from '../../client/entities/instructor-client.entity';
 import { StripeService } from './stripe.service';
 import { CustomerService } from './customer.service';
 import { EmailService } from '../../../common/services/email.service';
@@ -95,6 +97,10 @@ describe('SubscriptionService — push-model setup flow', () => {
   }
 
   beforeEach(async () => {
+    // Default: client-1 is user-1's client (a coach bills only their own).
+    jest
+      .spyOn(InstructorClient, 'findOne')
+      .mockResolvedValue({ id: 'rel-1' } as InstructorClient);
     subscriptionModel = makeModelMock();
     productModel = makeModelMock();
     stripeAccountModel = makeModelMock();
@@ -266,6 +272,28 @@ describe('SubscriptionService — push-model setup flow', () => {
       const subParams = stripeMock.stripe.subscriptions.create.mock.calls[0][0];
       expect(subParams.payment_behavior).toBe('default_incomplete');
       expect(emailServiceMock.sendSubscriptionSetupEmail).toHaveBeenCalled();
+    });
+  });
+
+  describe('create — only for a client of this coach', () => {
+    it('refuses to subscribe someone who was never their client, before Stripe', async () => {
+      stripeAccountModel.findOne.mockResolvedValue({
+        userId: 'user-1',
+        stripeAccountId: 'acct_test',
+        chargesEnabled: true,
+        platformFeeBps: 0,
+      });
+      productModel.findByPk.mockResolvedValue(makeProduct());
+      jest.spyOn(InstructorClient, 'findOne').mockResolvedValue(null);
+
+      await expect(
+        service.create('user-1', {
+          productId: 'prod-1',
+          clientUserId: 'stranger',
+        }),
+      ).rejects.toThrow(NotFoundException);
+      expect(stripeMock.stripe.subscriptions.create).not.toHaveBeenCalled();
+      expect(subscriptionModel.create).not.toHaveBeenCalled();
     });
   });
 

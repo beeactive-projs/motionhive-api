@@ -1,4 +1,5 @@
 import {
+  MaxLength,
   IsEmail,
   IsIn,
   IsNotEmpty,
@@ -55,6 +56,8 @@ export class RegisterDto {
   })
   @IsString()
   @IsNotEmpty()
+  // The column's size: longer answered 500 (a database error).
+  @MaxLength(100)
   firstName: string;
 
   @ApiProperty({
@@ -63,6 +66,7 @@ export class RegisterDto {
   })
   @IsString()
   @IsNotEmpty()
+  @MaxLength(100)
   lastName: string;
 
   @ApiPropertyOptional({
@@ -71,6 +75,7 @@ export class RegisterDto {
   })
   @IsString()
   @IsOptional()
+  @MaxLength(20)
   phone?: string;
 
   @ApiPropertyOptional({

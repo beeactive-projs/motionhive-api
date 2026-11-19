@@ -8,7 +8,14 @@ import {
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/sequelize';
 import { WINSTON_MODULE_NEST_PROVIDER } from 'nest-winston';
-import { Op, QueryTypes, Transaction, WhereOptions, literal } from 'sequelize';
+import {
+  Op,
+  QueryTypes,
+  Transaction,
+  UniqueConstraintError,
+  WhereOptions,
+  literal,
+} from 'sequelize';
 import { buildPaginatedResponse } from '../../common/dto/pagination.dto';
 import { CryptoService } from '../../common/services/crypto.service';
 import { EmailService } from '../../common/services/email.service';
@@ -24,7 +31,9 @@ import {
   groupOwnershipTransferredToNewOwner,
   groupOwnershipTransferredFromOldOwner,
   groupMemberRoleChanged,
+  groupDeletedForMembers,
 } from './notifications';
+import { Invitation } from '../invitation/entities/invitation.entity';
 import {
   InstructorProfile,
   type SocialLinks,
@@ -563,12 +572,41 @@ export class GroupService {
   async deleteGroup(groupId: string, userId: string): Promise<void> {
     const group = await this.assertOwnerAndGet(groupId, userId);
 
-    // Invalidate any outstanding join link before soft-deleting the group
-    // so a stale token can't be redeemed if the group is ever restored or
-    // if a paranoid filter is bypassed. Both writes share a transaction.
+    // A deleted group is closed for everyone in it, as account deletion
+    // closes one: open invitations and requests end, and every membership
+    // ends, so its posts leave the members' feeds, nobody can open or
+    // comment on them, and its members-only sessions take no new bookings.
+    // It only used to soft-delete the row, leaving all of that alive. The
+    // join link goes too, in case the row is ever restored.
+    const now = new Date();
     const sequelize = this.groupModel.sequelize!;
     const tx = await sequelize.transaction();
+    let memberIds: string[] = [];
     try {
+      await Invitation.update(
+        { declinedAt: now },
+        {
+          where: { groupId, acceptedAt: null, declinedAt: null },
+          transaction: tx,
+        },
+      );
+      await this.joinRequestModel.update(
+        { status: GroupJoinRequestStatus.CANCELLED },
+        {
+          where: { groupId, status: GroupJoinRequestStatus.PENDING },
+          transaction: tx,
+        },
+      );
+      const members = await this.memberModel.findAll({
+        where: { groupId, leftAt: null, userId: { [Op.ne]: userId } },
+        attributes: ['userId'],
+        transaction: tx,
+      });
+      memberIds = members.map((member) => member.userId);
+      await this.memberModel.update(
+        { leftAt: now },
+        { where: { groupId, leftAt: null }, transaction: tx },
+      );
       await group.update(
         { joinToken: null, joinTokenExpiresAt: null },
         { transaction: tx },
@@ -581,6 +619,21 @@ export class GroupService {
     }
 
     await this.searchIndexService.removeIfExists('group', group.id);
+
+    // notify-after-commit: the members hear it is gone.
+    if (memberIds.length > 0) {
+      await this.notificationService
+        .notifyMany(
+          memberIds,
+          groupDeletedForMembers({ id: group.id, name: group.name }),
+        )
+        .catch((err: Error) =>
+          this.logger.error(
+            `Failed to tell members group ${group.id} was deleted: ${err.message}`,
+            'GroupService',
+          ),
+        );
+    }
 
     this.logger.log(
       `Group deleted: ${group.name} (${group.id}) by user ${userId}`,
@@ -703,7 +756,12 @@ export class GroupService {
         ],
         limit,
         offset,
-        order: [['joinedAt', 'ASC']],
+        // A bulk add writes one NOW() for every row, so joinedAt ties: the id
+        // keeps each page in one order and none repeats or skips a member.
+        order: [
+          ['joinedAt', 'ASC'],
+          ['id', 'ASC'],
+        ],
       });
 
     // Query the instructor_client table to check which members are clients
@@ -1233,11 +1291,25 @@ export class GroupService {
         });
         member = existingMember;
       } else {
-        member = await this.memberModel.create({
-          groupId,
-          userId,
-          role: GroupMemberRole.MEMBER,
-        });
+        try {
+          member = await this.memberModel.create({
+            groupId,
+            userId,
+            role: GroupMemberRole.MEMBER,
+          });
+        } catch (err) {
+          // A double tap: the other request made the membership first.
+          if (!(err instanceof UniqueConstraintError)) {
+            throw err;
+          }
+          const made = await this.memberModel.findOne({
+            where: { groupId, userId },
+          });
+          if (!made) {
+            throw err;
+          }
+          member = made;
+        }
       }
       this.logger.log(
         `User ${userId} self-joined group ${group.name} (${groupId})`,
@@ -1432,7 +1504,12 @@ export class GroupService {
         });
         if (existing) {
           if (existing.leftAt !== null) {
-            await existing.update({ leftAt: null }, { transaction: tx });
+            // Back as a member: a role from before they left (a removed
+            // moderator) does not come back with them.
+            await existing.update(
+              { leftAt: null, role: GroupMemberRole.MEMBER },
+              { transaction: tx },
+            );
           }
         } else {
           await this.memberModel.create(
@@ -1802,7 +1879,12 @@ export class GroupService {
 
     if (existing) {
       if (existing.leftAt !== null) {
-        await existing.update({ leftAt: null }, txOpt);
+        // Back as a member, never with a role from before (a removed
+        // moderator invited again).
+        await existing.update(
+          { leftAt: null, role: GroupMemberRole.MEMBER },
+          txOpt,
+        );
       }
       return existing;
     }

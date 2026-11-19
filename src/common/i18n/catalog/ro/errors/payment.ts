@@ -55,6 +55,9 @@ export const payment: Catalog['errors']['payment'] = {
   markPaidFailed:
     'Stripe nu a putut marca factura ca plătită. Încearcă din nou.',
 
+  clientNotFound:
+    'Această persoană nu e clientul tău. Unei persoane fără cont îi poți trimite factura pe email.',
+
   // Plata unei facturi (client)
   cannotPayInvoice: 'Nu poți plăti această factură.',
   invoiceVoided: 'Factura a fost anulată și nu mai poate fi plătită.',
@@ -80,6 +83,8 @@ export const payment: Catalog['errors']['payment'] = {
   refundWindowExpired:
     'Termenul de rambursare de {days, plural, one {# zi} few {# zile} other {# de zile}} a expirat.',
   refundTooLarge: 'Suma de rambursat depășește valoarea plății.',
+  refundBalanceTooLow:
+    'Soldul tău Stripe nu acoperă încă această rambursare. Încearcă din nou după ce intră următoarea plată.',
   notRefundableHere:
     'Plata nu a fost făcută prin Stripe, așa că nu o poți rambursa de aici.',
 };

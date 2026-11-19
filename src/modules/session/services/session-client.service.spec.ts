@@ -242,7 +242,20 @@ describe('SessionClientService', () => {
         snapshotMeetingUrl: 'https://zoom.us/j/snapshot',
       });
       const ics = await service.ics('usr-1', 'inst-1');
-      // Snapshot wins over live URL
+      // The link as it is now: a changed link reaches people already booked.
+      expect(ics).toContain('URL:https://zoom.us/j/123');
+    });
+
+    it('falls back to the link saved at booking when the session has none now', async () => {
+      const inst = fakeInst();
+      (inst.template as { locationKind: string }).locationKind = 'ONLINE';
+      (inst.template as { meetingUrl: string | null }).meetingUrl = null;
+      instanceModel.findOne.mockResolvedValue(inst);
+      participantModel.findOne.mockResolvedValue({
+        status: SessionParticipantStatus.Confirmed,
+        snapshotMeetingUrl: 'https://zoom.us/j/snapshot',
+      });
+      const ics = await service.ics('usr-1', 'inst-1');
       expect(ics).toContain('URL:https://zoom.us/j/snapshot');
     });
 
@@ -306,6 +319,29 @@ describe('SessionClientService', () => {
       });
       const info = await service.joinInfo('usr-1', 'inst-1');
       expect(info.meetingUrl).toBe('https://override.example.com');
+    });
+
+    it('gives the link as it is now, once the coach changed it, and while the session runs', async () => {
+      participantModel.findOne.mockResolvedValue({
+        id: 'p-1',
+        snapshotMeetingUrl: 'https://meet.google.com/old-room',
+      });
+      instanceModel.findOne.mockResolvedValue({
+        id: 'inst-1',
+        startAt: new Date(),
+        meetingUrlOverride: null,
+        template: { meetingUrl: 'https://meet.google.com/new-room' },
+      });
+
+      const info = await service.joinInfo('usr-1', 'inst-1');
+
+      expect(info.meetingUrl).toBe('https://meet.google.com/new-room');
+      // A session the hourly job marked IN_PROGRESS at its start still
+      // gives its link until start + 15 minutes.
+      const where = instanceModel.findOne.mock.calls[0][0].where as {
+        status: Record<symbol, string[]>;
+      };
+      expect(where.status[Op.in]).toEqual(['SCHEDULED', 'IN_PROGRESS']);
     });
 
     it('F9: 404 when session has no meeting URL anywhere (IN_PERSON session)', async () => {

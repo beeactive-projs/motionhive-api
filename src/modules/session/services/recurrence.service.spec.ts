@@ -167,4 +167,57 @@ describe('RecurrenceService', () => {
     expect(dates).toHaveLength(10);
     expect(truncated).toBe(true);
   });
+
+  // An empty day list used to spin the event loop forever: no week ever
+  // added a date, and the end date was only checked inside the empty loop.
+  it('returns nothing, at once, for a weekly rule with no days', () => {
+    const firstStart = DateTime.fromISO('2026-06-10T08:00:00', {
+      zone: 'Europe/Bucharest',
+    })
+      .toUTC()
+      .toJSDate();
+
+    for (const rule of [
+      { frequency: 'WEEKLY' as const, interval: 1, daysOfWeek: [] },
+      {
+        frequency: 'WEEKLY' as const,
+        interval: 1,
+        daysOfWeek: [],
+        endDate: '2026-07-01',
+      },
+      { frequency: 'WEEKLY' as const, interval: 1, daysOfWeek: [0, 9] },
+    ]) {
+      const { dates, truncated } = service.computeOccurrences(
+        firstStart,
+        rule,
+        'Europe/Bucharest',
+        100,
+      );
+      expect(dates).toHaveLength(0);
+      expect(truncated).toBe(false);
+    }
+  });
+
+  it('stops a weekly rule at its end date even between occurrences', () => {
+    const firstStart = DateTime.fromISO('2026-06-10T08:00:00', {
+      zone: 'Europe/Bucharest',
+    })
+      .toUTC()
+      .toJSDate();
+
+    const { dates } = service.computeOccurrences(
+      firstStart,
+      {
+        frequency: 'WEEKLY',
+        interval: 1,
+        daysOfWeek: [3],
+        endDate: '2026-06-30',
+      },
+      'Europe/Bucharest',
+      100,
+    );
+
+    // Wednesdays 10, 17 and 24 June.
+    expect(dates).toHaveLength(3);
+  });
 });

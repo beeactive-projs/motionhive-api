@@ -1,3 +1,4 @@
+import { Invitation } from '../invitation/entities/invitation.entity';
 import { Op } from 'sequelize';
 import {
   BadRequestException,
@@ -112,7 +113,10 @@ describe('GroupService', () => {
         { provide: CryptoService, useValue: {} },
         {
           provide: SearchIndexService,
-          useValue: { upsertGroup: jest.fn().mockResolvedValue(undefined) },
+          useValue: {
+            removeIfExists: jest.fn().mockResolvedValue(undefined),
+            upsertGroup: jest.fn().mockResolvedValue(undefined),
+          },
         },
         { provide: NotificationService, useValue: notificationService },
         { provide: WINSTON_MODULE_NEST_PROVIDER, useValue: makeSilentLogger() },
@@ -380,6 +384,58 @@ describe('GroupService', () => {
     });
   });
 
+  describe('deleteGroup', () => {
+    it('closes the group for everyone in it, then tells the members', async () => {
+      const group = {
+        id: 'g-1',
+        name: 'Yoga',
+        update: jest.fn().mockResolvedValue(undefined),
+        destroy: jest.fn().mockResolvedValue(undefined),
+      };
+      groupModel.findByPk.mockResolvedValue(group);
+      memberModel.findOne.mockResolvedValue({
+        groupId: 'g-1',
+        userId: 'owner-1',
+        leftAt: null,
+        isOwner: true,
+        role: GroupMemberRole.OWNER,
+      });
+      memberModel.findAll.mockResolvedValue([
+        { userId: 'm-1' },
+        { userId: 'm-2' },
+      ]);
+      memberModel.update = jest.fn().mockResolvedValue([3]);
+      joinRequestModel.update = jest.fn().mockResolvedValue([1]);
+      const invitations = jest
+        .spyOn(Invitation, 'update')
+        .mockResolvedValue([0] as never);
+
+      await service.deleteGroup('g-1', 'owner-1');
+
+      // Every membership ends, so its posts leave the feeds.
+      expect(memberModel.update).toHaveBeenCalledWith(
+        { leftAt: expect.any(Date) },
+        { where: { groupId: 'g-1', leftAt: null }, transaction: tx },
+      );
+      expect(joinRequestModel.update).toHaveBeenCalledWith(
+        { status: 'CANCELLED' },
+        expect.objectContaining({ transaction: tx }),
+      );
+      expect(invitations).toHaveBeenCalledWith(
+        { declinedAt: expect.any(Date) },
+        expect.objectContaining({ transaction: tx }),
+      );
+      expect(group.destroy).toHaveBeenCalledWith({ transaction: tx });
+      expect(tx.commit).toHaveBeenCalled();
+      expect(notificationService.notifyMany).toHaveBeenCalledWith(
+        ['m-1', 'm-2'],
+        expect.objectContaining({
+          message: { key: 'group.deleted', params: { group: 'Yoga' } },
+        }),
+      );
+    });
+  });
+
   describe('removeMember', () => {
     function activeOwner() {
       return {
@@ -602,8 +658,9 @@ describe('GroupService', () => {
       });
 
       expect(memberModel.create).not.toHaveBeenCalled();
+      // Back as a member: a removed moderator does not regain the role.
       expect(update).toHaveBeenCalledWith(
-        { leftAt: null },
+        { leftAt: null, role: 'MEMBER' },
         expect.objectContaining({ transaction: tx }),
       );
     });

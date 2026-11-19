@@ -748,6 +748,33 @@ describe('ClientService', () => {
       expect(instructorClientModel.create).not.toHaveBeenCalled();
     });
 
+    it('leaves an existing client as they are, and tells the coach nothing new', async () => {
+      clientRequestModel.findOne.mockResolvedValue(pendingInvite());
+      const active = {
+        status: InstructorClientStatus.ACTIVE,
+        update: jest.fn(),
+      };
+      instructorClientModel.findOne.mockResolvedValue(active);
+
+      await service.acceptByToken('tok', 'client-1');
+
+      // "Client since" keeps its date.
+      expect(active.update).not.toHaveBeenCalled();
+      expect(notificationService.notify).not.toHaveBeenCalled();
+    });
+
+    it('refuses a link between two people when either blocked the other', async () => {
+      clientRequestModel.findOne.mockResolvedValue(pendingInvite());
+      jest
+        .spyOn(UserBlock, 'findOne')
+        .mockResolvedValue({ id: 'block-1' } as UserBlock);
+
+      await expect(
+        service.acceptByToken('tok', 'client-1'),
+      ).rejects.toBeInstanceOf(ForbiddenException);
+      expect(instructorClientModel.create).not.toHaveBeenCalled();
+    });
+
     it('tells the coach who accepted through the link', async () => {
       clientRequestModel.findOne.mockResolvedValue(pendingInvite());
       instructorClientModel.findOne.mockResolvedValue(null);
@@ -769,6 +796,8 @@ describe('ClientService', () => {
             key: 'client.invitationAccepted',
             params: { name: 'Test User' },
           },
+          // Opens the new client's page, not the list.
+          data: { screen: 'coaching/clients', entityId: 'client-1' },
         }),
       );
     });

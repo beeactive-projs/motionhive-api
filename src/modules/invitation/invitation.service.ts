@@ -7,10 +7,9 @@ import {
 } from '@nestjs/common';
 import type { LoggerService } from '@nestjs/common';
 import { InjectModel } from '@nestjs/sequelize';
-import { ConfigService } from '@nestjs/config';
 import { WINSTON_MODULE_NEST_PROVIDER } from 'nest-winston';
 import { Sequelize } from 'sequelize-typescript';
-import { Op, col, fn, literal, where } from 'sequelize';
+import { Op, WhereOptions, col, fn, literal, where } from 'sequelize';
 import { Invitation } from './entities/invitation.entity';
 import { CreateInvitationDto } from './dto/create-invitation.dto';
 import { InviteMembersDto } from './dto/invite-members.dto';
@@ -130,6 +129,39 @@ function toPendingInvitation(row: Invitation): PendingInvitation {
  * 2. Invitee clicks link → token validated
  * 3. If valid + email matches → invitee added as group member + role assigned
  */
+/**
+ * The in-app invitation verbs match by email alone, with no token to show
+ * the address is the caller's: they wait for a verified address.
+ */
+function assertEmailProven(emailVerified: boolean): void {
+  if (!emailVerified) {
+    throw new ForbiddenException(apiError('invitation.verifyEmailFirst'));
+  }
+}
+
+/**
+ * An invitation this caller may answer in the app: one made for their
+ * account, or one sent to their email once that email is proven. Anyone
+ * else's answers 404, so an id never confirms an invitation exists.
+ */
+function assertMine(
+  invitation: Invitation | null,
+  userId: string,
+  userEmail: string,
+  emailVerified: boolean,
+): asserts invitation is Invitation {
+  if (!invitation) {
+    throw new NotFoundException(apiError('invitation.notFound'));
+  }
+  if (invitation.inviteeId === userId) {
+    return;
+  }
+  if (!sameEmail(invitation.email, userEmail)) {
+    throw new NotFoundException(apiError('invitation.notFound'));
+  }
+  assertEmailProven(emailVerified);
+}
+
 @Injectable()
 export class InvitationService {
   constructor(
@@ -144,7 +176,6 @@ export class InvitationService {
     private readonly roleService: RoleService,
     private readonly cryptoService: CryptoService,
     private readonly emailService: EmailService,
-    private readonly configService: ConfigService,
     private readonly notificationService: NotificationService,
     @Inject(WINSTON_MODULE_NEST_PROVIDER)
     private readonly logger: LoggerService,
@@ -158,7 +189,7 @@ export class InvitationService {
   async create(
     inviterId: string,
     dto: CreateInvitationDto,
-  ): Promise<{ invitation: Invitation; invitationLink?: string }> {
+  ): Promise<{ invitation: Invitation }> {
     // Verify inviter is the OWNER of the group
     const group = await this.groupService.assertOwnerAndGet(
       dto.groupId,
@@ -228,12 +259,7 @@ export class InvitationService {
       expiresAt: expiresAt,
     });
 
-    // Build invitation link with PLAIN token
-    const frontendUrl =
-      this.configService.get('FRONTEND_URL') || 'http://localhost:4200';
-    const invitationLink = `${frontendUrl}/accept-invitation?token=${plainToken}`;
-
-    // Send invitation email
+    // Send invitation email (the email builds the link from the plain token)
     this.emailService
       .sendInvitationEmail(
         dto.email,
@@ -279,13 +305,9 @@ export class InvitationService {
       'InvitationService',
     );
 
-    // In dev, return the plain token link for testing
-    const isProduction = this.configService.get('NODE_ENV') === 'production';
-
-    return {
-      invitation,
-      ...(isProduction ? {} : { invitationLink }),
-    };
+    // The link goes only by email: it was also returned whenever NODE_ENV
+    // was not "production", its default.
+    return { invitation };
   }
 
   /**
@@ -322,28 +344,27 @@ export class InvitationService {
     invitationId: string,
     userId: string,
     userEmail: string,
+    emailVerified: boolean,
   ): Promise<{ message: string; groupId: string }> {
     const invitation = await this.invitationModel.findByPk(invitationId, {
       include: [Group, Role],
     });
-    if (!invitation || !sameEmail(invitation.email, userEmail)) {
-      throw new NotFoundException(apiError('invitation.notFound'));
-    }
+    assertMine(invitation, userId, userEmail, emailVerified);
     return this.acceptInvitation(invitation, userId, userEmail);
   }
 
   /** Decline one of my invitations from inside the app, by its id. */
   async declineMine(
     invitationId: string,
+    userId: string,
     userEmail: string,
+    emailVerified: boolean,
   ): Promise<{ message: string }> {
     const invitation = await this.invitationModel.findByPk(invitationId, {
       include: [{ model: Group, attributes: ['id', 'name'] }],
     });
-    if (!invitation || !sameEmail(invitation.email, userEmail)) {
-      throw new NotFoundException(apiError('invitation.notFound'));
-    }
-    return this.declineInvitation(invitation, userEmail);
+    assertMine(invitation, userId, userEmail, emailVerified);
+    return this.declineInvitation(invitation, userEmail, userId);
   }
 
   /** The checks and writes behind both ways of accepting. */
@@ -364,8 +385,10 @@ export class InvitationService {
       throw new BadRequestException(apiError('invitation.expired'));
     }
 
-    // Verify the accepting user's email matches the invitation email
-    if (invitation.email.toLowerCase() !== userEmail.toLowerCase()) {
+    // Verify the accepting user's email matches the invitation email, or
+    // that it was made for this very account (an in-app invitation).
+    const madeForThem = invitation.inviteeId === userId;
+    if (!madeForThem && !sameEmail(invitation.email, userEmail)) {
       throw new ForbiddenException(apiError('invitation.wrongEmail'));
     }
 
@@ -481,13 +504,16 @@ export class InvitationService {
   private async declineInvitation(
     invitation: Invitation,
     userEmail: string,
+    userId: string | null = null,
   ): Promise<{ message: string }> {
     if (invitation.acceptedAt || invitation.declinedAt) {
       throw new BadRequestException(apiError('invitation.alreadyAnswered'));
     }
 
-    // Verify the declining user's email matches the invitation
-    if (invitation.email.toLowerCase() !== userEmail.toLowerCase()) {
+    // Verify the declining user's email matches the invitation, or that it
+    // was made for this very account (an in-app invitation).
+    const madeForThem = userId !== null && invitation.inviteeId === userId;
+    if (!madeForThem && !sameEmail(invitation.email, userEmail)) {
       throw new ForbiddenException(apiError('invitation.wrongEmail'));
     }
 
@@ -602,7 +628,7 @@ export class InvitationService {
   async resend(
     invitationId: string,
     userId: string,
-  ): Promise<{ message: string; invitationLink?: string }> {
+  ): Promise<{ message: string }> {
     const invitation = await this.invitationModel.findByPk(invitationId, {
       include: [Group],
     });
@@ -660,20 +686,12 @@ export class InvitationService {
         ),
       );
 
-    const frontendUrl =
-      this.configService.get('FRONTEND_URL') || 'http://localhost:4200';
-    const invitationLink = `${frontendUrl}/accept-invitation?token=${plainToken}`;
-    const isProduction = this.configService.get('NODE_ENV') === 'production';
-
     this.logger.log(
       `Invitation ${invitationId} resent to ${invitation.email}`,
       'InvitationService',
     );
 
-    return {
-      message: 'Invitation resent',
-      ...(isProduction ? {} : { invitationLink }),
-    };
+    return { message: 'Invitation resent' };
   }
 
   /**
@@ -684,21 +702,28 @@ export class InvitationService {
    * phone, and the stored token never leaves.
    */
   async getMyPendingInvitations(
+    userId: string,
     userEmail: string,
+    emailVerified: boolean,
     page: number = 1,
     limit: number = 20,
   ) {
     const offset = (page - 1) * limit;
+    // The invitations made for this account, and those sent to its email
+    // once the email is proven: an account that typed someone else's
+    // address at sign up sees none of theirs. The link in an invitation
+    // email still works either way, since it proves the box.
+    const whose: WhereOptions[] = [{ inviteeId: userId }];
+    if (emailVerified) {
+      whose.push(
+        where(fn('lower', col('Invitation.email')), normalizeEmail(userEmail)),
+      );
+    }
 
     const { rows, count: totalItems } =
       await this.invitationModel.findAndCountAll({
         where: {
-          [Op.and]: [
-            where(
-              fn('lower', col('Invitation.email')),
-              normalizeEmail(userEmail),
-            ),
-          ],
+          [Op.or]: whose,
           acceptedAt: null,
           declinedAt: null,
           expiresAt: { [Op.gt]: new Date() },
@@ -814,6 +839,9 @@ export class InvitationService {
       await this.invitationModel.bulkCreate(
         toInvite.map((user) => ({
           inviterId,
+          // Made for this account: it answers in the app whether or not
+          // its email is verified.
+          inviteeId: user.id,
           email: normalizeEmail(user.email),
           roleId: role.id,
           groupId: group.id,

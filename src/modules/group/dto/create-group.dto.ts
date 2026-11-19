@@ -31,6 +31,9 @@ export class CreateGroupDto {
   })
   @IsString()
   @IsOptional()
+  // Generous next to the apps' 2,000: a bound, so one write cannot
+  // store 100 KB in public text and the search index.
+  @MaxLength(5000)
   description?: string;
 
   @ApiPropertyOptional({
@@ -77,6 +80,8 @@ export class CreateGroupDto {
   })
   @IsArray()
   @IsString({ each: true })
+  @ArrayMaxSize(30)
+  @MaxLength(50, { each: true })
   @IsOptional()
   tags?: string[];
 

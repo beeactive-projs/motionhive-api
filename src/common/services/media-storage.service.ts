@@ -182,6 +182,20 @@ export class MediaStorageService {
     return this.buildFolder({ resource, userId });
   }
 
+  /** Every file of one kind, whoever uploaded it: `motionhive/<env>/<resource>`. */
+  buildResourceFolder(resource: UploadContext['resource']): string {
+    return this.buildFolder({ resource });
+  }
+
+  /** One of our public files, inside `folder` at any depth. */
+  isInFolder(rawUrl: string, folder: string): boolean {
+    const key = this.keyFromUrl(rawUrl);
+    if (!key) {
+      return false;
+    }
+    return key.startsWith(`${folder}/`);
+  }
+
   buildPostFolder(userId: string, postId: string): string {
     return this.buildFolder({ resource: 'posts', userId, postId });
   }

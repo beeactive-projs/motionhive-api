@@ -320,12 +320,13 @@ export class SessionClientService {
 
     // AUDIT FIX (F-Bug 3): include meeting URL via the URL property
     // for ONLINE sessions, but ONLY when the caller is a confirmed
-    // participant. Snapshot URL wins (terms-as-booked).
+    // participant. The link as it is now wins, as on join-info: a changed
+    // link must reach people already booked; the saved one is a fallback.
     if (instance.template.locationKind === 'ONLINE' && isConfirmed) {
       const url =
-        participant?.snapshotMeetingUrl ??
         instance.meetingUrlOverride ??
-        instance.template.meetingUrl;
+        instance.template.meetingUrl ??
+        participant?.snapshotMeetingUrl;
       if (url) lines.push(`URL:${url}`);
     }
 
@@ -360,8 +361,19 @@ export class SessionClientService {
       throw new ForbiddenException(apiError('session.joinConfirmedOnly'));
     }
 
+    // Running sessions too: the hourly job marks a session IN_PROGRESS at
+    // its start, and the link must work until start + 15 minutes, as both
+    // apps promise. The time window below decides when it closes.
     const instance = await this.instanceModel.findOne({
-      where: { id: instanceId, status: SessionInstanceStatus.Scheduled },
+      where: {
+        id: instanceId,
+        status: {
+          [Op.in]: [
+            SessionInstanceStatus.Scheduled,
+            SessionInstanceStatus.InProgress,
+          ],
+        },
+      },
       include: [
         {
           model: SessionTemplate,
@@ -375,12 +387,13 @@ export class SessionClientService {
       throw new NotFoundException(apiError('session.notFound'));
     }
 
-    // Effective meeting URL: snapshot if present (the URL the user
-    // agreed to at booking), else the live override/template value.
+    // The link as it is now: a coach who changes it (a broken room, a new
+    // call) must reach everyone already booked. The one saved at booking
+    // is only the fallback when the session has none any more.
     const meetingUrl =
-      participant.snapshotMeetingUrl ??
       instance.meetingUrlOverride ??
       instance.template.meetingUrl ??
+      participant.snapshotMeetingUrl ??
       null;
 
     if (!meetingUrl) {

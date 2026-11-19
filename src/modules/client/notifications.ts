@@ -44,7 +44,19 @@ export function clientRequestAccepted(
   requesterId: string,
   responderName: string | null,
   requesterIsInstructor = false,
+  /** The new client: a coach's alert opens their page. */
+  clientId: string | null = null,
 ): NotifyParams {
+  let data: NotifyParams['data'] = {
+    screen: 'profile',
+    queryParams: { tab: 'coaches' },
+  };
+  if (requesterIsInstructor) {
+    data = { screen: 'coaching/clients' };
+    if (clientId) {
+      data = { screen: 'coaching/clients', entityId: clientId };
+    }
+  }
   return {
     userId: requesterId,
     type: NotificationType.CLIENT_REQUEST_ACCEPTED,
@@ -54,9 +66,7 @@ export function clientRequestAccepted(
         : 'client.requestAccepted',
       params: { name: responderName },
     },
-    data: requesterIsInstructor
-      ? { screen: 'coaching/clients' }
-      : { screen: 'profile', queryParams: { tab: 'coaches' } },
+    data,
   };
 }
 

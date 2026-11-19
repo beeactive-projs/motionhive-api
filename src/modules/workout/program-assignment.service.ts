@@ -94,6 +94,33 @@ const PLAN_COMPLETION_ATTRIBUTES = [
  * immediately. PENDING is reserved for future "instructor sends an
  * invitation, client accepts" flows.
  */
+/**
+ * The most set rows one schedule or assignment may copy. A real plan is a
+ * few thousand (a year of a 4-day split is about 8,000); without a bound,
+ * one request could write a million rows in one transaction and hold the
+ * connection pool for minutes.
+ */
+export const MAX_COPIED_SETS = 50_000;
+
+/** The sets one workout of the routine or program copies per day. */
+function setsPerWorkout(workout: {
+  exercises?: { sets?: unknown[] }[];
+}): number {
+  let sets = 0;
+  for (const exercise of workout.exercises ?? []) {
+    sets += exercise.sets?.length ?? 0;
+  }
+  return sets;
+}
+
+function assertWithinSetBudget(totalSets: number): void {
+  if (totalSets > MAX_COPIED_SETS) {
+    throw new BadRequestException(
+      apiError('workout.planTooLarge', { max: MAX_COPIED_SETS }),
+    );
+  }
+}
+
 @Injectable()
 export class ProgramAssignmentService {
   constructor(
@@ -549,6 +576,7 @@ export class ProgramAssignmentService {
     }
     // Weeks count from the first day trained, so the plan opens on week 1.
     const firstDate = dates[0] ?? startDate;
+    assertWithinSetBudget(dates.length * setsPerWorkout(source));
 
     return this.sequelize.transaction(async (tx) => {
       const assignment = await this.assignmentModel.create(
@@ -1093,6 +1121,11 @@ export class ProgramAssignmentService {
     locale: Locale,
   ): Promise<void> {
     const workouts = program.workouts ?? [];
+    let totalSets = 0;
+    for (const pw of workouts) {
+      totalSets += setsPerWorkout(pw);
+    }
+    assertWithinSetBudget(totalSets);
     if (workouts.length === 0) {
       // Empty program is a UX choice — allow it (a "skeleton" program
       // an instructor will fill in later). No nested writes needed.

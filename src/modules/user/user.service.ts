@@ -123,6 +123,11 @@ interface ExportedCategory {
   createdAt: Date;
 }
 
+/** Wrong passwords in a row before the account locks. */
+const LOGIN_MAX_ATTEMPTS = 5;
+/** How long a lock lasts. */
+const LOGIN_LOCK_MINUTES = 15;
+
 @Injectable()
 export class UserService {
   constructor(
@@ -919,61 +924,67 @@ export class UserService {
   }
 
   /**
-   * Check whether a user account is currently locked out.
+   * Take one password try, before the password is compared: counted, and the
+   * account locked for 15 minutes on the 5th, in one UPDATE that refuses a
+   * locked account. Read, add one and save let parallel wrong passwords all
+   * pass the lock check and write the same count, so the lockout never held.
+   * A try that turns out right is cleared by `resetFailedAttempts`.
    *
-   * An account is locked when lockedUntil is set to a future timestamp.
-   * This is set automatically by incrementFailedAttempts after 5 consecutive
-   * failures. The lock expires naturally — no explicit unlock is needed.
-   *
-   * @param user - The user record to check
-   * @returns true if the account is locked right now, false otherwise
+   * @Arguments userId
    */
-  isAccountLocked(user: User): boolean {
-    if (!user.lockedUntil) return false;
-    return new Date() < user.lockedUntil;
-  }
-
-  /**
-   * Record a failed login attempt and lock the account if the threshold is reached.
-   *
-   * After MAX_ATTEMPTS (5) consecutive failures the account is locked for
-   * LOCK_DURATION_MINUTES (15). The lockout timestamp is stored in lockedUntil;
-   * isAccountLocked reads it on the next login attempt.
-   *
-   * Should be called by AuthService on every failed password validation.
-   *
-   * @param user - The user who failed to log in
-   */
-  async incrementFailedAttempts(user: User): Promise<void> {
-    const MAX_ATTEMPTS = 5;
-    const LOCK_DURATION_MINUTES = 15;
-
-    user.failedLoginAttempts += 1;
-
-    if (user.failedLoginAttempts >= MAX_ATTEMPTS) {
-      // Lock the account
-      const lockedUntil = new Date();
-      lockedUntil.setMinutes(lockedUntil.getMinutes() + LOCK_DURATION_MINUTES);
-      user.lockedUntil = lockedUntil;
+  async claimLoginAttempt(
+    userId: string,
+  ): Promise<
+    | { allowed: true; failedAttempts: number }
+    | { allowed: false; lockedUntil: Date | null }
+  > {
+    const now = new Date();
+    const lockUntil = new Date(now.getTime() + LOGIN_LOCK_MINUTES * 60_000);
+    const [, rows] = await this.userModel.update(
+      {
+        failedLoginAttempts: literal('"failed_login_attempts" + 1'),
+        // Postgres reads the old count on the right of every SET.
+        lockedUntil: literal(
+          `CASE WHEN "failed_login_attempts" + 1 >= ${LOGIN_MAX_ATTEMPTS} THEN ${this.sequelize.escape(lockUntil)}::timestamptz ELSE "locked_until" END`,
+        ),
+      },
+      {
+        where: {
+          id: userId,
+          [Op.or]: [{ lockedUntil: null }, { lockedUntil: { [Op.lte]: now } }],
+        },
+        returning: true,
+      },
+    );
+    if (rows.length === 0) {
+      const locked = await this.userModel.findByPk(userId, {
+        attributes: ['id', 'lockedUntil'],
+      });
+      let lockedUntil: Date | null = null;
+      if (locked?.id) {
+        lockedUntil = locked.lockedUntil;
+      }
+      return { allowed: false, lockedUntil };
     }
-
-    await user.save();
+    return { allowed: true, failedAttempts: rows[0].failedLoginAttempts };
   }
 
   /**
-   * Clear the failed login counter and lockout state after a successful login.
+   * Clear the failed login counter and lockout after a right password.
    *
-   * Also records lastLoginAt so the dashboard can show "Last seen" info.
-   * Should be called by AuthService immediately after a valid password login
-   * or successful OAuth sign-in.
+   * One UPDATE on the row, not a save of the instance: the try was counted
+   * (and the lock maybe set) in the database by `claimLoginAttempt`, so the
+   * instance can already read 0 and unlocked, and a save would write nothing.
    *
-   * @param user - The user who just logged in successfully
+   * @Arguments user
    */
   async resetFailedAttempts(user: User): Promise<void> {
-    user.failedLoginAttempts = 0;
-    user.lockedUntil = null;
-    user.lastLoginAt = new Date();
-    await user.save();
+    await this.userModel.update(
+      { failedLoginAttempts: 0, lockedUntil: null },
+      { where: { id: user.id } },
+    );
+    user.setDataValue('failedLoginAttempts', 0);
+    user.setDataValue('lockedUntil', null);
   }
 
   /**
@@ -1055,10 +1066,6 @@ export class UserService {
    * returned so the caller can embed it in the reset link sent via email.
    * Valid for 1 hour.
    *
-   * In non-production environments an extra DB read is performed to confirm the
-   * token was persisted correctly, and the token + hash are logged at DEBUG level
-   * to aid local debugging. This code path never runs in production.
-   *
    * @param user - The user requesting a password reset
    * @returns The plain token to embed in the password reset email link
    */
@@ -1081,11 +1088,8 @@ export class UserService {
   /**
    * Look up a user by their password reset token.
    *
-   * Tokens are stored as SHA-256 hashes. The lookup tries both interpretations
-   * of the incoming value to be robust against edge cases:
-   * 1. Plain token (expected) — hashed once and compared against the DB.
-   * 2. Pre-hashed value — compared against the DB as-is (handles misconfigured
-   *    clients or legacy email links that might have double-hashed the token).
+   * Tokens are stored as SHA-256 hashes; the plain token from the link is
+   * hashed and matched, nothing else.
    *
    * Returns null for both invalid and expired tokens so the caller can surface
    * a consistent "invalid or expired link" error without leaking which case it is.
@@ -1094,28 +1098,21 @@ export class UserService {
    * @returns The matching User, or null if the token is invalid or expired
    */
   async findByPasswordResetToken(token: string): Promise<User | null> {
-    // Tokens are stored hashed (SHA-256) for security, but the token we receive from
-    // the frontend/email link may be either:
-    // - the plain token (expected) -> must be hashed once to match DB
-    // - already a SHA-256 hex string (misconfiguration / legacy links) -> must match DB as-is
-    //
-    // To be robust, try both.
-    const normalized = token.trim();
-    const hashedToken = this.cryptoService.hashToken(normalized);
+    // Only the plain token, hashed. The stored hash itself was accepted too
+    // once, which made it a working token: anyone reading a backup or the
+    // database console could reset any account with a pending reset.
+    const hashedToken = this.cryptoService.hashToken(token.trim());
 
-    const user =
-      (await this.userModel.findOne({
-        where: { passwordResetToken: normalized },
-      })) ??
-      (await this.userModel.findOne({
-        where: { passwordResetToken: hashedToken },
-      }));
+    const user = await this.userModel.findOne({
+      where: { passwordResetToken: hashedToken },
+    });
+    if (!user) {
+      return null;
+    }
 
-    // Check if token is expired
-    if (user && user.passwordResetExpires) {
-      if (new Date() > user.passwordResetExpires) {
-        return null; // Token expired
-      }
+    // A token without an expiry never came from `generatePasswordResetToken`.
+    if (!user.passwordResetExpires || new Date() > user.passwordResetExpires) {
+      return null;
     }
 
     return user;

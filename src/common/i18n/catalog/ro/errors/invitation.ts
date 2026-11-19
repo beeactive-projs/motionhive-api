@@ -10,6 +10,8 @@ export const invitation: Catalog['errors']['invitation'] = {
   expired: 'Invitația a expirat.',
   alreadyAnswered: 'Invitația a primit deja un răspuns.',
   wrongEmail: 'Această invitație a fost trimisă la altă adresă de email.',
+  verifyEmailFirst:
+    'Confirmă mai întâi adresa de email, cu linkul pe care ți l-am trimis, sau deschide invitația din emailul ei.',
   cannotCancelAccepted: 'Nu poți anula o invitație care a fost deja acceptată.',
   cannotResendAccepted:
     'Nu poți retrimite o invitație care a fost deja acceptată.',

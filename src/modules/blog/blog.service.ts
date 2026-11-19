@@ -431,11 +431,14 @@ export class BlogService {
 
     await post.update(patch);
 
-    // Cover replaced or cleared → purge the previous file.
+    // Cover replaced or cleared → purge the previous file, when it is a
+    // blog upload: a cover set to some other link of ours (an avatar, a
+    // post photo) is let go, never deleted.
     if (
       dto.coverImage !== undefined &&
       previousCover &&
-      previousCover !== dto.coverImage
+      previousCover !== dto.coverImage &&
+      this.isBlogUpload(previousCover)
     ) {
       await this.mediaStorage.deleteByUrl(previousCover);
     }
@@ -458,13 +461,21 @@ export class BlogService {
     const wasPublished = post.isPublished;
     const slug = post.slug;
     await post.destroy();
-    if (cover) {
+    if (cover && this.isBlogUpload(cover)) {
       await this.mediaStorage.deleteByUrl(cover);
     }
     // A published post was live on the site → rebuild to drop its page.
     if (wasPublished) {
       this.triggerWebsiteRebuild(`delete ${slug}`);
     }
+  }
+
+  /** A file the blog's own upload route stored, the only kind it may delete. */
+  private isBlogUpload(url: string): boolean {
+    return this.mediaStorage.isInFolder(
+      url,
+      this.mediaStorage.buildResourceFolder('blog'),
+    );
   }
 
   async uploadImage(file: Express.Multer.File, authorId: string) {
