@@ -213,7 +213,11 @@ export const AuthDocs = {
   facebook: {
     summary: 'Sign in with Facebook',
     description:
-      'Authenticate with Facebook access token (from frontend Facebook Login). Creates account if new, or logs in and links account. Returns same JWT + user shape as login.',
+      'Authenticate with Facebook. The body takes one of two shapes. ' +
+      'Web and Android send `{ accessToken, language? }`: the Graph access token from Facebook Login, checked with `debug_token` (it must be valid and minted for our app) and read with `/me`. ' +
+      "The iPhone app sends `{ idToken, rawNonce, language? }`: the Limited Login ID token (an OpenID Connect JWT, because the app never asks for App Tracking Transparency) and the raw nonce it passed to the Facebook login. That token is checked against Meta's keys (RS256, issuer, audience = our app id, expiry) and its `nonce` claim must equal `rawNonce` exactly; no Graph call is made. " +
+      'Any other combination answers 400 `auth.facebookTokenChoice`. Both shapes name the person by their app-scoped Facebook id, so one person has one account on every device. Facebook does not say whether it checked the email, so a Facebook sign-in never joins an existing account by email (409 `user.providerEmailUnverified`). ' +
+      'Creates the account if new, or signs in. Returns the same JWT + user shape as login.',
     responses: [
       {
         status: 200,
@@ -233,6 +237,7 @@ export const AuthDocs = {
       },
       ApiStandardResponses.Unauthorized,
       ApiStandardResponses.BadRequest,
+      ApiStandardResponses.Conflict,
       ApiStandardResponses.TooManyRequests,
     ],
   } as ApiEndpointOptions,

@@ -172,6 +172,6 @@ export class AuthController {
   @Throttle({ default: { limit: 10, ttl: 900000 } })
   @ApiEndpoint({ ...AuthDocs.facebook, body: FacebookAuthDto })
   async facebook(@Body() dto: FacebookAuthDto) {
-    return this.authService.registerWithFacebook(dto.accessToken, dto.language);
+    return this.authService.registerWithFacebook(dto);
   }
 }

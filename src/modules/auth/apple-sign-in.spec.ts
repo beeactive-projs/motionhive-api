@@ -110,6 +110,7 @@ describe('AuthService.registerWithApple', () => {
       accountDeletion as never,
       appleIdentity as never,
       appleAccounts as never,
+      undefined as never,
       makeSilentLogger(),
     );
   });

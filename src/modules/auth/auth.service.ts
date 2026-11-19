@@ -45,12 +45,42 @@ import { AppleAccountService } from './apple/apple-account.service';
 import { AppleIdentityService } from './apple/apple-identity.service';
 import type { AppleIdentity } from './apple/apple-identity.service';
 import type { AppleAuthDto } from './dto/apple-auth.dto';
+import { FacebookIdentityService } from './facebook/facebook-identity.service';
+import type { FacebookIdentity } from './facebook/facebook-identity.service';
+import type { FacebookAuthDto } from './dto/facebook-auth.dto';
 
 /** The first name an account gets when the provider shared none. */
 const PLACEHOLDER_FIRST_NAME = 'User';
 
 /** The name column's size. */
 const NAME_MAX_LENGTH = 100;
+
+/**
+ * The name a Facebook sign-in gives an account: the given and family names
+ * when Facebook shared them, else the full name split at its last space
+ * ("Ana Maria Popescu" is Ana Maria + Popescu), else the placeholder.
+ */
+function facebookName(identity: FacebookIdentity): {
+  firstName: string;
+  lastName: string;
+} {
+  if (identity.givenName || identity.familyName) {
+    let firstName = PLACEHOLDER_FIRST_NAME;
+    if (identity.givenName) {
+      firstName = identity.givenName;
+    }
+    return { firstName, lastName: identity.familyName ?? '' };
+  }
+  if (identity.name) {
+    const words = identity.name.split(/\s+/);
+    if (words.length === 1) {
+      return { firstName: words[0], lastName: '' };
+    }
+    const lastName = words[words.length - 1];
+    return { firstName: words.slice(0, -1).join(' '), lastName };
+  }
+  return { firstName: PLACEHOLDER_FIRST_NAME, lastName: '' };
+}
 
 type OAuthFound = Awaited<ReturnType<UserService['findOrCreateFromOAuth']>>;
 
@@ -106,6 +136,7 @@ export class AuthService {
     private readonly accountDeletionService: AccountDeletionService,
     private readonly appleIdentity: AppleIdentityService,
     private readonly appleAccounts: AppleAccountService,
+    private readonly facebookIdentity: FacebookIdentityService,
     @Inject(WINSTON_MODULE_NEST_PROVIDER)
     private readonly logger: LoggerService,
   ) {}
@@ -797,84 +828,90 @@ export class AuthService {
     return this.handleOAuthSignIn('GOOGLE', profile);
   }
 
-  async registerWithFacebook(accessToken: string, language?: Locale) {
-    const appId = this.configService.get<string>('FACEBOOK_APP_ID');
-    const appSecret = this.configService.get<string>('FACEBOOK_APP_SECRET');
-    if (!appId || !appSecret) {
-      throw new BadRequestException(
-        apiError('auth.providerUnavailable', { provider: 'Facebook' }),
+  /**
+   * Sign in with Facebook, with one of two tokens:
+   * - `accessToken` (web, Android): a Graph access token, checked with
+   *   `debug_token` (valid, and minted for our app) and read with `/me`.
+   * - `idToken` + `rawNonce` (iPhone): a Limited Login ID token, checked
+   *   against Meta's keys; Graph refuses these tokens.
+   *
+   * Both name the person by their app-scoped id, so one person has one
+   * account on every device. Facebook does not say whether it checked the
+   * address, so a Facebook sign-in never joins an existing account by email.
+   */
+  async registerWithFacebook(dto: FacebookAuthDto) {
+    const { accessToken, idToken, rawNonce } = dto;
+    let identity: FacebookIdentity;
+    if (idToken) {
+      if (accessToken || !rawNonce) {
+        throw new BadRequestException(apiError('auth.facebookTokenChoice'));
+      }
+      if (!this.facebookIdentity.canCheckIdTokens) {
+        throw new BadRequestException(
+          apiError('auth.providerUnavailable', { provider: 'Facebook' }),
+        );
+      }
+      identity = await this.checkFacebookToken('ID token', () =>
+        this.facebookIdentity.verifyIdToken(idToken, rawNonce),
       );
+    } else if (accessToken) {
+      if (rawNonce) {
+        throw new BadRequestException(apiError('auth.facebookTokenChoice'));
+      }
+      if (!this.facebookIdentity.canCheckAccessTokens) {
+        throw new BadRequestException(
+          apiError('auth.providerUnavailable', { provider: 'Facebook' }),
+        );
+      }
+      identity = await this.checkFacebookToken('access token', () =>
+        this.facebookIdentity.verifyAccessToken(accessToken),
+      );
+    } else {
+      throw new BadRequestException(apiError('auth.facebookTokenChoice'));
     }
 
-    const appAccessToken = `${appId}|${appSecret}`;
-
-    const debugUrl = `https://graph.facebook.com/debug_token?input_token=${encodeURIComponent(accessToken)}&access_token=${encodeURIComponent(appAccessToken)}`;
-    let debugRes: Response;
-    try {
-      debugRes = await fetch(debugUrl);
-    } catch (err) {
-      this.logger.warn(`Facebook debug_token request failed: ${err}`);
-      throw new UnauthorizedException(
-        apiError('auth.providerSignInFailed', { provider: 'Facebook' }),
-      );
-    }
-
-    const debugData = (await debugRes.json()) as {
-      data?: { valid?: boolean; user_id?: string };
-    };
-    if (!debugData?.data?.valid || !debugData.data.user_id) {
-      throw new UnauthorizedException(
-        apiError('auth.providerSignInFailed', { provider: 'Facebook' }),
-      );
-    }
-
-    const meUrl = `https://graph.facebook.com/me?fields=id,email,first_name,last_name&access_token=${encodeURIComponent(accessToken)}`;
-    let meRes: Response;
-    try {
-      meRes = await fetch(meUrl);
-    } catch (err) {
-      this.logger.warn(`Facebook me request failed: ${err}`);
-      throw new UnauthorizedException(
-        apiError('auth.providerSignInFailed', { provider: 'Facebook' }),
-      );
-    }
-
-    const me = (await meRes.json()) as {
-      id?: string;
-      email?: string;
-      first_name?: string;
-      last_name?: string;
-      error?: { message: string };
-    };
-    if (me.error || !me.id) {
-      this.logger.warn(
-        `Facebook me request returned no profile: ${me.error?.message ?? 'no id'}`,
-        'AuthService',
-      );
-      throw new UnauthorizedException(
-        apiError('auth.providerSignInFailed', { provider: 'Facebook' }),
-      );
-    }
-
-    const email = me.email?.trim();
-    if (!email) {
+    if (!identity.email) {
       throw new BadRequestException(
         apiError('auth.providerNoEmail', { provider: 'Facebook' }),
       );
     }
 
-    const profile = {
-      providerUserId: me.id,
-      email,
+    const { firstName, lastName } = facebookName(identity);
+    const profile: OAuthProfile = {
+      providerUserId: identity.id,
+      email: identity.email,
       // Facebook does not say whether it checked the address, so a
       // Facebook sign-in never joins an existing account by email.
       emailVerified: false,
-      firstName: me.first_name?.trim() || PLACEHOLDER_FIRST_NAME,
-      lastName: me.last_name?.trim() || '',
-      language,
+      firstName,
+      lastName,
+      language: dto.language,
     };
 
     return this.handleOAuthSignIn('FACEBOOK', profile);
+  }
+
+  /**
+   * Run one of Facebook's token checks. Any failure is logged with its
+   * reason (never the token) and answered with the same refusal, so a
+   * caller cannot learn which check failed.
+   */
+  private async checkFacebookToken(
+    kind: string,
+    check: () => Promise<FacebookIdentity>,
+  ): Promise<FacebookIdentity> {
+    try {
+      return await check();
+    } catch (err) {
+      let message = 'unknown';
+      if (err instanceof Error) {
+        message = err.message;
+      }
+      this.logger.warn(`Facebook ${kind} rejected: ${message}`, 'AuthService');
+      throw new UnauthorizedException(
+        apiError('auth.providerSignInFailed', { provider: 'Facebook' }),
+      );
+    }
   }
 
   /**

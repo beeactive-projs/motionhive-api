@@ -16,6 +16,7 @@ import { PaymentModule } from '../payment/payment.module';
 import { CryptoService } from '../../common/services/crypto.service';
 import { EmailVerifierService } from '../../common/services/email-verifier.service';
 import { AppleModule } from './apple/apple.module';
+import { FacebookIdentityService } from './facebook/facebook-identity.service';
 
 @Module({
   imports: [
@@ -39,7 +40,14 @@ import { AppleModule } from './apple/apple.module';
     }),
   ],
   controllers: [AuthController],
-  providers: [AuthService, JwtStrategy, CryptoService, EmailVerifierService],
+  providers: [
+    AuthService,
+    JwtStrategy,
+    CryptoService,
+    EmailVerifierService,
+    // Facebook token checks; only AuthService needs them, so no module of their own.
+    FacebookIdentityService,
+  ],
   // JwtModule is exported for the rate-limit guard, which keys buckets by the
   // token's subject and needs to verify it with the same secret.
   exports: [AuthService, JwtModule],

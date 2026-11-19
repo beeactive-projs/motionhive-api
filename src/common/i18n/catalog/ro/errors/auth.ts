@@ -23,4 +23,6 @@ export const auth: Catalog['errors']['auth'] = {
     'Nu te-am putut autentifica cu {provider}. Încearcă din nou.',
   providerNoEmail:
     '{provider} nu ne-a trimis adresa ta de email, iar fără ea nu te putem autentifica.',
+  facebookTokenChoice:
+    'Nu am putut finaliza autentificarea cu Facebook. Încearcă din nou și, dacă problema persistă, actualizează aplicația.',
 };

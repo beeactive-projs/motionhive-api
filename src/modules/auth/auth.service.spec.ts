@@ -19,6 +19,7 @@ import { makeSilentLogger } from '../../../test/helpers/sequelize-mocks';
 import { AccountDeletionService } from '../account-deletion/account-deletion.service';
 import { AppleIdentityService } from './apple/apple-identity.service';
 import { AppleAccountService } from './apple/apple-account.service';
+import { FacebookIdentityService } from './facebook/facebook-identity.service';
 
 // AuthService smoke tests — not exhaustive. The goal is to catch
 // "login is completely broken" regressions, not to re-test bcrypt.
@@ -145,6 +146,8 @@ describe('AuthService (smoke)', () => {
         // Apple's own flow is covered in apple-sign-in.spec.ts.
         { provide: AppleIdentityService, useValue: {} },
         { provide: AppleAccountService, useValue: {} },
+        // Facebook's own flow is covered in facebook-sign-in.spec.ts.
+        { provide: FacebookIdentityService, useValue: {} },
         { provide: WINSTON_MODULE_NEST_PROVIDER, useValue: makeSilentLogger() },
       ],
     }).compile();

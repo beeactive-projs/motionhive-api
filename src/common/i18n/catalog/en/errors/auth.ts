@@ -18,4 +18,7 @@ export const auth = {
   providerSignInFailed: "We couldn't sign you in with {provider}. Try again.",
   providerNoEmail:
     '{provider} did not share your email address, and we need it to sign you in.',
+  /** `FacebookAuthDto`: an access token alone, or an ID token with its nonce. */
+  facebookTokenChoice:
+    "We couldn't complete the Facebook sign-in. Try again, and if it keeps happening, update the app.",
 };
