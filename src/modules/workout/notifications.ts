@@ -31,7 +31,8 @@ export function programAssignedForClient(input: {
   assignmentId: string;
   programName: string;
   startDate: string;
-  instructorName: string;
+  /** Null when the coach has no name yet: the message says "Your coach". */
+  instructorName: string | null;
 }): NotifyParams {
   return {
     userId: input.clientId,
@@ -75,7 +76,8 @@ export function clientCompletedWorkoutForInstructor(input: {
   instructorId: string;
   clientId: string;
   workoutLogId: string;
-  clientName: string;
+  /** Null when the client has no name yet: the message says "Your client". */
+  clientName: string | null;
   workoutName: string;
   setsCompleted: number;
 }): NotifyParams {
@@ -111,7 +113,8 @@ export function clientCompletedWorkoutForInstructor(input: {
 export function clientCompletedPlanForInstructor(input: {
   instructorId: string;
   clientId: string;
-  clientName: string;
+  /** Null when the client has no name yet: the message says "Your client". */
+  clientName: string | null;
   programName: string;
   workoutsCompleted: number;
 }): NotifyParams {

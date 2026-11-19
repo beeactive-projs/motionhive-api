@@ -22,6 +22,8 @@ import { CryptoService } from '../../common/services/crypto.service';
 import { EmailService } from '../../common/services/email.service';
 import { SearchIndexService } from '../search/search-index.service';
 import { NotificationService } from '../notification/notification.service';
+import { CategoryPicker, CategoryService } from '../category/category.service';
+import { GroupCategory } from './entities/group-category.entity';
 import {
   makeModelMock,
   makeSilentLogger,
@@ -46,26 +48,39 @@ describe('GroupService', () => {
   let joinRequestModel: ModelMock & { sequelize: { transaction: jest.Mock } };
   let instructorClientModel: ModelMock;
   let userModel: ModelMock;
+  let groupCategoryModel: ModelMock & { bulkCreate: jest.Mock };
+  let categoryService: { assertPickable: jest.Mock };
   let notificationService: { notify: jest.Mock; notifyMany: jest.Mock };
 
   // Fake transaction object that the service hands through.
   const tx = {
     commit: jest.fn().mockResolvedValue(undefined),
     rollback: jest.fn().mockResolvedValue(undefined),
+    LOCK: { UPDATE: 'UPDATE' },
   };
-  const sequelize = { transaction: jest.fn().mockResolvedValue(tx) };
+  const sequelize = {
+    transaction: jest.fn().mockResolvedValue(tx),
+    // The categories a write answers with (`readCategoryIds`).
+    query: jest.fn().mockResolvedValue([{ categoryIds: [] }]),
+  };
 
   beforeEach(async () => {
     tx.commit.mockClear();
     tx.rollback.mockClear();
     sequelize.transaction.mockClear();
     sequelize.transaction.mockResolvedValue(tx);
+    sequelize.query.mockReset();
+    sequelize.query.mockResolvedValue([{ categoryIds: [] }]);
 
     groupModel = { ...makeModelMock(), sequelize };
     memberModel = makeModelMock();
     joinRequestModel = { ...makeModelMock(), sequelize };
     instructorClientModel = makeModelMock();
     userModel = makeModelMock();
+    groupCategoryModel = { ...makeModelMock(), bulkCreate: jest.fn() };
+    categoryService = {
+      assertPickable: jest.fn().mockResolvedValue({ kindIds: [] }),
+    };
     userModel.findByPk.mockResolvedValue({
       id: 'requester-1',
       firstName: 'Casey',
@@ -91,6 +106,8 @@ describe('GroupService', () => {
           useValue: instructorClientModel,
         },
         { provide: getModelToken(User), useValue: userModel },
+        { provide: getModelToken(GroupCategory), useValue: groupCategoryModel },
+        { provide: CategoryService, useValue: categoryService },
         { provide: EmailService, useValue: {} },
         { provide: CryptoService, useValue: {} },
         {
@@ -239,14 +256,20 @@ describe('GroupService', () => {
   // removeMember
   // =====================================================================
   describe('getById', () => {
+    /** A group row as Sequelize hands it back: `get` gives the plain columns. */
+    const viewRow = (columns: Record<string, unknown>) => ({
+      get: () => ({ ...columns }),
+      getDataValue: (key: string) => columns[key],
+    });
+
     // The role rides along on the group because the membership row is
     // already loaded to authorise the read. Without it the client has to
     // derive the role from the paginated member list, where a moderator
     // past the first page reads as a non-member and loses their controls.
     it("returns the caller's role alongside the group", async () => {
-      groupModel.findByPk.mockResolvedValue({
-        toJSON: () => ({ id: 'g-1', name: 'Morning Crew' }),
-      });
+      groupModel.findByPk.mockResolvedValue(
+        viewRow({ id: 'g-1', name: 'Morning Crew' }),
+      );
       memberModel.findOne.mockResolvedValue({
         groupId: 'g-1',
         userId: 'mod-1',
@@ -261,9 +284,7 @@ describe('GroupService', () => {
     });
 
     it('rejects a non-member rather than reporting a null role', async () => {
-      groupModel.findByPk.mockResolvedValue({
-        toJSON: () => ({ id: 'g-1' }),
-      });
+      groupModel.findByPk.mockResolvedValue(viewRow({ id: 'g-1' }));
       memberModel.findOne.mockResolvedValue(null);
 
       await expect(service.getById('g-1', 'stranger')).rejects.toThrow(
@@ -275,9 +296,9 @@ describe('GroupService', () => {
       // Every list endpoint attaches this count; the single-group read did
       // not, so the detail screen showed "0 members" for a group the list it
       // was opened from had just counted correctly.
-      groupModel.findByPk.mockResolvedValue({
-        toJSON: () => ({ id: 'g-1', memberCount: 4 }),
-      });
+      groupModel.findByPk.mockResolvedValue(
+        viewRow({ id: 'g-1', memberCount: 4 }),
+      );
       memberModel.findOne.mockResolvedValue({
         groupId: 'g-1',
         userId: 'u-1',
@@ -298,6 +319,64 @@ describe('GroupService', () => {
       await expect(service.getById('nope', 'u-1')).rejects.toThrow(
         NotFoundException,
       );
+    });
+
+    describe('waiting work and who runs it', () => {
+      const columns = {
+        id: 'g-1',
+        pendingJoinRequestCount: 2,
+        pendingPostCount: 1,
+        lastPostAt: '2026-11-14T08:00:00.000Z',
+        instructor: {
+          id: 'owner-1',
+          firstName: 'Alex',
+          lastName: 'Rivera',
+          handle: 'alex',
+          avatarUrl: null,
+          email: 'never@sent.test',
+        },
+      };
+      const asRole = (role: GroupMemberRole) => {
+        groupModel.findByPk.mockResolvedValue(viewRow(columns));
+        memberModel.findOne.mockResolvedValue({
+          groupId: 'g-1',
+          userId: 'u-1',
+          leftAt: null,
+          role,
+        });
+        return service.getById('g-1', 'u-1');
+      };
+
+      it('gives the owner both queues', async () => {
+        const result = await asRole(GroupMemberRole.OWNER);
+        expect(result.pendingJoinRequestCount).toBe(2);
+        expect(result.pendingPostCount).toBe(1);
+      });
+
+      it('gives a moderator the posts only', async () => {
+        const result = await asRole(GroupMemberRole.MODERATOR);
+        expect(result.pendingJoinRequestCount).toBe(0);
+        expect(result.pendingPostCount).toBe(1);
+      });
+
+      it('tells a member nothing about either queue', async () => {
+        const result = await asRole(GroupMemberRole.MEMBER);
+        expect(result.pendingJoinRequestCount).toBe(0);
+        expect(result.pendingPostCount).toBe(0);
+      });
+
+      it('names the owner without their email', async () => {
+        const result = await asRole(GroupMemberRole.MEMBER);
+        expect(result.owner).toEqual({
+          id: 'owner-1',
+          firstName: 'Alex',
+          lastName: 'Rivera',
+          handle: 'alex',
+          avatarUrl: null,
+        });
+        expect(JSON.stringify(result)).not.toContain('never@sent.test');
+        expect(result.lastPostAt).toBe('2026-11-14T08:00:00.000Z');
+      });
     });
   });
 
@@ -690,6 +769,287 @@ describe('GroupService', () => {
         stranger: null,
         open: null,
         private: null,
+      });
+    });
+  });
+
+  // =====================================================================
+  // categories (what a group trains)
+  // =====================================================================
+  describe('categories', () => {
+    /** A group row as Sequelize hands it back: `get` gives the plain columns. */
+    const groupRow = (overrides: Record<string, unknown> = {}) => {
+      const columns = {
+        id: 'g-1',
+        name: 'Morning Crew',
+        instructorId: 'owner-1',
+        ...overrides,
+      };
+      return {
+        ...columns,
+        get: () => ({ ...columns }),
+        getDataValue: (key: string) => columns[key as keyof typeof columns],
+        update: jest.fn().mockResolvedValue(undefined),
+      };
+    };
+    const ownerMembership = {
+      groupId: 'g-1',
+      userId: 'owner-1',
+      leftAt: null,
+      role: GroupMemberRole.OWNER,
+      isOwner: true,
+    };
+
+    describe('create', () => {
+      it('checks the picks and writes them in the group transaction', async () => {
+        groupModel.findOne.mockResolvedValue(null); // the slug is free
+        groupModel.create.mockResolvedValue(groupRow());
+        memberModel.create.mockResolvedValue({});
+        sequelize.query.mockResolvedValue([
+          { categoryIds: ['cat-yoga', 'cat-hiit'] },
+        ]);
+
+        const result = await service.create('owner-1', {
+          name: 'Morning Crew',
+          categoryIds: ['cat-hiit', 'cat-yoga'],
+        });
+
+        expect(categoryService.assertPickable).toHaveBeenCalledWith(
+          CategoryPicker.Group,
+          ['cat-hiit', 'cat-yoga'],
+        );
+        expect(groupCategoryModel.bulkCreate).toHaveBeenCalledWith(
+          [
+            { groupId: 'g-1', categoryId: 'cat-hiit' },
+            { groupId: 'g-1', categoryId: 'cat-yoga' },
+          ],
+          { transaction: tx },
+        );
+        // Read back in the same transaction, in the list's order.
+        expect(sequelize.query).toHaveBeenCalledWith(
+          expect.stringContaining('FROM group_category x'),
+          expect.objectContaining({
+            replacements: { groupId: 'g-1' },
+            transaction: tx,
+          }),
+        );
+        expect(tx.commit).toHaveBeenCalledTimes(1);
+        expect(result.categoryIds).toEqual(['cat-yoga', 'cat-hiit']);
+        expect(result.name).toBe('Morning Crew');
+        // The group columns never carry the ids.
+        const [columns] = groupModel.create.mock.calls[0] as [
+          Record<string, unknown>,
+        ];
+        expect(columns).not.toHaveProperty('categoryIds');
+      });
+
+      it('writes no links and answers [] when none were picked', async () => {
+        groupModel.findOne.mockResolvedValue(null);
+        groupModel.create.mockResolvedValue(groupRow());
+        memberModel.create.mockResolvedValue({});
+
+        const result = await service.create('owner-1', {
+          name: 'Morning Crew',
+        });
+
+        expect(categoryService.assertPickable).not.toHaveBeenCalled();
+        expect(groupCategoryModel.bulkCreate).not.toHaveBeenCalled();
+        expect(result.categoryIds).toEqual([]);
+      });
+
+      it('creates nothing when a pick is refused', async () => {
+        categoryService.assertPickable.mockRejectedValue(
+          new BadRequestException(),
+        );
+
+        await expect(
+          service.create('owner-1', {
+            name: 'Morning Crew',
+            categoryIds: ['cat-lose-fat'],
+          }),
+        ).rejects.toBeInstanceOf(BadRequestException);
+        expect(sequelize.transaction).not.toHaveBeenCalled();
+        expect(groupModel.create).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('update', () => {
+      beforeEach(() => {
+        memberModel.findOne.mockResolvedValue(ownerMembership);
+      });
+
+      it('replaces the links in the same transaction, never through the model', async () => {
+        const group = groupRow();
+        groupModel.findByPk.mockResolvedValue(group);
+        sequelize.query.mockResolvedValue([{ categoryIds: ['cat-run'] }]);
+
+        const result = await service.update('g-1', 'owner-1', {
+          description: 'Before work',
+          categoryIds: ['cat-run'],
+        });
+
+        expect(categoryService.assertPickable).toHaveBeenCalledWith(
+          CategoryPicker.Group,
+          ['cat-run'],
+        );
+        expect(group.update).toHaveBeenCalledWith(
+          { description: 'Before work' },
+          { transaction: tx },
+        );
+        // The group row is locked before its links are swapped.
+        expect(groupModel.findByPk).toHaveBeenLastCalledWith('g-1', {
+          attributes: ['id'],
+          transaction: tx,
+          lock: 'UPDATE',
+        });
+        expect(groupCategoryModel.destroy).toHaveBeenCalledWith({
+          where: { groupId: 'g-1' },
+          transaction: tx,
+        });
+        expect(groupCategoryModel.bulkCreate).toHaveBeenCalledWith(
+          [{ groupId: 'g-1', categoryId: 'cat-run' }],
+          { transaction: tx },
+        );
+        expect(tx.commit).toHaveBeenCalledTimes(1);
+        expect(result.categoryIds).toEqual(['cat-run']);
+      });
+
+      it('clears them on an empty list', async () => {
+        const group = groupRow();
+        groupModel.findByPk.mockResolvedValue(group);
+
+        const result = await service.update('g-1', 'owner-1', {
+          categoryIds: [],
+        });
+
+        expect(categoryService.assertPickable).not.toHaveBeenCalled();
+        expect(groupCategoryModel.destroy).toHaveBeenCalledWith({
+          where: { groupId: 'g-1' },
+          transaction: tx,
+        });
+        expect(groupCategoryModel.bulkCreate).not.toHaveBeenCalled();
+        expect(group.update).toHaveBeenCalledWith({}, { transaction: tx });
+        expect(result.categoryIds).toEqual([]);
+      });
+
+      it('leaves them alone when not sent, and still answers with them', async () => {
+        const group = groupRow();
+        groupModel.findByPk.mockResolvedValue(group);
+        sequelize.query.mockResolvedValue([{ categoryIds: ['cat-yoga'] }]);
+
+        const result = await service.update('g-1', 'owner-1', {
+          city: 'Cluj',
+        });
+
+        expect(groupCategoryModel.destroy).not.toHaveBeenCalled();
+        expect(groupCategoryModel.bulkCreate).not.toHaveBeenCalled();
+        expect(group.update).toHaveBeenCalledWith(
+          { city: 'Cluj' },
+          { transaction: tx },
+        );
+        expect(result.categoryIds).toEqual(['cat-yoga']);
+      });
+
+      it('rolls everything back when the links fail', async () => {
+        groupModel.findByPk.mockResolvedValue(groupRow());
+        groupCategoryModel.bulkCreate.mockRejectedValue(new Error('boom'));
+
+        await expect(
+          service.update('g-1', 'owner-1', { categoryIds: ['cat-run'] }),
+        ).rejects.toThrow('boom');
+        expect(tx.rollback).toHaveBeenCalledTimes(1);
+        expect(tx.commit).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('reads', () => {
+      /** Whether a query's attributes ask for the group's category ids. */
+      const asksForCategoryIds = (options: unknown) => {
+        const { attributes } = options as {
+          attributes: { include: unknown[] };
+        };
+        return attributes.include.some(
+          (attr) =>
+            Array.isArray(attr) &&
+            attr[1] === 'categoryIds' &&
+            JSON.stringify(attr[0]).includes('FROM group_category x'),
+        );
+      };
+
+      it('sends them with one group, my groups and the public lists', async () => {
+        groupModel.findByPk.mockResolvedValue(
+          groupRow({ id: 'g-1', categoryIds: ['cat-yoga'] }),
+        );
+        memberModel.findOne.mockResolvedValue(ownerMembership);
+        const one = await service.getById('g-1', 'owner-1');
+        expect(one.categoryIds).toEqual(['cat-yoga']);
+        const [[, byPk]] = groupModel.findByPk.mock.calls as [
+          [string, unknown],
+        ];
+        expect(asksForCategoryIds(byPk)).toBe(true);
+
+        memberModel.findAll.mockResolvedValue([
+          { groupId: 'g-1', role: GroupMemberRole.OWNER },
+        ]);
+        groupModel.findAll.mockResolvedValue([]);
+        await service.getMyGroups('owner-1');
+        await service.listPublicGroupsForInstructor('owner-1');
+        for (const [options] of groupModel.findAll.mock.calls) {
+          expect(asksForCategoryIds(options)).toBe(true);
+        }
+
+        groupModel.findOne.mockResolvedValue(null);
+        await expect(service.getPublicProfile('g-1')).rejects.toThrow(
+          NotFoundException,
+        );
+        const [[publicQuery]] = groupModel.findOne.mock.calls as [[unknown]];
+        expect(asksForCategoryIds(publicQuery)).toBe(true);
+      });
+    });
+
+    describe('discover filter', () => {
+      const escape = jest.fn((v: string) => `'${v}'`);
+      const whereSql = () => {
+        const [[{ where }]] = groupModel.findAndCountAll.mock.calls as [
+          [{ where: Record<symbol, Array<{ val?: string }>> }],
+        ];
+        const clauses = where[Op.and] || [];
+        const sql: string[] = [];
+        for (const clause of clauses) {
+          if (clause.val) {
+            sql.push(clause.val);
+          }
+        }
+        return sql;
+      };
+
+      beforeEach(() => {
+        escape.mockClear();
+        (groupModel.sequelize as unknown as { escape: typeof escape }).escape =
+          escape;
+      });
+
+      it('keeps the groups that train any of the picked categories', async () => {
+        await service.discoverGroups(
+          { categoryIds: ['cat-yoga', 'cat-run'] },
+          null,
+        );
+
+        const filter = whereSql().find((sql) =>
+          sql.includes('FROM group_category x'),
+        );
+        expect(filter).toContain('x.group_id = "Group"."id"');
+        expect(filter).toContain("x.category_id IN ('cat-yoga', 'cat-run')");
+        expect(escape).toHaveBeenCalledWith('cat-yoga');
+        expect(escape).toHaveBeenCalledWith('cat-run');
+      });
+
+      it('adds no category condition without the filter', async () => {
+        await service.discoverGroups({ categoryIds: [] }, null);
+
+        expect(
+          whereSql().some((sql) => sql.includes('FROM group_category x')),
+        ).toBe(false);
       });
     });
   });

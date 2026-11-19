@@ -36,4 +36,8 @@ export const client: Catalog['errors']['client'] = {
   importDailyLimit:
     '{remaining, plural, =0 {Azi nu mai poți trimite invitații.} one {Azi mai poți trimite o singură invitație.} few {Azi mai poți trimite # invitații.} other {Azi mai poți trimite # de invitații.}} Importă mai puține persoane sau încearcă din nou mâine.',
   alreadyLeftCoach: 'Te-ai oprit deja din antrenamentele cu acest antrenor.',
+  restoreNeedsInvitation:
+    'Colaborarea cu această persoană s-a încheiat. Invit-o din nou: redevine clientul tău după ce acceptă.',
+  cannotAcceptOwnInvitation: 'Este invitația ta, așa că nu o poți accepta.',
+  blockedPair: 'Nu poți colabora cu această persoană pe MotionHive.',
 };

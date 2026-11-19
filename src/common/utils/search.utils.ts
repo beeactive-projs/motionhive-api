@@ -39,6 +39,14 @@ export function normalizeSearchTerm(term: string): string {
 }
 
 /**
+ * Text compared blind to case and accents in code, the same fold
+ * `fold_for_search` gives a column in SQL: "Forță" and "forta" are equal.
+ */
+export function foldText(text: string): string {
+  return normalizeSearchTerm(text).toLowerCase();
+}
+
+/**
  * Escape the characters LIKE treats as wildcards, so a term is matched
  * literally. Without it a search for `%` matches every row and `_`
  * matches any character, which reads as a broken search and makes an

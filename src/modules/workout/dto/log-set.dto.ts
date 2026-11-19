@@ -10,6 +10,8 @@ import {
   MaxLength,
   Min,
 } from 'class-validator';
+
+import { IsInstant } from '../../../common/validators/instant.validator';
 import { ExerciseSetType, RestSource } from '../entities/workout.enums';
 
 /**
@@ -93,6 +95,18 @@ export class LogSetDto {
   @IsOptional()
   @IsBoolean()
   isCompleted?: boolean;
+
+  /** When the set was ticked, if not now: a tap on the lock screen, saved later. */
+  @ApiPropertyOptional({
+    example: '2026-11-07T17:42:10.000Z',
+    description:
+      'With `isCompleted: true`, the moment the set was ticked, when the ' +
+      'app saves it later (the ✓ on the lock screen). Held between the ' +
+      'workout start and now. Without it, now.',
+  })
+  @IsOptional()
+  @IsInstant()
+  completedAt?: string;
 
   @ApiPropertyOptional({ maxLength: 2000 })
   @IsOptional()

@@ -102,7 +102,9 @@ export const WorkoutLogDocs = {
       '`restAfterSeconds` is the rest actually taken after this set, and ' +
       '`restSource` says how it was measured: TAP (the person ended the ' +
       'rest), ESTIMATED (from the next tick) or BREAK (away: ' +
-      '`restAfterSeconds` is stored as null whatever is sent). Answers ' +
+      '`restAfterSeconds` is stored as null whatever is sent). A tick ' +
+      'is stamped now, or at `completedAt` when the app saves a lock ' +
+      'screen ✓ later (held between the workout start and now). Answers ' +
       'with the set row, `restSource` included.',
     auth: true,
     responses: [
@@ -131,6 +133,78 @@ export const WorkoutLogDocs = {
     auth: true,
     responses: [
       { status: 204, description: 'Deleted' },
+      { status: 404, description: 'No such workout, or not yours' },
+      ApiStandardResponses.Unauthorized,
+    ],
+  } as ApiEndpointOptions,
+
+  removeSets: {
+    summary: 'Delete several sets of a running workout',
+    description:
+      'Owner only, IN_PROGRESS only. Deletes the given sets in one ' +
+      'transaction (a whole round of a superset is the reason). All or ' +
+      'nothing: if any id is not a set of this workout, none is deleted ' +
+      'and the answer is 404. At most 20 ids, no repeats.',
+    auth: true,
+    responses: [
+      { status: 204, description: 'Deleted' },
+      { status: 400, description: 'The workout is not in progress' },
+      { status: 404, description: 'No such workout or set, or not yours' },
+      ApiStandardResponses.Unauthorized,
+    ],
+  } as ApiEndpointOptions,
+
+  setSupersets: {
+    summary: 'Link or unlink exercises of a running workout as supersets',
+    description:
+      'Owner only, IN_PROGRESS only. The logger’s "Link as superset" chip ' +
+      'between two exercises, and its undo. Send every exercise whose ' +
+      '`supersetGroupId` changed: neighbours sharing a value are one ' +
+      'superset, null takes an exercise out of any. Saved in one ' +
+      'transaction, all or nothing: if any id is not an exercise of this ' +
+      'workout, nothing changes and the answer is 404. At most 100 ' +
+      'exercises, no repeats.',
+    auth: true,
+    responses: [
+      { status: 204, description: 'Saved' },
+      {
+        status: 400,
+        description:
+          'Invalid body, or the workout is not in progress (`workout.cannotEditNotInProgress`)',
+      },
+      {
+        status: 404,
+        description:
+          'No such workout, or not yours (`workout.logNotFound`), or an exercise not in it (`exercise.notFound`)',
+      },
+      ApiStandardResponses.Unauthorized,
+    ],
+  } as ApiEndpointOptions,
+
+  resume: {
+    summary: 'Start the clock again',
+    description:
+      'Owner only, workout IN_PROGRESS. Folds the pause into ' +
+      '`pausedSeconds`. The pause ends now, or at `at` when Continue was ' +
+      'tapped on the lock screen and the app saves it later (held between ' +
+      'the start of the pause and now). A running workout is left as it is.',
+    auth: true,
+    responses: [
+      {
+        status: 200,
+        description: 'The workout, running again',
+        example: {
+          id: 'a1b2c3d4-0000-1111-2222-3333abcd4444',
+          status: 'IN_PROGRESS',
+          startedAt: '2026-11-02T08:30:00.000Z',
+          pausedAt: null,
+          pausedSeconds: 420,
+        },
+      },
+      {
+        status: 400,
+        description: 'Not in progress (`workout.cannotEditNotInProgress`)',
+      },
       { status: 404, description: 'No such workout, or not yours' },
       ApiStandardResponses.Unauthorized,
     ],

@@ -55,6 +55,7 @@ import {
   programAssignedForClient,
 } from './notifications';
 import { plannedSetRest } from './planned-rest';
+import { completionPercent } from './assignment-progress';
 
 /**
  * A plan that can still finish. A waiting one too: if its workouts were
@@ -250,7 +251,8 @@ export class ProgramAssignmentService {
 
     // notify-after-commit (best-effort — failure here doesn't roll the assignment back)
     try {
-      const instructorDisplayName = instructorName.trim() || 'Your coach';
+      // No name yet reads as "Your coach", in the reader's language.
+      const instructorDisplayName = instructorName.trim() || null;
       await this.notificationService.notify(
         programAssignedForClient({
           clientId: dto.clientId,
@@ -285,6 +287,7 @@ export class ProgramAssignmentService {
       deletedAt: null,
       ...(query.status ? { status: query.status } : {}),
       ...(query.clientId ? { clientId: query.clientId } : {}),
+      ...(query.programId ? { masterProgramId: query.programId } : {}),
       ...this._searchWhere(query.search),
     };
     const { rows, count } = await this.assignmentModel.findAndCountAll({
@@ -436,6 +439,7 @@ export class ProgramAssignmentService {
     if (assignment.instructorId !== userId && assignment.clientId !== userId) {
       throw new NotFoundException(apiError('workout.assignmentNotFound'));
     }
+    await this._assertStillCoaching(assignment, userId);
     return assignment;
   }
 
@@ -465,13 +469,11 @@ export class ProgramAssignmentService {
   }
 
   /**
-   * How far ahead a rolling (WEEKLY) schedule materialises. A fixed
-   * horizon rather than infinite generation: enough that the week strip
-   * and "today" always have something to read, small enough that
-   * changing your mind doesn't orphan a year of rows. Extending it as
-   * time passes is a cron job, mirroring `sessions.generate_recurring`.
+   * How long "every week" runs: 12 weeks from the start (owner, 2026-11-18).
+   * There is no job that extends it as time passes, so the apps say the
+   * length ("every week for 12 weeks"); scheduling again starts another 12.
    */
-  private static readonly ROLLING_HORIZON_WEEKS = 8;
+  static readonly ROLLING_HORIZON_WEEKS = 12;
 
   /**
    * Schedule one of your own routines across the week.
@@ -539,7 +541,14 @@ export class ProgramAssignmentService {
         : ProgramAssignmentService.ROLLING_HORIZON_WEEKS;
 
     const days = [...dto.daysOfWeek].sort((a, b) => a - b);
-    const dates = this._expandWeekdays(startDate, days, weeks);
+    let dates = this._expandWeekdays(startDate, days, weeks);
+    // Started after the last training day of its week: that week holds
+    // nothing, so the schedule runs one week more to keep its full length.
+    if (dates.length > 0 && this._weekIndexFrom(startDate, dates[0]) > 0) {
+      dates = this._expandWeekdays(startDate, days, weeks + 1);
+    }
+    // Weeks count from the first day trained, so the plan opens on week 1.
+    const firstDate = dates[0] ?? startDate;
 
     return this.sequelize.transaction(async (tx) => {
       const assignment = await this.assignmentModel.create(
@@ -569,7 +578,9 @@ export class ProgramAssignmentService {
             masterWorkoutId: source.id,
             name: program.name,
             notes: source.notes,
-            weekIndex: Math.floor(index / days.length),
+            // From the calendar, not the count: a schedule started on a
+            // Wednesday has fewer days in its first week.
+            weekIndex: this._weekIndexFrom(firstDate, date),
             dayIndex: this._isoWeekdayToDayIndex(date),
             sequenceNumber: index,
             estimatedDurationMinutes: source.estimatedDurationMinutes,
@@ -647,6 +658,21 @@ export class ProgramAssignmentService {
       }
     }
     return out;
+  }
+
+  /**
+   * Which week of the schedule `date` falls in: whole weeks from the Monday
+   * of `startDate`'s week to the Monday of `date`'s.
+   * @Arguments startDate, date
+   */
+  private _weekIndexFrom(startDate: string, date: string): number {
+    const mondayOf = (iso: string): number => {
+      const d = new Date(`${iso}T00:00:00Z`);
+      return d.getTime() - ((d.getUTCDay() + 6) % 7) * 86_400_000;
+    };
+    return Math.round(
+      (mondayOf(date) - mondayOf(startDate)) / (7 * 86_400_000),
+    );
   }
 
   /** `assigned_workout.day_index` is 0=Mon..6=Sun (CHECK 0..6). */
@@ -906,9 +932,9 @@ export class ProgramAssignmentService {
       const client = await this.userModel.findByPk(assignment.clientId, {
         attributes: ['firstName', 'lastName'],
       });
+      // No name yet reads as "Your client", in the reader's language.
       const clientName =
-        [client?.firstName, client?.lastName].filter(Boolean).join(' ') ||
-        'Your client';
+        [client?.firstName, client?.lastName].filter(Boolean).join(' ') || null;
 
       await this.notificationService.notify(
         clientCompletedPlanForInstructor({
@@ -1002,13 +1028,19 @@ export class ProgramAssignmentService {
     ]);
     if (total === 0 || outstanding > 0) return false;
 
-    // A COMPLETED assignment is 100% done by definition — pin the
-    // percent too so the state is self-consistent regardless of how
-    // the workouts reached done/skipped.
+    // Finished is the status; "% done" stays what was trained (skipped
+    // days are not done), so a plan finished with skips does not jump to
+    // 100% the night its last day is skipped.
+    const completed = await this.assignedWorkoutModel.count({
+      where: {
+        programAssignmentId: assignment.id,
+        status: WorkoutLogStatus.Completed,
+      },
+    });
     const [n] = await this.assignmentModel.update(
       {
         status: ProgramAssignmentStatus.Completed,
-        completionPercent: 100,
+        completionPercent: completionPercent(completed, total),
       },
       {
         where: {
@@ -1034,14 +1066,13 @@ export class ProgramAssignmentService {
       this.assignedWorkoutModel.count({
         where: {
           programAssignmentId: assignmentId,
-          status: {
-            [Op.in]: [WorkoutLogStatus.Completed, WorkoutLogStatus.Skipped],
-          },
+          status: WorkoutLogStatus.Completed,
         },
         transaction: tx,
       }),
     ]);
-    const percent = total === 0 ? 0 : Math.round((done / total) * 100);
+    // The same rule as finishing a workout: skipped days are not done.
+    const percent = completionPercent(done, total);
     await this.assignmentModel.update(
       { completionPercent: percent },
       { where: { id: assignmentId }, transaction: tx },
@@ -1069,11 +1100,17 @@ export class ProgramAssignmentService {
     }
 
     for (const pw of workouts) {
+      // A routine is its one workout, known by the routine's name (which
+      // a rename keeps current); a program's days keep their own names.
+      let name = translatedText(pw, 'name', locale);
+      if (program.isSingleWorkout) {
+        name = translatedText(program, 'name', locale);
+      }
       const aw = await this.assignedWorkoutModel.create(
         {
           programAssignmentId: assignmentId,
           masterWorkoutId: pw.id,
-          name: translatedText(pw, 'name', locale),
+          name,
           notes: translatedText(pw, 'notes', locale),
           weekIndex: pw.weekIndex,
           // The slot the client sees, not the one the program was drawn on.
@@ -1144,7 +1181,35 @@ export class ProgramAssignmentService {
     if (!assignment || assignment.instructorId !== instructorId) {
       throw new NotFoundException(apiError('workout.assignmentNotFound'));
     }
+    await this._assertStillCoaching(assignment, instructorId);
     return assignment;
+  }
+
+  /**
+   * A coach holds a client's plan only while they coach them: once the
+   * relationship ends, the plan (a copy that stays with the client) is
+   * no longer theirs to read in full, pause, resume or delete. 404, as
+   * `assertActiveCoachOf`, so a past relationship is not revealed. The
+   * client's own reads, and a coach's plan for themself, pass.
+   */
+  private async _assertStillCoaching(
+    assignment: ProgramAssignment,
+    userId: string,
+  ): Promise<void> {
+    if (assignment.clientId === userId) {
+      return;
+    }
+    const link = await this.instructorClientModel.findOne({
+      where: {
+        instructorId: userId,
+        clientId: assignment.clientId,
+        status: InstructorClientStatus.ACTIVE,
+      },
+      attributes: ['id'],
+    });
+    if (!link?.id) {
+      throw new NotFoundException(apiError('workout.assignmentNotFound'));
+    }
   }
 
   /**

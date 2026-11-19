@@ -14,6 +14,7 @@ import {
   MaxLength,
   Min,
 } from 'class-validator';
+import { CategoryIdsFilter } from '../../category/dto/category-ids';
 import { CoachDirectorySort } from '../entities/coach-directory.enums';
 
 /**
@@ -68,6 +69,16 @@ export class CoachDirectoryDto {
 
   @ApiPropertyOptional({
     description:
+      'With `city`: also coaches with an active online venue, wherever they live ' +
+      '(someone who coaches online coaches every city, as an online session is in every city)',
+  })
+  @Transform(queryFlag)
+  @IsBoolean()
+  @IsOptional()
+  includeOnline?: boolean;
+
+  @ApiPropertyOptional({
+    description:
       'Only coaches the caller asked and is still waiting on (each row says `requestSent`). ' +
       'Matches nobody for a guest.',
   })
@@ -91,6 +102,9 @@ export class CoachDirectoryDto {
   @MaxLength(60, { each: true })
   @IsOptional()
   specializations?: string[];
+
+  @CategoryIdsFilter('Coaches who coach any of these categories')
+  categoryIds?: string[];
 
   @ApiPropertyOptional({
     example: 5,

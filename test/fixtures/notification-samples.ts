@@ -133,6 +133,16 @@ export const NOTIFICATION_SAMPLES: NotificationSample[] = [
   {
     audience: 'client',
     variant: 'typical',
+    build: () => client.coachEndedForClient(U, 'Dan Ionescu'),
+  },
+  {
+    audience: 'client',
+    variant: 'no name',
+    build: () => client.coachEndedForClient(U, null),
+  },
+  {
+    audience: 'client',
+    variant: 'typical',
     build: () => client.coachLeftForClient(U, 'Dan Ionescu'),
   },
   {
@@ -615,6 +625,11 @@ export const NOTIFICATION_SAMPLES: NotificationSample[] = [
     build: () => group.groupInvitationReceived(U, G0, null),
   },
   {
+    audience: 'group member',
+    variant: 'several invited at once',
+    build: () => group.groupInvitationsReceived(G, 'Dan Ionescu'),
+  },
+  {
     audience: 'group owner',
     variant: 'typical',
     build: () => group.groupInvitationAccepted(U, G, 'Ana Pop'),
@@ -703,6 +718,43 @@ export const NOTIFICATION_SAMPLES: NotificationSample[] = [
         programName: 'Forță 8 săptămâni',
         startDate: '2026-06-22',
         instructorName: 'Dan Ionescu',
+      }),
+  },
+  {
+    audience: 'client',
+    variant: 'coach with no name yet',
+    build: () =>
+      workout.programAssignedForClient({
+        clientId: U,
+        assignmentId: 'a-1',
+        programName: 'Forță 8 săptămâni',
+        startDate: '2026-06-22',
+        instructorName: null,
+      }),
+  },
+  {
+    audience: 'instructor',
+    variant: 'client with no name yet',
+    build: () =>
+      workout.clientCompletedWorkoutForInstructor({
+        instructorId: U,
+        clientId: 'c-1',
+        workoutLogId: 'l-1',
+        clientName: null,
+        workoutName: 'Ziua 1: Picioare',
+        setsCompleted: 12,
+      }),
+  },
+  {
+    audience: 'instructor',
+    variant: 'client with no name yet',
+    build: () =>
+      workout.clientCompletedPlanForInstructor({
+        instructorId: U,
+        clientId: 'c-1',
+        clientName: null,
+        programName: 'Forță 8 săptămâni',
+        workoutsCompleted: 24,
       }),
   },
   {

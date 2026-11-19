@@ -12,9 +12,19 @@ import {
   Max,
   MaxLength,
   Min,
+  ValidateIf,
 } from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { MeetingProvider, VenueKind } from '../entities/venue.entity';
+
+/**
+ * Checked only when it holds something: an empty string is how a PATCH
+ * clears an address part (the merge keeps a key left out or null), so it
+ * must not trip the format checks.
+ */
+function isFilled(_dto: object, value: unknown): boolean {
+  return value !== undefined && value !== null && value !== '';
+}
 
 /**
  * Create Venue DTO
@@ -77,8 +87,12 @@ export class CreateVenueDto {
   @MaxLength(120)
   region?: string;
 
-  @ApiPropertyOptional({ example: '400114', maxLength: 20 })
-  @IsOptional()
+  @ApiPropertyOptional({
+    example: '400114',
+    maxLength: 20,
+    description: 'On PATCH, an empty string clears it.',
+  })
+  @ValidateIf(isFilled)
   @IsString()
   @MaxLength(20)
   @Matches(/^[A-Za-z0-9\s\-]{2,20}$/, {
@@ -88,9 +102,10 @@ export class CreateVenueDto {
 
   @ApiPropertyOptional({
     example: 'RO',
-    description: 'ISO 3166-1 alpha-2 country code (uppercase)',
+    description:
+      'ISO 3166-1 alpha-2 country code (uppercase). On PATCH, an empty string clears it.',
   })
-  @IsOptional()
+  @ValidateIf(isFilled)
   @IsString()
   @Length(2, 2)
   @Matches(/^[A-Z]{2}$/, { message: 'countryCode must be 2 uppercase letters' })
@@ -109,17 +124,22 @@ export class CreateVenueDto {
   @ApiPropertyOptional({
     example: 'https://us06web.zoom.us/j/0000000000',
     description:
-      'Persistent meeting URL. Required when `isOnline=true` (or when kind=ONLINE).',
+      'Persistent meeting URL. Optional, also for an online venue (since migration 084); never shown publicly. On PATCH, null clears it.',
   })
   @IsOptional()
   @IsUrl({ protocols: ['http', 'https'], require_protocol: true })
   @MaxLength(500)
-  meetingUrl?: string;
+  meetingUrl?: string | null;
 
-  @ApiPropertyOptional({ enum: MeetingProvider, example: MeetingProvider.ZOOM })
+  @ApiPropertyOptional({
+    enum: MeetingProvider,
+    example: MeetingProvider.ZOOM,
+    description:
+      'Where an online venue meets (Zoom, Google Meet, Teams). Optional; on PATCH, null clears it.',
+  })
   @IsOptional()
   @IsEnum(MeetingProvider)
-  meetingProvider?: MeetingProvider;
+  meetingProvider?: MeetingProvider | null;
 
   @ApiPropertyOptional({
     example: 15,

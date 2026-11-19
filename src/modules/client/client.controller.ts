@@ -173,6 +173,19 @@ export class ClientController {
   }
 
   /**
+   * GET /clients/requests/sent
+   * The requests the caller sent to coaches that still wait on an answer:
+   * the other half of a trainee's requests, which `requests/pending`
+   * (incoming only) never lists.
+   */
+  @Get('requests/sent')
+  @UseGuards(AuthGuard('jwt'))
+  @ApiEndpoint(ClientDocs.getSentRequests)
+  async getSentRequests(@Request() req: AuthenticatedRequest) {
+    return this.clientService.getSentRequests(req.user.id);
+  }
+
+  /**
    * GET /clients/requests/pending/count
    * Counts the caller's pending client_request rows by who has to act:
    * `incoming` (trainees asking this coach), `outgoing` (invitations this

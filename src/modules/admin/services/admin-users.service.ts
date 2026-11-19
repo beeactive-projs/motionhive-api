@@ -132,7 +132,8 @@ export class AdminUsersService {
       const role = await this.roleModel.findOne({ where: { name: dto.role } });
       const links = role
         ? await this.userRoleModel.findAll({
-            where: { roleId: role.id },
+            // Platform roles only, as every role check reads them.
+            where: { roleId: role.id, groupId: null },
             attributes: ['userId'],
           })
         : [];

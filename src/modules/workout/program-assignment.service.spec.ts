@@ -758,6 +758,83 @@ describe('ProgramAssignmentService (smoke — not exhaustive)', () => {
       expect(dates).toEqual(['2026-08-07', '2026-08-10', '2026-08-14']);
     });
 
+    it('numbers the weeks by the calendar when the schedule starts mid-week', async () => {
+      programModel.findByPk.mockResolvedValueOnce(routine());
+      assignmentModel.create.mockResolvedValueOnce({ id: 'pa-1' });
+      assignedWorkoutModel.create.mockResolvedValue({ id: 'aw-x' });
+
+      // Wednesday 2026-08-05, Mon/Wed/Fri, two weeks: Monday the 3rd is gone,
+      // so the first week has two days and next Monday opens week 1.
+      await service.scheduleRoutine(
+        'me',
+        {
+          programId: 'p-1',
+          daysOfWeek: [1, 3, 5],
+          repeatMode: 'BLOCK' as never,
+          repeatWeeks: 2,
+        },
+        '2026-08-05',
+      );
+
+      const rows = assignedWorkoutModel.create.mock.calls.map(
+        (c) => c[0] as { scheduledDate: string; weekIndex: number },
+      );
+      expect(rows.map((r) => [r.scheduledDate, r.weekIndex])).toEqual([
+        ['2026-08-05', 0],
+        ['2026-08-07', 0],
+        ['2026-08-10', 1],
+        ['2026-08-12', 1],
+        ['2026-08-14', 1],
+      ]);
+    });
+
+    it('opens on week 1 when started after the last training day of its week', async () => {
+      programModel.findByPk.mockResolvedValueOnce(routine());
+      assignmentModel.create.mockResolvedValueOnce({ id: 'pa-1' });
+      assignedWorkoutModel.create.mockResolvedValue({ id: 'aw-x' });
+
+      // Friday 2026-08-07, Mon/Wed, two weeks: nothing is left that week.
+      await service.scheduleRoutine(
+        'me',
+        {
+          programId: 'p-1',
+          daysOfWeek: [1, 3],
+          repeatMode: 'BLOCK' as never,
+          repeatWeeks: 2,
+        },
+        '2026-08-07',
+      );
+
+      const rows = assignedWorkoutModel.create.mock.calls.map(
+        (c) => c[0] as { scheduledDate: string; weekIndex: number },
+      );
+      expect(rows.map((r) => [r.scheduledDate, r.weekIndex])).toEqual([
+        ['2026-08-10', 0],
+        ['2026-08-12', 0],
+        ['2026-08-17', 1],
+        ['2026-08-19', 1],
+      ]);
+    });
+
+    it('runs an every-week schedule for 12 weeks', async () => {
+      programModel.findByPk.mockResolvedValueOnce(routine());
+      assignmentModel.create.mockResolvedValueOnce({ id: 'pa-1' });
+      assignedWorkoutModel.create.mockResolvedValue({ id: 'aw-x' });
+
+      // Monday 2026-08-03, Mondays only.
+      await service.scheduleRoutine(
+        'me',
+        { programId: 'p-1', daysOfWeek: [1] },
+        '2026-08-03',
+      );
+
+      const dates = assignedWorkoutModel.create.mock.calls.map(
+        (c) => (c[0] as { scheduledDate: string }).scheduledDate,
+      );
+      expect(dates).toHaveLength(12);
+      expect(dates[11]).toBe('2026-10-19');
+    });
+
     it('marks the assignment as self-scheduled with no instructor', async () => {
       programModel.findByPk.mockResolvedValueOnce(routine());
       assignmentModel.create.mockResolvedValueOnce({ id: 'pa-1' });
@@ -915,9 +992,11 @@ describe('ProgramAssignmentService (smoke — not exhaustive)', () => {
       assignmentModel.findByPk.mockResolvedValueOnce({
         id: 'a-1',
         instructorId: me,
+        clientId: 'client-1',
         status: ProgramAssignmentStatus.Completed,
         update: jest.fn(),
       });
+      instructorClientModel.findOne.mockResolvedValueOnce({ id: 'rel-1' });
       await expect(
         service.update('a-1', { status: ProgramAssignmentStatus.Active }, me),
       ).rejects.toThrow(BadRequestException);
@@ -928,9 +1007,11 @@ describe('ProgramAssignmentService (smoke — not exhaustive)', () => {
       assignmentModel.findByPk.mockResolvedValueOnce({
         id: 'a-1',
         instructorId: me,
+        clientId: 'client-1',
         status: ProgramAssignmentStatus.Active,
         update,
       });
+      instructorClientModel.findOne.mockResolvedValueOnce({ id: 'rel-1' });
       await service.update(
         'a-1',
         { status: ProgramAssignmentStatus.Paused },
@@ -939,6 +1020,78 @@ describe('ProgramAssignmentService (smoke — not exhaustive)', () => {
       expect(update).toHaveBeenCalledWith(
         expect.objectContaining({ status: ProgramAssignmentStatus.Paused }),
       );
+    });
+  });
+
+  // ─── One program's clients ───────────────────────────────────────
+
+  describe('listForInstructor', () => {
+    it("narrows to one program's assignments on the server", async () => {
+      assignmentModel.findAndCountAll.mockResolvedValueOnce({
+        rows: [],
+        count: 0,
+      });
+
+      await service.listForInstructor(me, { programId: 'prog-1', limit: 100 });
+
+      expect(assignmentModel.findAndCountAll).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            instructorId: me,
+            masterProgramId: 'prog-1',
+          }),
+          limit: 100,
+        }),
+      );
+    });
+  });
+
+  // ─── A former coach lets go of the plan ──────────────────────────
+
+  describe('after the coaching ended', () => {
+    function plan() {
+      return {
+        id: 'a-1',
+        instructorId: me,
+        clientId: 'client-1',
+        status: ProgramAssignmentStatus.Active,
+        update: jest.fn(),
+        destroy: jest.fn(),
+        workouts: [],
+      };
+    }
+
+    it('refuses the former coach a pause, a delete or the full plan', async () => {
+      const row = plan();
+      assignmentModel.findByPk.mockResolvedValue(row);
+      instructorClientModel.findOne.mockResolvedValue(null);
+
+      await expect(
+        service.update('a-1', { status: ProgramAssignmentStatus.Paused }, me),
+      ).rejects.toThrow(NotFoundException);
+      await expect(service.softDelete('a-1', me)).rejects.toThrow(
+        NotFoundException,
+      );
+      await expect(service.findById('a-1', me)).rejects.toThrow(
+        NotFoundException,
+      );
+      expect(row.update).not.toHaveBeenCalled();
+      expect(row.destroy).not.toHaveBeenCalled();
+      expect(instructorClientModel.findOne).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({ status: 'ACTIVE' }),
+        }),
+      );
+    });
+
+    it('still lets the client read their plan', async () => {
+      assignmentModel.findByPk.mockResolvedValueOnce(plan());
+      instructorClientModel.findOne.mockClear();
+
+      await expect(service.findById('a-1', 'client-1')).resolves.toMatchObject({
+        id: 'a-1',
+      });
+      expect(instructorClientModel.findOne).not.toHaveBeenCalled();
     });
   });
 

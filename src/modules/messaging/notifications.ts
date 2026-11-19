@@ -78,11 +78,15 @@ export function messageReceived(args: MessageReceivedArgs): NotifyParams {
   // We still call `notify()` so the receipt row gets written (we
   // need that for the email-send worker's dedup), but the in_app
   // channel is suppressed at the receipt layer — no bell entry.
-  const channelOverride: Partial<ChannelPreferences> = {
-    in_app: false,
-    email: !args.suppressEmail,
-    ...(args.muted ? { push: false } : {}),
-  };
+  // The override only ever turns a channel off: an email the person
+  // switched off in their preferences stays off.
+  const channelOverride: Partial<ChannelPreferences> = { in_app: false };
+  if (args.suppressEmail || args.muted) {
+    channelOverride.email = false;
+  }
+  if (args.muted) {
+    channelOverride.push = false;
+  }
 
   const params: NotifyParams = {
     userId: args.recipientId,

@@ -98,13 +98,16 @@ import {
   type VolumeSumsRow,
   type VolumeTotals,
   type VolumeUnit,
+  KG_TOTAL_EXERCISE_SQL,
   addVolume,
   changePercent,
+  countsInKgTotal,
   volumeIn,
   volumeOfSets,
   volumeTotalsFromRow,
   volumeUnitFor,
 } from './volume';
+import { completionPercent } from './assignment-progress';
 
 /**
  * What the apps learn about a workout's photo: whether there is one and
@@ -351,7 +354,10 @@ export interface MentionableCoach {
   /** The coaching profile's display name, else their full name. */
   name: string;
 }
-import { estimateOneRepMaxEpley } from './one-rep-max.estimate';
+import {
+  countsForRecords,
+  estimateOneRepMaxEpley,
+} from './one-rep-max.estimate';
 import { ProgramAssignmentService } from './program-assignment.service';
 
 /** How far back History's memory looks, the longest span first. */
@@ -556,12 +562,23 @@ export class WorkoutLogService {
     // Authorization: the assigned workout must belong to an assignment
     // whose client is the caller. We do the cheap check via raw join
     // to avoid pulling the whole assignment row.
-    const ownsAssignment = await this.assignedWorkoutOwnedByClient(
-      aw.id,
-      userId,
-    );
-    if (!ownsAssignment) {
+    const plan = await this._clientAssignmentOf(aw.id, userId);
+    if (!plan) {
       throw new NotFoundException(apiError('workout.workoutNotFound'));
+    }
+    // A day done is history: starting it again overwrote its status, and
+    // a discard then left it "not started" on a finished plan. A skipped
+    // day can be made up (the nightly sweep skips every missed day).
+    if (aw.status === WorkoutLogStatus.Completed) {
+      throw new ConflictException(apiError('workout.dayAlreadyFinished'));
+    }
+    if (
+      plan.status !== ProgramAssignmentStatus.Active &&
+      plan.status !== ProgramAssignmentStatus.Pending
+    ) {
+      throw new ConflictException(
+        apiError('workout.planNotActive', { status: plan.status }),
+      );
     }
 
     // Compute %1RM resolutions once, batched by exercise.
@@ -985,6 +1002,14 @@ export class WorkoutLogService {
     if (!set || set.exercise?.workoutLogId !== workoutLogId) {
       throw new NotFoundException(apiError('workout.setNotFound'));
     }
+    let completedAt: Date | null = null;
+    if (dto.isCompleted) {
+      completedAt = this._heldBetween(
+        dto.completedAt,
+        log.startedAt,
+        new Date(),
+      );
+    }
     await set.update({
       ...(dto.setType !== undefined && { setType: dto.setType }),
       ...(dto.reps !== undefined && { reps: dto.reps ?? null }),
@@ -1007,7 +1032,7 @@ export class WorkoutLogService {
       ...(dto.restSource === RestSource.Break && { restAfterSeconds: null }),
       ...(dto.isCompleted !== undefined && {
         isCompleted: dto.isCompleted,
-        completedAt: dto.isCompleted ? new Date() : null,
+        completedAt,
       }),
       ...(dto.notes !== undefined && { notes: dto.notes?.trim() || null }),
     });
@@ -1131,6 +1156,49 @@ export class WorkoutLogService {
             { where: { id: left[0].id }, transaction: tx },
           );
         }
+      }
+    });
+  }
+
+  /**
+   * Superset links changed mid-workout: the logger's "Link as superset"
+   * chip and its undo. Each exercise takes the group it is sent with (null
+   * takes it out of any superset), in one transaction. All or nothing: if
+   * any id is not an exercise of this workout, nothing changes. The app
+   * works the groups out, as the routine builder does for a routine.
+   */
+  async setSupersets(
+    workoutLogId: string,
+    items: { id: string; supersetGroupId: number | null }[],
+    userId: string,
+  ): Promise<void> {
+    const log = await this._loadOwnedLog(workoutLogId, userId);
+    if (log.status !== WorkoutLogStatus.InProgress) {
+      throw new BadRequestException(
+        apiError('workout.cannotEditNotInProgress'),
+      );
+    }
+    const ids = [...new Set(items.map((item) => item.id))];
+    // One update per group, rather than one per exercise.
+    const byGroup = new Map<number | null, string[]>();
+    for (const item of items) {
+      const group = item.supersetGroupId ?? null;
+      byGroup.set(group, [...(byGroup.get(group) ?? []), item.id]);
+    }
+    await this.sequelize.transaction(async (tx) => {
+      const found = await this.loggedExerciseModel.findAll({
+        where: { id: ids, workoutLogId },
+        attributes: ['id'],
+        transaction: tx,
+      });
+      if (found.length !== ids.length) {
+        throw new NotFoundException(apiError('exercise.notFound'));
+      }
+      for (const [group, groupIds] of byGroup) {
+        await this.loggedExerciseModel.update(
+          { supersetGroupId: group },
+          { where: { id: groupIds, workoutLogId }, transaction: tx },
+        );
       }
     });
   }
@@ -1263,11 +1331,24 @@ export class WorkoutLogService {
    * the user is not going to do. Deleted rather than flagged: unlike a
    * skipped exercise, a set that was never done carries nothing a coach
    * needs to see. The rows left keep their `orderIndex`; a gap is harmless
-   * because every read sorts by it.
+   * because every read sorts by it. The same checks as several sets at once.
    */
   async removeSetFromLog(
     workoutLogId: string,
     setId: string,
+    userId: string,
+  ): Promise<void> {
+    await this.removeSetsFromLog(workoutLogId, [setId], userId);
+  }
+
+  /**
+   * Several sets of a running workout deleted together, such as a whole
+   * round of a superset. All or nothing: if any of them is not in this
+   * workout, none is deleted.
+   */
+  async removeSetsFromLog(
+    workoutLogId: string,
+    setIds: string[],
     userId: string,
   ): Promise<void> {
     const log = await this._loadOwnedLog(workoutLogId, userId);
@@ -1276,15 +1357,30 @@ export class WorkoutLogService {
         apiError('workout.cannotEditNotInProgress'),
       );
     }
-    const set = await this.loggedSetModel.findByPk(setId, {
-      include: [
-        { model: LoggedExercise, as: 'exercise', attributes: ['workoutLogId'] },
-      ],
+    const ids = [...new Set(setIds)];
+    await this.sequelize.transaction(async (tx) => {
+      const found = await this.loggedSetModel.findAll({
+        where: { id: ids },
+        attributes: ['id'],
+        include: [
+          {
+            model: LoggedExercise,
+            as: 'exercise',
+            attributes: [],
+            where: { workoutLogId },
+            required: true,
+          },
+        ],
+        transaction: tx,
+      });
+      if (found.length !== ids.length) {
+        throw new NotFoundException(apiError('workout.setNotFound'));
+      }
+      await this.loggedSetModel.destroy({
+        where: { id: ids },
+        transaction: tx,
+      });
     });
-    if (!set || set.exercise?.workoutLogId !== workoutLogId) {
-      throw new NotFoundException(apiError('workout.setNotFound'));
-    }
-    await set.destroy();
   }
 
   /**
@@ -1339,8 +1435,16 @@ export class WorkoutLogService {
     return log;
   }
 
-  /** Start the clock again, folding the pause into `pausedSeconds`. */
-  async resume(workoutLogId: string, userId: string): Promise<WorkoutLog> {
+  /**
+   * Start the clock again, folding the pause into `pausedSeconds`. The
+   * pause ends now, or at `at` when Continue was tapped on the lock screen
+   * and the app saves it later.
+   */
+  async resume(
+    workoutLogId: string,
+    userId: string,
+    at?: string,
+  ): Promise<WorkoutLog> {
     const log = await this._loadOwnedLog(workoutLogId, userId);
     if (log.status !== WorkoutLogStatus.InProgress) {
       throw new BadRequestException(
@@ -1348,12 +1452,32 @@ export class WorkoutLogService {
       );
     }
     if (log.pausedAt) {
+      const end = this._heldBetween(at, log.pausedAt, new Date());
       await log.update({
         pausedAt: null,
-        pausedSeconds: this._pausedSecondsAt(log, new Date()),
+        pausedSeconds: this._pausedSecondsAt(log, end),
       });
     }
     return log;
+  }
+
+  /**
+   * A moment the app sent for an earlier tap, held between `from` and
+   * `to` (a phone clock can be off); `to` when none was sent.
+   */
+  private _heldBetween(
+    sent: string | undefined,
+    from: Date | null,
+    to: Date,
+  ): Date {
+    if (!sent) {
+      return to;
+    }
+    let time = Math.min(new Date(sent).getTime(), to.getTime());
+    if (from) {
+      time = Math.max(time, from.getTime());
+    }
+    return new Date(time);
   }
 
   /**
@@ -1873,9 +1997,9 @@ export class WorkoutLogService {
         }),
       ]);
 
+      // No name yet reads as "Your client", in the reader's language.
       const clientName =
-        [client?.firstName, client?.lastName].filter(Boolean).join(' ') ||
-        'Your client';
+        [client?.firstName, client?.lastName].filter(Boolean).join(' ') || null;
 
       await this.notificationService.notify(
         clientCompletedWorkoutForInstructor({
@@ -1899,7 +2023,9 @@ export class WorkoutLogService {
    * Walk every loaded set in `workoutLogId`, Epley-estimate its 1RM,
    * compare against the user's best for that exercise, and insert a
    * new one_rep_max row when it's a record. Same tx as `complete()`
-   * so a rollback unwinds the PRs too.
+   * so a rollback unwinds the PRs too. Warm-ups never count (the set
+   * menu promises it), and neither does a bodyweight exercise: its added
+   * weight is not what it lifts, so a "max" of it means nothing.
    */
   private async _writePrsFromLog(
     workoutLogId: string,
@@ -1909,7 +2035,10 @@ export class WorkoutLogService {
   ): Promise<void> {
     const exercises = await this.loggedExerciseModel.findAll({
       where: { workoutLogId },
-      include: [{ model: LoggedSet, as: 'sets' }],
+      include: [
+        { model: LoggedSet, as: 'sets' },
+        { model: Exercise, as: 'exercise', attributes: ['id', 'kind'] },
+      ],
       transaction: tx,
     });
 
@@ -1917,9 +2046,19 @@ export class WorkoutLogService {
     const sessionBest = new Map<string, number>();
     for (const ex of exercises) {
       if (!ex.exerciseId) continue;
+      // A skipped exercise counts for nothing, records included.
+      if (ex.isSkipped) {
+        continue;
+      }
+      if (!countsForRecords(ex.exercise?.kind)) {
+        continue;
+      }
       let best = 0;
       for (const s of ex.sets ?? []) {
         if (!s.isCompleted) continue;
+        if (s.setType === ExerciseSetType.Warmup) {
+          continue;
+        }
         const est = this.estimateOneRepMaxEpley(s.reps, s.weightKg);
         if (est != null && est > best) best = est;
       }
@@ -2043,6 +2182,10 @@ export class WorkoutLogService {
       if (exercise.exerciseId !== exerciseId) continue;
       for (const set of exercise.sets ?? []) {
         if (!set.isCompleted || set.weightKg == null || set.reps == null) {
+          continue;
+        }
+        // The set behind a record is never a warm-up, as records skip them.
+        if (set.setType === ExerciseSetType.Warmup) {
           continue;
         }
         const estimate = this.estimateOneRepMaxEpley(set.reps, set.weightKg);
@@ -2663,7 +2806,9 @@ export class WorkoutLogService {
   private async _workoutVolume(log: WorkoutLog): Promise<WorkoutVolume> {
     const today = this._exerciseVolumes(log);
     const totalKg = Math.round(
-      today.reduce((sum, entry) => sum + entry.totals.kg, 0),
+      today
+        .filter((entry) => countsInKgTotal(entry.kind))
+        .reduce((sum, entry) => sum + entry.totals.kg, 0),
     );
     const exerciseIds = today
       .map((entry) => entry.exerciseId)
@@ -2728,7 +2873,9 @@ export class WorkoutLogService {
       totals: VolumeTotals;
     }> = [];
     for (const ex of log.exercises ?? []) {
-      if (ex.isSkipped) continue;
+      if (ex.isSkipped) {
+        continue;
+      }
       const totals = volumeOfSets(ex.sets ?? []);
       const same = ex.exerciseId
         ? entries.find((entry) => entry.exerciseId === ex.exerciseId)
@@ -2821,7 +2968,9 @@ export class WorkoutLogService {
           SELECT COALESCE(SUM(ls.reps * ls.weight_kg), 0)
           FROM logged_exercise le
           JOIN logged_set ls ON ls.logged_exercise_id = le.id
+          LEFT JOIN exercise ex ON ex.id = le.exercise_id
           WHERE le.workout_log_id = p.id
+            AND ${KG_TOTAL_EXERCISE_SQL}
             AND le.is_skipped = FALSE
             AND ls.is_completed = TRUE
             AND ls.set_type <> 'WARMUP'
@@ -2843,11 +2992,17 @@ export class WorkoutLogService {
     );
     const row = rows?.[0];
     if (!row) return null;
+    const totalKg = Math.round(Number(row.totalKg ?? 0));
+    // Nothing lifted last time (a bodyweight routine): there is no kg to
+    // compare with, and "same as last (0 kg)" would be a false comparison.
+    if (totalKg <= 0) {
+      return null;
+    }
     return {
       workoutLogId: row.workoutLogId,
       name: row.name,
       completedAt: row.completedAt,
-      totalKg: Math.round(Number(row.totalKg ?? 0)),
+      totalKg,
     };
   }
 
@@ -3570,17 +3725,33 @@ export class WorkoutLogService {
     assignedWorkoutId: string,
     userId: string,
   ): Promise<boolean> {
+    const plan = await this._clientAssignmentOf(assignedWorkoutId, userId);
+    return !!plan;
+  }
+
+  /**
+   * The plan an assigned day belongs to, when the caller is its client;
+   * null otherwise (someone else's day reads as missing).
+   * @Arguments assignedWorkoutId, userId
+   */
+  private async _clientAssignmentOf(
+    assignedWorkoutId: string,
+    userId: string,
+  ): Promise<{ status: string } | null> {
     const row = await this.assignedWorkoutModel.findOne({
       where: { id: assignedWorkoutId },
       include: [
         {
           association: 'assignment',
-          attributes: ['id', 'clientId'],
+          attributes: ['id', 'clientId', 'status'],
           required: true,
         },
       ],
     });
-    return !!row && row.assignment?.clientId === userId;
+    if (!row || !row.assignment || row.assignment.clientId !== userId) {
+      return null;
+    }
+    return { status: row.assignment.status };
   }
 
   /**
@@ -3626,7 +3797,7 @@ export class WorkoutLogService {
       }),
     ]);
     if (total === 0) return;
-    const percent = Math.min(100, Math.round((done / total) * 100));
+    const percent = completionPercent(done, total);
     await this.sequelize.query(
       'UPDATE program_assignment SET completion_percent = :p, updated_at = NOW() WHERE id = :id',
       {

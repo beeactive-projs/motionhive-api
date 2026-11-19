@@ -94,6 +94,28 @@ describe('ProgramAssignmentService — system sweeps', () => {
       );
     });
 
+    it('counts only completed days as done, as finishing a workout does', async () => {
+      assignedWorkoutModel.findAll.mockResolvedValue([
+        { id: 'w1', programAssignmentId: 'a1' },
+      ]);
+      assignedWorkoutModel.update.mockResolvedValue([1]);
+      assignedWorkoutModel.count
+        .mockResolvedValueOnce(10)
+        .mockResolvedValueOnce(2);
+      assignmentModel.update.mockResolvedValue([1]);
+
+      await service.autoSkipPastWorkouts('2026-06-30');
+
+      const doneQuery = assignedWorkoutModel.count.mock.calls[1][0] as {
+        where: { status: unknown };
+      };
+      expect(doneQuery.where.status).toBe(WorkoutLogStatus.Completed);
+      expect(assignmentModel.update).toHaveBeenCalledWith(
+        { completionPercent: 20 },
+        expect.objectContaining({ where: { id: 'a1' } }),
+      );
+    });
+
     it('does nothing when no past workouts are pending', async () => {
       assignedWorkoutModel.findAll.mockResolvedValue([]);
       const result = await service.autoSkipPastWorkouts('2026-06-30');
@@ -105,17 +127,19 @@ describe('ProgramAssignmentService — system sweeps', () => {
   describe('autoCompleteAssignments', () => {
     it('completes an active assignment whose workouts are all done/skipped', async () => {
       assignmentModel.findAll.mockResolvedValue([{ id: 'a1' }]);
-      // total=3, outstanding=0
+      // total=3, outstanding=0, completed=2 (one skipped)
       assignedWorkoutModel.count
         .mockResolvedValueOnce(3)
-        .mockResolvedValueOnce(0);
+        .mockResolvedValueOnce(0)
+        .mockResolvedValueOnce(2);
       assignmentModel.update.mockResolvedValue([1]);
 
       const result = await service.autoCompleteAssignments();
 
       expect(result).toEqual({ completed: 1 });
+      // Finished, and "% done" stays what was trained.
       expect(assignmentModel.update).toHaveBeenCalledWith(
-        { status: 'COMPLETED', completionPercent: 100 },
+        { status: 'COMPLETED', completionPercent: 67 },
         expect.objectContaining({
           where: { id: 'a1', status: { [Op.in]: ['ACTIVE', 'PENDING'] } },
         }),
@@ -176,7 +200,8 @@ describe('ProgramAssignmentService — system sweeps', () => {
       assignmentModel.findOne.mockResolvedValue({ id: 'a1' });
       assignedWorkoutModel.count
         .mockResolvedValueOnce(4)
-        .mockResolvedValueOnce(0);
+        .mockResolvedValueOnce(0)
+        .mockResolvedValueOnce(4);
       assignmentModel.update.mockResolvedValue([1]);
 
       await expect(service.completeIfFinished('a1')).resolves.toBe(true);

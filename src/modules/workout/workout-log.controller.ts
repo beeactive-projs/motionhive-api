@@ -42,8 +42,11 @@ import { AddLogSetDto } from './dto/add-log-set.dto';
 import { CompleteWorkoutDto } from './dto/complete-workout.dto';
 import { LogSetDto } from './dto/log-set.dto';
 import { PauseGapDto } from './dto/pause-gap.dto';
+import { ResumeWorkoutDto } from './dto/resume-workout.dto';
+import { RemoveLogSetsDto } from './dto/remove-log-sets.dto';
 import { RecordOneRepMaxDto } from './dto/record-one-rep-max.dto';
 import { SetWorkoutDurationDto } from './dto/set-workout-duration.dto';
+import { SetLogSupersetsDto } from './dto/set-log-supersets.dto';
 import { SetWorkoutVisibilityDto } from './dto/set-workout-visibility.dto';
 import { SkipLogExerciseDto } from './dto/skip-log-exercise.dto';
 import { SaveLogAsRoutineDto } from './dto/save-log-as-routine.dto';
@@ -120,6 +123,18 @@ export class WorkoutLogController {
     );
   }
 
+  /** The logger's superset links: every exercise whose group changed, at once. */
+  @Patch('workout-logs/:id/supersets')
+  @HttpCode(204)
+  @ApiEndpoint({ ...WorkoutLogDocs.setSupersets, body: SetLogSupersetsDto })
+  async setSupersets(
+    @Request() req: AuthenticatedRequest,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: SetLogSupersetsDto,
+  ): Promise<void> {
+    await this.workoutLogService.setSupersets(id, dto.exercises, req.user.id);
+  }
+
   @Patch('workout-logs/:id/exercises/:exerciseId/skip')
   async setExerciseSkipped(
     @Request() req: AuthenticatedRequest,
@@ -159,6 +174,18 @@ export class WorkoutLogController {
     @Param('setId', ParseUUIDPipe) setId: string,
   ): Promise<void> {
     await this.workoutLogService.removeSetFromLog(id, setId, req.user.id);
+  }
+
+  /** A whole round of a superset at once: one transaction, all or nothing. */
+  @Post('workout-logs/:id/sets/remove')
+  @HttpCode(204)
+  @ApiEndpoint({ ...WorkoutLogDocs.removeSets, body: RemoveLogSetsDto })
+  async removeSets(
+    @Request() req: AuthenticatedRequest,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: RemoveLogSetsDto,
+  ): Promise<void> {
+    await this.workoutLogService.removeSetsFromLog(id, dto.setIds, req.user.id);
   }
 
   @Post('workout-logs/:id/exercises/:exerciseId/sets')
@@ -243,11 +270,13 @@ export class WorkoutLogController {
 
   @Post('workout-logs/:id/resume')
   @HttpCode(200)
+  @ApiEndpoint({ ...WorkoutLogDocs.resume, body: ResumeWorkoutDto })
   async resume(
     @Request() req: AuthenticatedRequest,
     @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: ResumeWorkoutDto,
   ) {
-    return this.workoutLogService.resume(id, req.user.id);
+    return this.workoutLogService.resume(id, req.user.id, dto.at);
   }
 
   /**

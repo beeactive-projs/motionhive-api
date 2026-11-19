@@ -14,6 +14,8 @@ export const messaging: Catalog['errors']['messaging'] = {
     'Poți trimite cel mult {max, plural, one {# mesaj} few {# mesaje} other {# de mesaje}} pe minut. Așteaptă puțin și încearcă din nou.',
   tooManyMessagesInConversation:
     'Trimiți prea multe mesaje în această conversație. Așteaptă puțin și încearcă din nou.',
+  youBlockedThem:
+    'Ai blocat această persoană. Deblocheaz-o ca să îi poți scrie.',
   cannotLoadOlderMessages:
     'Nu am putut încărca mesajele mai vechi. Reîncarcă conversația și încearcă din nou.',
   invalidDate: 'Alege o dată și o oră valide.',

@@ -3,12 +3,17 @@
  */
 
 import { ApiEndpointOptions } from '../decorators/api-response.decorator';
+import { onboardingStateExample } from './onboarding.docs';
 import { ApiStandardResponses } from './standard-responses';
 
 export const UserDocs = {
   getProfile: {
     summary: 'Get current user profile',
-    description: 'Returns the profile of the currently authenticated user.',
+    description:
+      'Returns the profile of the currently authenticated user. ' +
+      '`onboarding` is where they are in the welcome flow, the same object ' +
+      '`GET /users/me/onboarding` sends (`flow` empty means go straight ' +
+      'in), so the apps need no second call on start.',
     auth: true,
     responses: [
       {
@@ -25,8 +30,9 @@ export const UserDocs = {
           timezone: 'Europe/Bucharest',
           isActive: true,
           isEmailVerified: false,
-          roles: ['USER', 'INSTRUCTOR'],
+          roles: ['USER'],
           createdAt: '2024-01-15T10:30:00.000Z',
+          onboarding: onboardingStateExample,
         },
       },
       ApiStandardResponses.Unauthorized,

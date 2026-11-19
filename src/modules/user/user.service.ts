@@ -17,7 +17,7 @@ import {
   literal,
 } from 'sequelize';
 import { Sequelize } from 'sequelize-typescript';
-import { User } from './entities/user.entity';
+import { User, USER_SAFE_ATTRIBUTES } from './entities/user.entity';
 import {
   SocialAccount,
   SocialProvider,
@@ -26,6 +26,7 @@ import * as bcrypt from 'bcrypt';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { UpdateWorkoutSettingsDto } from './dto/update-workout-settings.dto';
+import { normalizeEmail } from '../../common/utils/text.utils';
 import {
   resolveWorkoutSettings,
   type StoredWorkoutSettings,
@@ -51,6 +52,12 @@ import { Role } from '../role/entities/role.entity';
 import { SearchIndexService } from '../search/search-index.service';
 import { JobsService } from '../jobs/jobs.service';
 import type { Locale } from '../../common/i18n';
+import { categoryRowsSql } from '../category/category-sql';
+import {
+  OnboardingStateService,
+  type OnboardingState,
+} from '../onboarding/onboarding-state.service';
+import type { AuthenticatedUser } from '../../common/types/authenticated-request';
 
 /**
  * Roles that must never appear in user-picker search results, regardless of
@@ -59,9 +66,22 @@ import type { Locale } from '../../common/i18n';
  */
 const SEARCH_HIDDEN_ROLES = ['SUPER_ADMIN', 'ADMIN', 'SUPPORT'] as const;
 
+/** Provider names as people read them, for messages. */
+const PROVIDER_NAMES: Record<SocialProvider, string> = {
+  GOOGLE: 'Google',
+  FACEBOOK: 'Facebook',
+  APPLE: 'Apple',
+};
+
 export interface OAuthProfile {
   providerUserId: string;
   email: string;
+  /**
+   * The provider vouches the email is the person's (Google's and Apple's
+   * `email_verified`). Only then may the sign-in join an existing account
+   * with that email; Facebook never says, so it never does.
+   */
+  emailVerified: boolean;
   firstName: string;
   lastName: string;
   /** Language the app was in at sign-in. Only used when creating the user. */
@@ -84,6 +104,23 @@ export interface UserDataExport {
   sessionParticipations: Record<string, unknown>[];
   clientRelationships: Record<string, unknown>[];
   invitations: Record<string, unknown>[];
+  /** What they like to train and why, and (a coach) what they coach. */
+  interests: ExportedCategory[];
+  coachCategories: ExportedCategory[];
+  /** What became of each welcome flow step. */
+  onboardingSteps: Record<string, unknown>[];
+}
+
+/** What the export says about each category a person holds. */
+const EXPORTED_CATEGORY_COLUMNS =
+  'c.slug, c.kind, c.name, x.created_at AS "createdAt"';
+
+/** A category as the export names it: the slug and the English name. */
+interface ExportedCategory {
+  slug: string;
+  kind: string;
+  name: string;
+  createdAt: Date;
 }
 
 @Injectable()
@@ -97,16 +134,28 @@ export class UserService {
     private readonly configService: ConfigService,
     private readonly cryptoService: CryptoService,
     private readonly mediaStorage: MediaStorageService,
-    @Inject(WINSTON_MODULE_NEST_PROVIDER)
-    private readonly logger: LoggerService,
     private readonly searchIndexService: SearchIndexService,
     private readonly jobs: JobsService,
+    private readonly onboardingStateService: OnboardingStateService,
+    @Inject(WINSTON_MODULE_NEST_PROVIDER)
+    private readonly logger: LoggerService,
   ) {}
 
-  /** Exact, case-sensitive match. Caller normalises (lowercase + trim). */
-  async findByEmail(email: string): Promise<User | null> {
+  /**
+   * The account with this email, ignoring letter case and surrounding
+   * spaces (`normalizeEmail`), so a provider sending "Ana@Example.com" finds
+   * the account made as "ana@example.com". Uses the lower(email) index (085).
+   */
+  async findByEmail(
+    email: string,
+    transaction?: Transaction,
+  ): Promise<User | null> {
     return this.userModel.findOne({
-      where: { email },
+      where: this.sequelize.where(
+        this.sequelize.fn('lower', this.sequelize.col('email')),
+        normalizeEmail(email),
+      ),
+      transaction,
     });
   }
 
@@ -160,6 +209,36 @@ export class UserService {
       );
       return resolveWorkoutSettings(merged as StoredWorkoutSettings);
     });
+  }
+
+  /**
+   * `GET /users/me`: the caller's profile with `onboarding`, where they are
+   * in the welcome flow (the same state `GET /users/me/onboarding` sends),
+   * so the apps learn it from the profile they load on start. Role and
+   * level come from the signed-in user, read fresh for this request.
+   */
+  async getMe(
+    user: AuthenticatedUser,
+  ): Promise<Record<string, unknown> & { onboarding: OnboardingState }> {
+    const onboarding = await this.onboardingStateService.read({
+      userId: user.id,
+      isCoach: user.roles.includes('INSTRUCTOR'),
+      fitnessLevel: user.fitnessLevel,
+    });
+    return { ...UserService.toProfileDto(user), onboarding };
+  }
+
+  /**
+   * A person's own account as it may leave the server: the
+   * `USER_SAFE_ATTRIBUTES` fields only, never the password hash, a token or
+   * the lockout counters. For answers that carry the saved row back.
+   */
+  static toOwnAccount(user: User): Partial<Record<keyof User, unknown>> {
+    const account: Partial<Record<keyof User, unknown>> = {};
+    for (const key of USER_SAFE_ATTRIBUTES) {
+      account[key] = user[key];
+    }
+    return account;
   }
 
   /**
@@ -416,7 +495,7 @@ export class UserService {
 
     const user = await this.userModel.create(
       {
-        email: userData.email,
+        email: normalizeEmail(userData.email),
         passwordHash: hashedPassword,
         firstName: userData.firstName,
         lastName: userData.lastName,
@@ -443,13 +522,14 @@ export class UserService {
    *    but only if the email is already verified (prevents OAuth account takeover on
    *    unverified email/password accounts).
    * 3. **New user** — no match. Create a new User (no passwordHash) and SocialAccount.
-   *    OAuth users are auto-verified (isEmailVerified=true).
+   *    The account's email counts as verified when the provider vouched for it.
    *
    * @param provider - The OAuth provider (GOOGLE | FACEBOOK | APPLE)
    * @param profile - Normalised profile data from the provider (email, name, providerUserId)
    * @param transaction - Optional Sequelize transaction
    * @returns { user, isNewUser } — isNewUser is true only when a brand-new account was created
-   * @throws ConflictException if the email matches an unverified password account
+   * @throws ConflictException if the email matches an account but the provider
+   *   did not vouch for it, or matches an unverified password account
    */
   async findOrCreateFromOAuth(
     provider: SocialProvider,
@@ -470,8 +550,17 @@ export class UserService {
     }
 
     // 2. User exists by email? Link social account only if safe.
-    const existingUser = await this.findByEmail(profile.email);
+    const existingUser = await this.findByEmail(profile.email, transaction);
     if (existingUser) {
+      // The provider must vouch for the email, or anyone could add an
+      // address they do not own at the provider and walk into its account.
+      if (!profile.emailVerified) {
+        throw new ConflictException(
+          apiError('user.providerEmailUnverified', {
+            provider: PROVIDER_NAMES[provider],
+          }),
+        );
+      }
       // If user has a password (email/password account), only auto-link
       // if their email is already verified (proves ownership).
       // Otherwise, reject to prevent OAuth account takeover.
@@ -576,8 +665,8 @@ export class UserService {
    * Create a new user from an OAuth profile (no password).
    *
    * Used internally by findOrCreateFromOAuth when no existing account is found.
-   * The created user has passwordHash=null and isEmailVerified=true (identity
-   * was verified by the OAuth provider).
+   * The created user has passwordHash=null, and isEmailVerified is whatever
+   * the provider vouched (`profile.emailVerified`).
    *
    * @param profile - Normalised profile data from the OAuth provider
    * @param transaction - Optional Sequelize transaction
@@ -588,7 +677,7 @@ export class UserService {
     profile: OAuthProfile,
     transaction?: Transaction,
   ): Promise<User> {
-    const existingUser = await this.findByEmail(profile.email);
+    const existingUser = await this.findByEmail(profile.email, transaction);
     if (existingUser) {
       throw new ConflictException(apiError('user.emailTaken'));
     }
@@ -599,11 +688,11 @@ export class UserService {
     );
     const user = await this.userModel.create(
       {
-        email: profile.email,
+        email: normalizeEmail(profile.email),
         passwordHash: null,
         firstName: profile.firstName,
         lastName: profile.lastName,
-        isEmailVerified: true,
+        isEmailVerified: profile.emailVerified,
         language: profile.language,
         handle,
       },
@@ -750,6 +839,9 @@ export class UserService {
       sessionParticipations,
       clientRelationships,
       invitations,
+      interests,
+      coachCategories,
+      onboardingSteps,
     ] = await Promise.all([
       this.socialAccountModel.findAll({
         where: { userId },
@@ -772,6 +864,23 @@ export class UserService {
         where: { email: user.email },
         attributes: ['groupId', 'acceptedAt', 'declinedAt', 'createdAt'],
       }),
+      // Raw queries keep the onboarding entities out of this module.
+      this.sequelize.query<ExportedCategory>(
+        categoryRowsSql('interest', ':userId', EXPORTED_CATEGORY_COLUMNS),
+        { replacements: { userId }, type: QueryTypes.SELECT },
+      ),
+      this.sequelize.query<ExportedCategory>(
+        categoryRowsSql('coach', ':userId', EXPORTED_CATEGORY_COLUMNS),
+        { replacements: { userId }, type: QueryTypes.SELECT },
+      ),
+      this.sequelize.query<Record<string, unknown>>(
+        `SELECT step, status, flow_version AS "flowVersion",
+                created_at AS "createdAt", updated_at AS "updatedAt"
+           FROM user_onboarding_step
+          WHERE user_id = :userId
+          ORDER BY created_at`,
+        { replacements: { userId }, type: QueryTypes.SELECT },
+      ),
     ]);
 
     this.logger.log(`Data export generated for user: ${userId}`, 'UserService');
@@ -785,6 +894,9 @@ export class UserService {
       sessionParticipations: sessionParticipations.map((p) => p.toJSON()),
       clientRelationships: clientRelationships.map((c) => c.toJSON()),
       invitations: invitations.map((i) => i.toJSON()),
+      interests,
+      coachCategories,
+      onboardingSteps,
     };
   }
 

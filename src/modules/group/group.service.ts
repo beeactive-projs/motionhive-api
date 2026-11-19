@@ -8,7 +8,7 @@ import {
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/sequelize';
 import { WINSTON_MODULE_NEST_PROVIDER } from 'nest-winston';
-import { Op, Transaction, WhereOptions, literal } from 'sequelize';
+import { Op, QueryTypes, Transaction, WhereOptions, literal } from 'sequelize';
 import { buildPaginatedResponse } from '../../common/dto/pagination.dto';
 import { CryptoService } from '../../common/services/crypto.service';
 import { EmailService } from '../../common/services/email.service';
@@ -61,6 +61,10 @@ import {
   JoinRequestDecision,
 } from './dto/decide-join-request.dto';
 import { apiError, toLocale } from '../../common/i18n';
+import { categoryIdsSql, hasAnyCategorySql } from '../category/category-sql';
+import { CategoryPicker, CategoryService } from '../category/category.service';
+import { GroupCategory } from './entities/group-category.entity';
+import { PostApprovalState } from '../post/entities/post.entity';
 
 /**
  * Group Service
@@ -90,6 +94,68 @@ export interface PublicInstructorProfile {
   socialLinks?: SocialLinks | null;
 }
 
+/**
+ * What a group trains (migration 081): its category ids as a JSON array in
+ * the list's order, over the `Group` alias every group read uses.
+ */
+const GROUP_CATEGORY_IDS_SQL = categoryIdsSql('group', '"Group"."id"');
+
+/** A group as the apps read it: its columns plus what it trains. */
+export type GroupWithCategories = Group & { categoryIds: string[] };
+
+/** When the group last had a published post: its sign of life. */
+const LAST_POST_AT_SQL = `(SELECT MAX(p.posted_at) FROM post p WHERE p.group_id = "Group"."id" AND p.approval_state = '${PostApprovalState.APPROVED}' AND p.deleted_at IS NULL)`;
+
+/** Join requests waiting on the owner. */
+const PENDING_JOIN_REQUESTS_SQL = `(SELECT COUNT(*)::int FROM group_join_request r WHERE r.group_id = "Group"."id" AND r.status = '${GroupJoinRequestStatus.PENDING}')`;
+
+/** Posts waiting for the owner or a moderator to review them. */
+const PENDING_POSTS_SQL = `(SELECT COUNT(*)::int FROM post p WHERE p.group_id = "Group"."id" AND p.approval_state = '${PostApprovalState.PENDING}' AND p.deleted_at IS NULL)`;
+
+/** The person who runs the group, as Groups home and the group page name them. */
+export interface GroupOwnerSummary {
+  id: string;
+  firstName: string;
+  lastName: string;
+  handle: string | null;
+  avatarUrl: string | null;
+}
+
+/**
+ * A group as one of its members reads it: their role, the last post, who runs
+ * it, and the work waiting on them. Join requests count only for the owner,
+ * waiting posts for the owner and moderators; everyone else reads 0.
+ */
+export type MemberGroupView = GroupWithCategories & {
+  myRole: GroupMemberRole;
+  memberCount: number;
+  lastPostAt: Date | null;
+  pendingJoinRequestCount: number;
+  pendingPostCount: number;
+  owner: GroupOwnerSummary | null;
+};
+
+/** The extra columns a member's read of a group asks for. */
+const MEMBER_VIEW_ATTRIBUTES: Array<[ReturnType<typeof literal>, string]> = [
+  [
+    literal(
+      '(SELECT COUNT(*)::int FROM group_member WHERE group_member.group_id = "Group"."id" AND group_member.left_at IS NULL)',
+    ),
+    'memberCount',
+  ],
+  [literal(GROUP_CATEGORY_IDS_SQL), 'categoryIds'],
+  [literal(LAST_POST_AT_SQL), 'lastPostAt'],
+  [literal(PENDING_JOIN_REQUESTS_SQL), 'pendingJoinRequestCount'],
+  [literal(PENDING_POSTS_SQL), 'pendingPostCount'],
+];
+
+/** Who runs the group, loaded with a member's read of it. */
+const OWNER_INCLUDE = {
+  model: User,
+  as: 'instructor',
+  attributes: ['id', 'firstName', 'lastName', 'handle', 'avatarUrl'],
+};
+
 /** Result returned by `selfJoinGroup`. Branches on group's joinPolicy. */
 export interface SelfJoinResult {
   status: 'JOINED' | 'PENDING';
@@ -110,12 +176,15 @@ export class GroupService {
     private readonly instructorClientModel: typeof InstructorClient,
     @InjectModel(User)
     private readonly userModel: typeof User,
+    @InjectModel(GroupCategory)
+    private readonly groupCategoryModel: typeof GroupCategory,
     private readonly emailService: EmailService,
     private readonly cryptoService: CryptoService,
-    @Inject(WINSTON_MODULE_NEST_PROVIDER)
-    private readonly logger: LoggerService,
     private readonly searchIndexService: SearchIndexService,
     private readonly notificationService: NotificationService,
+    private readonly categoryService: CategoryService,
+    @Inject(WINSTON_MODULE_NEST_PROVIDER)
+    private readonly logger: LoggerService,
   ) {}
 
   // =====================================================
@@ -174,11 +243,23 @@ export class GroupService {
    *
    * Only users with INSTRUCTOR role can create groups.
    * The creator becomes the owner member.
-   * Uses a transaction to ensure atomicity of group + member creation.
+   * Uses a transaction to ensure atomicity of group + member + category
+   * creation. `categoryIds` (activities, checked against the list) are
+   * what the group trains.
    */
-  async create(userId: string, dto: CreateGroupDto): Promise<Group> {
+  async create(
+    userId: string,
+    dto: CreateGroupDto,
+  ): Promise<GroupWithCategories> {
     const baseSlug = this.generateSlug(dto.name);
     const MAX_SLUG_RETRIES = 3;
+    const pickedIds = dto.categoryIds ?? [];
+    if (pickedIds.length > 0) {
+      await this.categoryService.assertPickable(
+        CategoryPicker.Group,
+        pickedIds,
+      );
+    }
 
     for (let attempt = 0; attempt <= MAX_SLUG_RETRIES; attempt++) {
       const sequelize = this.groupModel.sequelize!;
@@ -218,6 +299,14 @@ export class GroupService {
           { transaction },
         );
 
+        if (pickedIds.length > 0) {
+          await this.groupCategoryModel.bulkCreate(
+            pickedIds.map((categoryId) => ({ groupId: group.id, categoryId })),
+            { transaction },
+          );
+        }
+        const categoryIds = await this.readCategoryIds(group.id, transaction);
+
         await transaction.commit();
 
         // After commit so a search-index failure can't roll back the
@@ -229,7 +318,7 @@ export class GroupService {
           'GroupService',
         );
 
-        return group;
+        return this.withCategoryIds(group, categoryIds);
       } catch (error: unknown) {
         await transaction.rollback();
 
@@ -262,9 +351,7 @@ export class GroupService {
    * the user's role in it: whether they may post somewhere depends on it
    * (staff always may), and the membership rows are loaded here anyway.
    */
-  async getMyGroups(
-    userId: string,
-  ): Promise<Array<Group & { myRole: GroupMemberRole }>> {
+  async getMyGroups(userId: string): Promise<MemberGroupView[]> {
     const memberships = await this.memberModel.findAll({
       where: { userId, leftAt: null },
       attributes: ['groupId', 'role'],
@@ -272,26 +359,66 @@ export class GroupService {
 
     const roleByGroup = new Map(memberships.map((m) => [m.groupId, m.role]));
     const groupIds = [...roleByGroup.keys()];
-    if (groupIds.length === 0) return [];
-
-    const memberCountLiteral = literal(
-      '(SELECT COUNT(*)::int FROM group_member WHERE group_member.group_id = "Group"."id" AND group_member.left_at IS NULL)',
-    );
+    if (groupIds.length === 0) {
+      return [];
+    }
 
     const groups = await this.groupModel.findAll({
       where: { id: { [Op.in]: groupIds }, isActive: true },
-      attributes: {
-        include: [[memberCountLiteral, 'memberCount']],
-      },
+      attributes: { include: MEMBER_VIEW_ATTRIBUTES },
+      include: [OWNER_INCLUDE],
     });
-    // Plain rows: an instance drops an added property when serialised.
     return groups.map((group) => {
-      const plain = group.get({ plain: true }) as Group & {
-        myRole: GroupMemberRole;
-      };
-      plain.myRole = roleByGroup.get(group.id) ?? GroupMemberRole.MEMBER;
-      return plain;
+      let role = roleByGroup.get(group.id);
+      if (!role) {
+        role = GroupMemberRole.MEMBER;
+      }
+      return this.toMemberView(group, role);
     });
+  }
+
+  /**
+   * A group row as its member reads it. Plain, because an instance drops an
+   * added property when serialised; the counts are masked to what the role
+   * may act on, so a member never learns how many people asked to join.
+   */
+  private toMemberView(group: Group, role: GroupMemberRole): MemberGroupView {
+    const { instructor, ...columns } = group.get({ plain: true }) as Omit<
+      MemberGroupView,
+      'owner' | 'myRole'
+    > & { instructor?: GroupOwnerSummary | null };
+    const isOwner = role === GroupMemberRole.OWNER;
+    const isStaff = isOwner || role === GroupMemberRole.MODERATOR;
+
+    let pendingJoinRequestCount = 0;
+    if (isOwner) {
+      pendingJoinRequestCount = Number(columns.pendingJoinRequestCount ?? 0);
+    }
+    let pendingPostCount = 0;
+    if (isStaff) {
+      pendingPostCount = Number(columns.pendingPostCount ?? 0);
+    }
+
+    let owner: GroupOwnerSummary | null = null;
+    if (instructor) {
+      owner = {
+        id: instructor.id,
+        firstName: instructor.firstName,
+        lastName: instructor.lastName,
+        handle: instructor.handle ?? null,
+        avatarUrl: instructor.avatarUrl ?? null,
+      };
+    }
+
+    return {
+      ...columns,
+      myRole: role,
+      memberCount: Number(columns.memberCount ?? 0),
+      lastPostAt: columns.lastPostAt ?? null,
+      pendingJoinRequestCount,
+      pendingPostCount,
+      owner,
+    } as MemberGroupView;
   }
   /**
    * Groups two people are both active members of — "groups in common" on a
@@ -359,24 +486,12 @@ export class GroupService {
    * moderator who sits past the first page as a non-member and strips
    * their controls. The role is authoritative here and costs nothing.
    */
-  async getById(
-    groupId: string,
-    userId: string,
-  ): Promise<Group & { myRole: GroupMemberRole; memberCount: number }> {
+  async getById(groupId: string, userId: string): Promise<MemberGroupView> {
     const group = await this.groupModel.findByPk(groupId, {
-      // Every list endpoint attaches this; the single-group read did not, so
-      // a detail screen rendered "0 members" for a group the list it came
-      // from had just counted correctly.
-      attributes: {
-        include: [
-          [
-            literal(
-              '(SELECT COUNT(*)::int FROM group_member WHERE group_member.group_id = "Group"."id" AND group_member.left_at IS NULL)',
-            ),
-            'memberCount',
-          ],
-        ],
-      },
+      // The member count rides along as on every list: without it a detail
+      // screen rendered "0 members" for a group the list had just counted.
+      attributes: { include: MEMBER_VIEW_ATTRIBUTES },
+      include: [OWNER_INCLUDE],
     });
 
     if (!group) {
@@ -384,26 +499,31 @@ export class GroupService {
     }
 
     const member = await this.assertMember(groupId, userId);
-
-    // `toJSON` first: spreading a Sequelize instance copies its internals,
-    // not its columns.
-    return { ...group.toJSON(), myRole: member.role } as Group & {
-      myRole: GroupMemberRole;
-      memberCount: number;
-    };
+    return this.toMemberView(group, member.role);
   }
 
   /**
    * Update group (owner only)
    *
-   * If name is changed, slug is automatically regenerated.
+   * If name is changed, slug is automatically regenerated. `categoryIds`,
+   * when sent, replaces what the group trains in the same transaction (an
+   * empty list clears it); left out, the categories stay as they are.
    */
   async update(
     groupId: string,
     userId: string,
     dto: UpdateGroupDto,
-  ): Promise<Group> {
+  ): Promise<GroupWithCategories> {
     const group = await this.assertOwnerAndGet(groupId, userId);
+
+    // The categories are rows of their own, never a column of the group.
+    const { categoryIds: pickedIds, ...fields } = dto;
+    if (pickedIds && pickedIds.length > 0) {
+      await this.categoryService.assertPickable(
+        CategoryPicker.Group,
+        pickedIds,
+      );
+    }
 
     // If name changes, regenerate slug. `slug` isn't on UpdateGroupDto
     // (the client can't set it directly); we attach it here so Sequelize
@@ -411,15 +531,22 @@ export class GroupService {
     // transaction so a concurrent rename can't grab the same slug between
     // the uniqueness check and the update — the unique index is the real
     // guard, but this collapses the race window.
-    const updatePayload: UpdateGroupDto & { slug?: string } = { ...dto };
+    const updatePayload: Omit<UpdateGroupDto, 'categoryIds'> & {
+      slug?: string;
+    } = { ...fields };
     const sequelize = this.groupModel.sequelize!;
     const tx = await sequelize.transaction();
+    let categoryIds: string[];
     try {
       if (dto.name && dto.name !== group.name) {
         const baseSlug = this.generateSlug(dto.name);
         updatePayload.slug = await this.ensureUniqueSlug(baseSlug, tx);
       }
       await group.update(updatePayload, { transaction: tx });
+      if (pickedIds) {
+        await this.replaceCategories(group.id, pickedIds, tx);
+      }
+      categoryIds = await this.readCategoryIds(group.id, tx);
       await tx.commit();
     } catch (err) {
       await tx.rollback();
@@ -427,7 +554,7 @@ export class GroupService {
     }
 
     await this.searchIndexService.upsertGroup(group.id);
-    return group;
+    return this.withCategoryIds(group, categoryIds);
   }
 
   /**
@@ -771,6 +898,14 @@ export class GroupService {
       // Folded and escaped like the search below: "brasov" finds "Brașov".
       ...(dto.city ? [foldedContains('"Group"."city"', dto.city, esc)] : []),
     ];
+    if (dto.categoryIds && dto.categoryIds.length > 0) {
+      // Groups that train any of the picked categories.
+      andClauses.push(
+        literal(
+          hasAnyCategorySql('group', '"Group"."id"', dto.categoryIds, esc),
+        ),
+      );
+    }
 
     const where: WhereOptions<Group> = {
       isPublic: true,
@@ -813,6 +948,8 @@ export class GroupService {
             'country',
             'createdAt',
             [memberCountLiteral, 'memberCount'],
+            // What the group trains (migration 081), for the Discover filters.
+            [literal(GROUP_CATEGORY_IDS_SQL), 'categoryIds'],
           ],
         },
         order: [[memberCountLiteral, 'DESC']],
@@ -883,6 +1020,7 @@ export class GroupService {
           'country',
           'createdAt',
           [memberCountLiteral, 'memberCount'],
+          [literal(GROUP_CATEGORY_IDS_SQL), 'categoryIds'],
         ],
       },
       order: [[memberCountLiteral, 'DESC']],
@@ -926,6 +1064,7 @@ export class GroupService {
           'timezone',
           'createdAt',
           [memberCountLiteral, 'memberCount'],
+          [literal(GROUP_CATEGORY_IDS_SQL), 'categoryIds'],
         ],
       },
     });
@@ -1910,6 +2049,62 @@ export class GroupService {
     if (!group) throw new NotFoundException(apiError('group.notFound'));
     await this.assertOwner(groupId, userId);
     return group;
+  }
+
+  /**
+   * What a group trains, as its reads send it: ids in the list's order. In
+   * the caller's transaction, so a write answers with what it just saved.
+   */
+  private async readCategoryIds(
+    groupId: string,
+    transaction: Transaction,
+  ): Promise<string[]> {
+    const rows = await this.groupModel.sequelize!.query<{
+      categoryIds: string[];
+    }>(`SELECT ${categoryIdsSql('group', ':groupId')} AS "categoryIds"`, {
+      replacements: { groupId },
+      type: QueryTypes.SELECT,
+      transaction,
+    });
+    if (rows.length === 0) {
+      return [];
+    }
+    return rows[0].categoryIds;
+  }
+
+  /**
+   * Swaps what a group trains for `ids` (an empty list clears it). The group
+   * row is locked first, so two edits at once run one after the other: the
+   * second would otherwise insert the same links and fail with a 500.
+   */
+  private async replaceCategories(
+    groupId: string,
+    ids: string[],
+    transaction: Transaction,
+  ): Promise<void> {
+    await this.groupModel.findByPk(groupId, {
+      attributes: ['id'],
+      transaction,
+      lock: transaction.LOCK.UPDATE,
+    });
+    await this.groupCategoryModel.destroy({ where: { groupId }, transaction });
+    if (ids.length > 0) {
+      await this.groupCategoryModel.bulkCreate(
+        ids.map((categoryId) => ({ groupId, categoryId })),
+        { transaction },
+      );
+    }
+  }
+
+  /** A written group as its reads send it: plain, with `categoryIds`. */
+  private withCategoryIds(
+    group: Group,
+    categoryIds: string[],
+  ): GroupWithCategories {
+    // Plain: an instance drops an added property when serialised.
+    const plain = group.get({ plain: true }) as GroupWithCategories;
+    plain.categoryIds = categoryIds;
+    return plain;
   }
 
   /**

@@ -52,6 +52,7 @@ describe('AccountDeletionService', () => {
     transaction: jest.fn((cb: (t: unknown) => unknown) => cb(tx)),
     query: jest.fn(),
   };
+  const appleAccounts = { revokeForUser: jest.fn() };
 
   const ana = {
     id: 'user-1',
@@ -110,6 +111,7 @@ describe('AccountDeletionService', () => {
       jwtService,
       configService,
       sequelize as never,
+      appleAccounts as never,
       makeSilentLogger(),
     );
   });
@@ -173,6 +175,18 @@ describe('AccountDeletionService', () => {
       expect(windDownService.windDown).toHaveBeenCalledWith('user-1');
       expect(row.woundDownAt).toBeInstanceOf(Date);
       expect(emailService.sendAccountDeletionScheduledEmail).toHaveBeenCalled();
+    });
+
+    it('ends the Sign in with Apple grant once the account is scheduled', async () => {
+      const code = await sendRealCode();
+
+      await service.confirm(ana, code);
+
+      expect(appleAccounts.revokeForUser).toHaveBeenCalledWith('user-1');
+      // After the commit: the account is already signed out when Apple is asked.
+      const revokedAt = appleAccounts.revokeForUser.mock.invocationCallOrder[0];
+      const committedAt = sequelize.transaction.mock.invocationCallOrder.at(-1);
+      expect(revokedAt).toBeGreaterThan(committedAt as number);
     });
 
     it('refuses a wrong code and counts the try', async () => {

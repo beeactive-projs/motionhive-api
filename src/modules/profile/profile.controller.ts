@@ -64,9 +64,13 @@ export class ProfileController {
   // =====================================================
 
   @Get('instructors/discover')
+  @UseGuards(OptionalJwtAuthGuard)
   @ApiEndpoint(ProfileDocs.discoverTrainers)
-  async discoverInstructors(@Query() dto: DiscoverInstructorsDto) {
-    return this.profileService.discoverInstructors(dto);
+  async discoverInstructors(
+    @Query() dto: DiscoverInstructorsDto,
+    @Request() req: AuthenticatedRequest,
+  ) {
+    return this.profileService.discoverInstructors(req.user?.id ?? null, dto);
   }
 
   /** Before `instructors/:id`, or its UUID pipe would reject "directory". */

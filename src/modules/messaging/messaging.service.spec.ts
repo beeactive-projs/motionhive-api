@@ -63,6 +63,7 @@ describe('MessagingService — Stage 2 core', () => {
   let content: { detectThreats: jest.Mock };
   let rateLimit: {
     assertSendAllowed: jest.Mock;
+    assertConversationSendAllowed: jest.Mock;
     shouldSuppressMessageEmail: jest.Mock;
   };
   let velocity: { recordSendAndMaybeAlarm: jest.Mock };
@@ -86,6 +87,7 @@ describe('MessagingService — Stage 2 core', () => {
   // Honour both: if argA is a function we treat it as the callback;
   // otherwise the callback is in argB.
   const sequelize = {
+    escape: (value: string) => `'${value.replace(/'/g, "''")}'`,
     transaction: jest.fn(
       async <T>(
         argA: unknown,
@@ -148,6 +150,7 @@ describe('MessagingService — Stage 2 core', () => {
     };
     rateLimit = {
       assertSendAllowed: jest.fn().mockResolvedValue(undefined),
+      assertConversationSendAllowed: jest.fn().mockResolvedValue(undefined),
       shouldSuppressMessageEmail: jest.fn().mockReturnValue(false),
     };
     velocity = {
@@ -1227,7 +1230,7 @@ describe('MessagingService — Stage 2 core', () => {
       expect(params.type).toBe(NotificationType.MESSAGE_RECEIVED);
     });
 
-    it('on first message in conversation: in_app off, email on', async () => {
+    it('on first message in conversation: in_app off, email left to the preference', async () => {
       // Policy: bell never sees per-message rows (sidebar Messages badge
       // is the persistent in-app signal). Email goes through on the
       // first message of the (recipient, conversation) hour-window.
@@ -1240,7 +1243,8 @@ describe('MessagingService — Stage 2 core', () => {
       const params = notifications.notify.mock.calls[0][0] as {
         channelOverride?: { in_app?: boolean; email?: boolean };
       };
-      expect(params.channelOverride).toEqual({ in_app: false, email: true });
+      // No email key: the person's own email preference decides.
+      expect(params.channelOverride).toEqual({ in_app: false });
     });
 
     it('when shouldSuppressMessageEmail returns true: both in_app and email suppressed', async () => {
@@ -1660,6 +1664,10 @@ describe('MessagingService — Stage 2 core', () => {
 
       const where = part.findAndCountAll.mock.calls[0][0].where;
       expect(where[Op.or][0]).toEqual({ clearedAt: null });
+      // And a chat with someone this user blocked stays out.
+      const blockFilter = JSON.stringify(where[Op.and]);
+      expect(blockFilter).toContain('user_block');
+      expect(blockFilter).toContain(`b.blocker_id = '${me}'`);
       expect(page.items[0].lastMessagePreview).toBeNull();
       expect(page.items[0].lastMessageAt).toBeNull();
     });

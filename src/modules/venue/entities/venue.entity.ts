@@ -48,8 +48,8 @@ export enum MeetingProvider {
  *
  * Shapes the venue covers:
  *   - Physical (GYM / STUDIO / PARK / OUTDOOR / OTHER): address fields required, `isOnline=false`.
- *   - Online (ONLINE): `meetingUrl` + optional `meetingProvider`, `isOnline=true`, address fields null.
- *   - Mobile (CLIENT_HOME): no address (client's address belongs to the booking), `travelRadiusKm` optional.
+ *   - Online (ONLINE): optional `meetingUrl` + optional `meetingProvider` (both optional since 084), `isOnline=true`, address fields null.
+ *   - Mobile (CLIENT_HOME): no street (client's address belongs to the booking), city/region/country may name the area, `travelRadiusKm` optional.
  *
  * Lifecycle:
  *   - `isActive=false`: instructor archived the venue; hide from new-session pickers but keep FK valid.

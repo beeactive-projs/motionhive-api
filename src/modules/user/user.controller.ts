@@ -30,7 +30,7 @@ import {
  * User Controller
  *
  * Handles user-related endpoints:
- * - GET    /users/me → Get current user profile
+ * - GET    /users/me → Get current user profile (+ `onboarding` state)
  * - PATCH  /users/me → Update user core fields
  *
  * Deleting the account lives in AccountDeletionModule (/users/me/deletion):
@@ -45,12 +45,12 @@ export class UserController {
   constructor(private readonly userService: UserService) {}
 
   /**
-   * Get Current User Profile
+   * Get Current User Profile, with where the caller is in the welcome flow
    */
   @Get('me')
   @ApiEndpoint(UserDocs.getProfile)
-  getProfile(@Request() req: AuthenticatedRequest) {
-    return UserService.toProfileDto(req.user);
+  async getProfile(@Request() req: AuthenticatedRequest) {
+    return this.userService.getMe(req.user);
   }
 
   /**

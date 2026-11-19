@@ -6,6 +6,17 @@ import { Role } from './entities/role.entity';
 import { Permission } from './entities/permission.entity';
 import { UserRole } from './entities/user-role.entity';
 
+/**
+ * The `group_id` a role read matches: null (the platform's own roles)
+ * when no group is named, else that group.
+ */
+function scopeOf(groupId: string | undefined): string | null {
+  if (groupId === undefined) {
+    return null;
+  }
+  return groupId;
+}
+
 @Injectable()
 export class RoleService {
   constructor(
@@ -173,10 +184,16 @@ export class RoleService {
     return deleted > 0;
   }
 
+  /**
+   * The user's roles. Without a group, the global ones only: a role row
+   * scoped to a group (written when a group invitation is accepted) must
+   * never count as a platform role, or a group invitation could make
+   * someone a SUPER_ADMIN. With a group, the roles in that group.
+   */
   async getUserRoles(userId: string, groupId?: string): Promise<Role[]> {
     const where: WhereOptions<UserRole> = {
       userId,
-      ...(groupId !== undefined && { groupId }),
+      groupId: scopeOf(groupId),
     };
 
     const userRoles = await this.userRoleModel.findAll({
@@ -222,10 +239,11 @@ export class RoleService {
   ): Promise<boolean> {
     const role = await this.findByName(roleName);
 
+    // Global roles only without a group (see getUserRoles).
     const where: WhereOptions<UserRole> = {
       userId,
       roleId: role.id,
-      ...(groupId !== undefined && { groupId }),
+      groupId: scopeOf(groupId),
     };
 
     const userRole = await this.userRoleModel.findOne({ where });
@@ -244,10 +262,12 @@ export class RoleService {
 
     const roleIds = roles.map((r) => r.id);
 
+    // Global roles only without a group (see getUserRoles): this is the
+    // check RolesGuard and impersonation make.
     const where: WhereOptions<UserRole> = {
       userId,
       roleId: roleIds,
-      ...(groupId !== undefined && { groupId }),
+      groupId: scopeOf(groupId),
     };
 
     const count = await this.userRoleModel.count({ where });

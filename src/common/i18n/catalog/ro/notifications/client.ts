@@ -29,6 +29,10 @@ export const client: Catalog['notifications']['client'] = {
     title: 'Un client a renunțat',
     body: '{name, select, null {Un client} other {{name}}} nu se mai antrenează cu tine.',
   },
+  coachEnded: {
+    title: 'Colaborarea s-a încheiat',
+    body: '{name, select, null {Antrenorul tău} other {{name}}} a încheiat colaborarea cu tine. Planurile și antrenamentele tale rămân în contul tău.',
+  },
   coachLeft: {
     title: 'Antrenorul tău a părăsit MotionHive',
     body: '{name, select, null {Antrenorul tău} other {{name}}} și-a închis contul MotionHive. Planurile primite rămân în contul tău.',

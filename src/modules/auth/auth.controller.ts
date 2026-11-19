@@ -26,6 +26,7 @@ import { VerifyEmailDto } from './dto/verify-email.dto';
 import { ResendVerificationDto } from './dto/resend-verification.dto';
 import { GoogleAuthDto } from './dto/google-auth.dto';
 import { FacebookAuthDto } from './dto/facebook-auth.dto';
+import { AppleAuthDto } from './dto/apple-auth.dto';
 import { RestoreAccountDto } from './dto/restore-account.dto';
 import { ApiEndpoint } from '../../common/decorators/api-response.decorator';
 import { AuthDocs } from '../../common/docs/auth.docs';
@@ -158,6 +159,13 @@ export class AuthController {
   @ApiEndpoint({ ...AuthDocs.google, body: GoogleAuthDto })
   async google(@Body() dto: GoogleAuthDto) {
     return this.authService.registerWithGoogle(dto.idToken, dto.language);
+  }
+
+  @Post('apple')
+  @Throttle({ default: { limit: 10, ttl: 900000 } })
+  @ApiEndpoint({ ...AuthDocs.apple, body: AppleAuthDto })
+  async apple(@Body() dto: AppleAuthDto) {
+    return this.authService.registerWithApple(dto);
   }
 
   @Post('facebook')

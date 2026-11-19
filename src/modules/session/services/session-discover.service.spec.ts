@@ -15,6 +15,11 @@ import {
   SessionTemplateStatus,
 } from '../entities/session.enums';
 import { foldedLike } from '../../../../test/helpers/folded-search';
+import {
+  firstCategoryIdsSql,
+  firstHasAnyCategorySql,
+  type CategorySource,
+} from '../../category/category-sql';
 import { makeSilentLogger } from '../../../../test/helpers/sequelize-mocks';
 
 describe('SessionDiscoverService', () => {
@@ -186,6 +191,60 @@ describe('SessionDiscoverService', () => {
         foldedLike('"template"."title"', 'yoga'),
         foldedLike('"template"."description"', 'yoga'),
       ]);
+    });
+
+    describe('categoryIds filter', () => {
+      // A session trains its group's categories, else its coach's.
+      const sources: CategorySource[] = [
+        { link: 'group', ownerRef: '"template"."group_id"' },
+        { link: 'coach', ownerRef: '"template"."instructor_id"' },
+      ];
+      const quote = (value: string) => `'${value.replace(/'/g, "''")}'`;
+      type Query = {
+        include: Array<{
+          where: Record<symbol, Array<{ val?: string }>>;
+          attributes: unknown[];
+        }>;
+      };
+      const templateInclude = () => {
+        const [[query]] = instanceModel.findAndCountAll.mock.calls as [[Query]];
+        return query.include[0];
+      };
+
+      it('matches by the same rule as the categoryIds each row shows', async () => {
+        await service.discover(null, {
+          page: 1,
+          limit: 20,
+          categoryIds: ['cat-yoga', 'cat-run'],
+        });
+
+        const include = templateInclude();
+        const filters = include.where[Op.and]
+          .map((clause) => clause.val)
+          .filter((sql): sql is string => typeof sql === 'string');
+        expect(filters).toEqual([
+          firstHasAnyCategorySql(sources, ['cat-yoga', 'cat-run'], quote),
+        ]);
+        // The group decides; the coach only when the group has none.
+        expect(filters[0]).toContain('FROM group_category x');
+        expect(filters[0]).toContain(
+          'NOT EXISTS (SELECT 1 FROM group_category x WHERE x.group_id = "template"."group_id")',
+        );
+        expect(filters[0]).toContain('FROM coach_category x');
+        expect(instanceModel.sequelize.escape).toHaveBeenCalledWith('cat-run');
+
+        const shown = include.attributes.find(
+          (attr) => Array.isArray(attr) && attr[1] === 'categoryIds',
+        ) as [{ val: string }, string];
+        expect(shown[0].val).toBe(firstCategoryIdsSql(sources));
+      });
+
+      it('adds no category condition without the filter', async () => {
+        await service.discover(null, { page: 1, limit: 20 });
+
+        const sql = JSON.stringify(templateInclude().where[Op.and]);
+        expect(sql).not.toContain('group_category');
+      });
     });
 
     it('E7: rejects date range > 90 days', async () => {

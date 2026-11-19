@@ -7,7 +7,7 @@ import {
 import type { LoggerService } from '@nestjs/common';
 import { InjectModel } from '@nestjs/sequelize';
 import { WINSTON_MODULE_NEST_PROVIDER } from 'nest-winston';
-import { Op, type IncludeOptions } from 'sequelize';
+import { Op, literal, type IncludeOptions, type WhereOptions } from 'sequelize';
 import {
   buildPaginatedResponse,
   getOffset,
@@ -31,6 +31,11 @@ import {
 } from '../entities/session.enums';
 import { DiscoverSessionsQueryDto } from '../dto/discover-sessions.dto';
 import { SessionAccessService } from './session-access.service';
+import {
+  firstCategoryIdsSql,
+  firstHasAnyCategorySql,
+  type CategorySource,
+} from '../../category/category-sql';
 
 /**
  * Public discover + redacted-public detail.
@@ -92,6 +97,22 @@ const PUBLIC_TEMPLATE_FIELDS = [
   'instructorId',
   'groupId',
 ] as const;
+
+/**
+ * What a session trains (migration 081): its group's categories when the
+ * group has some, else its coach's, over the `template` include alias. The
+ * `categoryIds` each row shows and the `categoryIds` filter both read these
+ * sources, so the two always agree.
+ */
+const TEMPLATE_CATEGORY_SOURCES: readonly CategorySource[] = [
+  { link: 'group', ownerRef: '"template"."group_id"' },
+  { link: 'coach', ownerRef: '"template"."instructor_id"' },
+];
+
+/** A session's category ids as a JSON array in the list's order. */
+const TEMPLATE_CATEGORY_IDS_SQL = firstCategoryIdsSql(
+  TEMPLATE_CATEGORY_SOURCES,
+);
 
 // Fields shown when the session is blocked (GROUP_ONLY non-member).
 // Bare minimum needed to render a "join the group to see this" CTA.
@@ -197,14 +218,11 @@ export class SessionDiscoverService {
     // OR clauses must be ANDed together, not assigned to the same
     // `[Op.or]` key (which would silently overwrite). Use `[Op.and]`
     // with an array of OR groups.
-    const andClauses: Record<string | symbol, unknown>[] = [
-      { [Op.or]: accessClauses },
-    ];
+    const andClauses: WhereOptions[] = [{ [Op.or]: accessClauses }];
+    const esc = (value: string) => this.instanceModel.sequelize!.escape(value);
     if (query.q) {
       // Blind to accents and case on both sides, wildcards escaped
       // (`foldedContains`): "forta" finds "Forță", a typed `%` is a `%`.
-      const esc = (value: string) =>
-        this.instanceModel.sequelize!.escape(value);
       andClauses.push({
         [Op.or]: [
           foldedContains('"template"."title"', query.q, esc),
@@ -212,10 +230,26 @@ export class SessionDiscoverService {
         ],
       });
     }
+    if (query.categoryIds && query.categoryIds.length > 0) {
+      // Sessions that train any of the picked categories, by the same rule
+      // as the `categoryIds` they show (the group's, else the coach's).
+      andClauses.push(
+        literal(
+          firstHasAnyCategorySql(
+            TEMPLATE_CATEGORY_SOURCES,
+            query.categoryIds,
+            esc,
+          ),
+        ),
+      );
+    }
 
     const templateInclude: IncludeOptions = {
       model: SessionTemplate,
-      attributes: [...PUBLIC_TEMPLATE_FIELDS],
+      attributes: [
+        ...PUBLIC_TEMPLATE_FIELDS,
+        [literal(TEMPLATE_CATEGORY_IDS_SQL), 'categoryIds'],
+      ],
       required: true,
       // The venue the class normally runs at. `venueOverride` below only
       // carries a per-occurrence change, so without this an ordinary session

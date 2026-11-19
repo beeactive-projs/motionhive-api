@@ -7,6 +7,7 @@ import { UserController } from './user.controller';
 import { CryptoService } from '../../common/services';
 import { MediaStorageService } from '../../common/services/media-storage.service';
 import { SearchModule } from '../search/search.module';
+import { OnboardingStateModule } from '../onboarding/onboarding-state.module';
 
 /**
  * User Module
@@ -21,7 +22,12 @@ import { SearchModule } from '../search/search.module';
  * - exports: What other modules can use
  */
 @Module({
-  imports: [SequelizeModule.forFeature([User, SocialAccount]), SearchModule],
+  imports: [
+    SequelizeModule.forFeature([User, SocialAccount]),
+    SearchModule,
+    // GET /users/me carries the welcome flow state.
+    OnboardingStateModule,
+  ],
   controllers: [UserController],
   providers: [
     UserService,

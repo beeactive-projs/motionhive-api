@@ -65,6 +65,7 @@ describe('ProgressService — streaks', () => {
         }
       )._attentionReason({
         activePlans: 1,
+        pausedPlans: 0,
         lastWorkoutAt: new Date(),
         daysSince: 0,
         adherencePercent: 100,
@@ -79,6 +80,14 @@ describe('ProgressService — streaks', () => {
       // on the screen they can fix outright, so it outranks the rest.
       expect(reason({ activePlans: 0, lastWorkoutAt: null })).toBe('NO_PLAN');
       expect(reason({ activePlans: 0, daysSince: 30 })).toBe('NO_PLAN');
+    });
+
+    it('does not call a paused plan "no plan", or flag the break', () => {
+      // The coach chose the pause (an injury, a holiday): nothing is asked
+      // of the client until it resumes.
+      expect(
+        reason({ activePlans: 0, pausedPlans: 1, daysSince: 30 }),
+      ).toBeNull();
     });
 
     it('flags an assigned client who has never logged anything', () => {
@@ -138,6 +147,16 @@ describe('ProgressService — streaks', () => {
       ];
       return { sql, replacements: options.replacements };
     };
+
+    it("leaves a paused or cancelled plan's open days out of what is due", async () => {
+      const { sql } = await run();
+      expect(sql).toContain(
+        "AND (pa.status NOT IN ('PAUSED', 'CANCELLED') OR aw.status IS NOT NULL)",
+      );
+      expect(sql).toContain(
+        "COUNT(*) FILTER (WHERE status = 'PAUSED') AS paused_plans",
+      );
+    });
 
     it("narrows to one client's row when a page asks about one person", async () => {
       const { sql, replacements } = await run('client-1');

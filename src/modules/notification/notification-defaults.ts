@@ -105,7 +105,9 @@ export const NOTIFICATION_DEFAULTS: Record<
   // were not, so they sent the generic notification email on top of the
   // domain one. These events are still emailed — just once, by the
   // richer template that carries the real CTAs.
-  [NotificationType.GROUP_INVITATION_RECEIVED]: IN_APP_ONLY,
+  // Except an invite: a coach inviting their clients reaches them in the
+  // app only (no email), so it pushes, as a coach's client invite does.
+  [NotificationType.GROUP_INVITATION_RECEIVED]: IN_APP_AND_PUSH,
   [NotificationType.GROUP_INVITATION_ACCEPTED]: IN_APP_ONLY,
   [NotificationType.GROUP_INVITATION_DECLINED]: IN_APP_ONLY,
   // Member churn is noisy in active groups → in-app only.

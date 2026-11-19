@@ -12,37 +12,61 @@ import { foldedLike } from '../../../test/helpers/folded-search';
 // and reset tokens shipped to the client. This spec locks down the
 // whitelist projection so that regression can't happen silently.
 describe('UserController getProfile (/users/me)', () => {
-  it('never leaks passwordHash, reset tokens, or verification tokens', () => {
-    const controller = new UserController(undefined as never);
+  const onboarding = {
+    flowVersion: 1,
+    role: null,
+    flow: ['ROLE', 'INTERESTS', 'LEVEL'],
+  };
 
-    const fakeReq = {
-      user: {
-        id: 'u-1',
-        email: 'jane@example.com',
-        firstName: 'Jane',
-        lastName: 'Doe',
-        phone: null,
-        avatarId: null,
-        language: 'en',
-        timezone: 'UTC',
-        isActive: true,
-        isEmailVerified: true,
-        roles: ['USER'],
-        createdAt: new Date('2026-01-01'),
-        // Fields that MUST NOT appear in the response:
-        passwordHash: '$2b$12$HASH',
-        passwordResetToken: 'reset-xyz',
-        passwordResetExpires: new Date(),
-        emailVerificationToken: 'verify-xyz',
-        emailVerificationExpires: new Date(),
-        failedLoginAttempts: 3,
-        lockedUntil: null,
-      },
+  function setup(user: Record<string, unknown>) {
+    const onboardingStateService = {
+      read: jest.fn().mockResolvedValue(onboarding),
     };
-
-    const result = controller.getProfile(
-      fakeReq as unknown as AuthenticatedRequest,
+    const service = new UserService(
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      onboardingStateService as never,
+      undefined as never,
     );
+    const controller = new UserController(service);
+    const req = { user } as unknown as AuthenticatedRequest;
+    return { controller, req, onboardingStateService };
+  }
+
+  const jane = {
+    id: 'u-1',
+    email: 'jane@example.com',
+    firstName: 'Jane',
+    lastName: 'Doe',
+    phone: null,
+    avatarId: null,
+    language: 'en',
+    timezone: 'UTC',
+    isActive: true,
+    isEmailVerified: true,
+    roles: ['USER'],
+    fitnessLevel: 'BEGINNER',
+    createdAt: new Date('2026-01-01'),
+    // Fields that MUST NOT appear in the response:
+    passwordHash: '$2b$12$HASH',
+    passwordResetToken: 'reset-xyz',
+    passwordResetExpires: new Date(),
+    emailVerificationToken: 'verify-xyz',
+    emailVerificationExpires: new Date(),
+    failedLoginAttempts: 3,
+    lockedUntil: null,
+  };
+
+  it('never leaks passwordHash, reset tokens, or verification tokens', async () => {
+    const { controller, req } = setup(jane);
+
+    const result = await controller.getProfile(req);
 
     expect(result).toHaveProperty('id', 'u-1');
     expect(result).toHaveProperty('email', 'jane@example.com');
@@ -59,6 +83,35 @@ describe('UserController getProfile (/users/me)', () => {
     for (const key of forbidden) {
       expect(result).not.toHaveProperty(key);
     }
+  });
+
+  it('carries the welcome flow state, read for the signed-in person', async () => {
+    const { controller, req, onboardingStateService } = setup(jane);
+
+    const result = await controller.getProfile(req);
+
+    expect(result.onboarding).toEqual(onboarding);
+    expect(onboardingStateService.read).toHaveBeenCalledWith({
+      userId: 'u-1',
+      isCoach: false,
+      fitnessLevel: 'BEGINNER',
+    });
+  });
+
+  it("reads a coach's state as a coach's, from the roles on the request", async () => {
+    const { controller, req, onboardingStateService } = setup({
+      ...jane,
+      roles: ['USER', 'INSTRUCTOR'],
+      fitnessLevel: null,
+    });
+
+    await controller.getProfile(req);
+
+    expect(onboardingStateService.read).toHaveBeenCalledWith({
+      userId: 'u-1',
+      isCoach: true,
+      fitnessLevel: null,
+    });
   });
 });
 
@@ -84,6 +137,7 @@ describe('UserService.searchUsers', () => {
       { findAll } as never,
       undefined as never,
       sequelize as never,
+      undefined as never,
       undefined as never,
       undefined as never,
       undefined as never,

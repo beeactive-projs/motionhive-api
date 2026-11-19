@@ -155,6 +155,34 @@ export const AuthDocs = {
     ],
   } as ApiEndpointOptions,
 
+  apple: {
+    summary: 'Sign in with Apple',
+    description:
+      "Authenticate with Apple's identity token, from the iPhone app (native sheet) or the web app (Apple's popup). The token is checked against Apple's keys, the accepted audiences (the app's bundle id, the web Services ID) and the hash of `rawNonce`. Creates the account if new, or signs in and links by email when Apple verified it. The name is only sent by Apple on the first authorization, so the client forwards it. `authorizationCode` is exchanged for the refresh token that revokes the grant when the account is deleted. Returns the same JWT + user shape as login.",
+    responses: [
+      {
+        status: 200,
+        description: 'Successfully authenticated',
+        example: {
+          accessToken: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...',
+          refreshToken: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...',
+          user: {
+            id: '550e8400-e29b-41d4-a716-446655440000',
+            email: 'x2k9q7f4mz@privaterelay.appleid.com',
+            firstName: 'Ana',
+            lastName: 'Popescu',
+            isEmailVerified: true,
+            roles: ['USER'],
+          },
+        },
+      },
+      ApiStandardResponses.Unauthorized,
+      ApiStandardResponses.BadRequest,
+      ApiStandardResponses.Conflict,
+      ApiStandardResponses.TooManyRequests,
+    ],
+  } as ApiEndpointOptions,
+
   google: {
     summary: 'Sign in with Google',
     description:

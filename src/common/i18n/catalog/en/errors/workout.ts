@@ -47,6 +47,10 @@ export const workout = {
     'This routine has no exercises yet, so there is nothing to schedule.',
   blockNeedsWeeks: 'A block schedule needs to know how many weeks it runs for.',
   cannotSkipCompleted: "This workout is already complete and can't be skipped.",
+  dayAlreadyFinished:
+    "This day of the plan is already done, so it can't be started again.",
+  planNotActive:
+    "This plan is {status, select, PAUSED {paused} COMPLETED {finished} CANCELLED {cancelled} other {not active}}, so its workouts can't be started.",
   pickTrainingDays:
     'This program trains on {count, plural, one {# day} other {# days}} a week. Pick exactly that many.',
   assignmentClosed:

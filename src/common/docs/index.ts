@@ -26,6 +26,7 @@ export * from './user.docs';
 export * from './account-deletion.docs';
 export * from './payment.docs';
 export * from './notification.docs';
+export * from './onboarding.docs';
 export * from './exercise.docs';
 export * from './program.docs';
 export * from './progress.docs';

@@ -101,6 +101,23 @@ describe('MessagingRateLimitService — Stage 5', () => {
       ).rejects.toBeInstanceOf(HttpException);
     });
 
+    it('counts one send once against the per-minute ceiling', async () => {
+      // The send path asks for the user slot, then for the conversation
+      // alone: the full ceiling must be reachable.
+      for (
+        let i = 0;
+        i < MessagingRateLimitService.USER_PER_MINUTE_LIMIT;
+        i++
+      ) {
+        await service.assertSendAllowed('user-9');
+        // A conversation each, so the per-second throttle stays out of it.
+        await service.assertConversationSendAllowed('user-9', `c-${i}`);
+      }
+      expect(service.recentUserSendCount('user-9', 60_000)).toBe(
+        MessagingRateLimitService.USER_PER_MINUTE_LIMIT,
+      );
+    });
+
     it('does NOT cross-pollute across conversations for the same user', async () => {
       const userId = 'u';
       for (

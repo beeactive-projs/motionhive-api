@@ -16,6 +16,7 @@ import { Throttle } from '@nestjs/throttler';
 import type { AuthenticatedRequest } from '../../common/types/authenticated-request';
 import { InvitationService } from './invitation.service';
 import { CreateInvitationDto } from './dto/create-invitation.dto';
+import { InviteMembersDto } from './dto/invite-members.dto';
 import { ApiEndpoint } from '../../common/decorators/api-response.decorator';
 import { InvitationDocs } from '../../common/docs/invitation.docs';
 import { PaginationDto } from '../../common/dto/pagination.dto';
@@ -25,7 +26,10 @@ import { PaginationDto } from '../../common/dto/pagination.dto';
  *
  * Manages invitations to join groups:
  * - POST   /invitations                → Send invitation (group owner)
+ * - POST   /invitations/bulk           → Invite several of my clients (group owner)
  * - GET    /invitations/pending        → My pending invitations
+ * - POST   /invitations/mine/:id/accept  → Accept one of mine in the app
+ * - POST   /invitations/mine/:id/decline → Decline one of mine in the app
  * - POST   /invitations/:token/accept  → Accept invitation
  * - POST   /invitations/:token/decline → Decline invitation
  * - POST   /invitations/:id/cancel     → Cancel invitation (group owner)
@@ -46,6 +50,34 @@ export class InvitationController {
     @Body() dto: CreateInvitationDto,
   ) {
     return this.invitationService.create(req.user.id, dto);
+  }
+
+  @Post('bulk')
+  @Throttle({ default: { limit: 20, ttl: 3600000 } })
+  @ApiEndpoint({ ...InvitationDocs.inviteMembers, body: InviteMembersDto })
+  async inviteMembers(
+    @Request() req: AuthenticatedRequest,
+    @Body() dto: InviteMembersDto,
+  ) {
+    return this.invitationService.inviteMembers(req.user.id, dto);
+  }
+
+  @Post('mine/:id/accept')
+  @ApiEndpoint(InvitationDocs.acceptMine)
+  async acceptMine(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Request() req: AuthenticatedRequest,
+  ) {
+    return this.invitationService.acceptMine(id, req.user.id, req.user.email);
+  }
+
+  @Post('mine/:id/decline')
+  @ApiEndpoint(InvitationDocs.declineMine)
+  async declineMine(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Request() req: AuthenticatedRequest,
+  ) {
+    return this.invitationService.declineMine(id, req.user.email);
   }
 
   @Get('pending')

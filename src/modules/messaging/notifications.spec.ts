@@ -83,9 +83,10 @@ describe('messaging notifications builder — Stage 6', () => {
   it('always suppresses in_app; turns email off when suppressEmail=true', () => {
     // First-in-window: in_app stays off (bell would duplicate the
     // sidebar Messages badge), email goes through.
+    // Nothing forced on: the person's own email preference decides.
     expect(
       messageReceived({ ...base, suppressEmail: false }).channelOverride,
-    ).toEqual({ in_app: false, email: true });
+    ).toEqual({ in_app: false });
 
     // After the hour-window cap fires: both channels off, the recipient
     // already has the live unread indicator on the sidebar + the
@@ -101,7 +102,7 @@ describe('messaging notifications builder — Stage 6', () => {
     expect(messageReceived(base).channelOverride).not.toHaveProperty('push');
     expect(messageReceived({ ...base, muted: true }).channelOverride).toEqual({
       in_app: false,
-      email: true,
+      email: false,
       push: false,
     });
   });

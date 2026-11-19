@@ -10,6 +10,7 @@ import {
 } from 'class-validator';
 import { ApiPropertyOptional } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
+import { CategoryIdsFilter } from '../../category/dto/category-ids';
 
 export class DiscoverGroupsDto {
   @ApiPropertyOptional({
@@ -32,6 +33,9 @@ export class DiscoverGroupsDto {
   @MaxLength(50, { each: true })
   @IsOptional()
   tags?: string[];
+
+  @CategoryIdsFilter('Groups that train any of these categories')
+  categoryIds?: string[];
 
   @ApiPropertyOptional({
     example: 'Bucharest',

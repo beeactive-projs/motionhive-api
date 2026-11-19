@@ -12,7 +12,9 @@ import { WINSTON_MODULE_NEST_PROVIDER } from 'nest-winston';
 import { OAuth2Client } from 'google-auth-library';
 import { Sequelize } from 'sequelize-typescript';
 import { Op } from 'sequelize';
+import type { Transaction } from 'sequelize';
 import { User } from '../user/entities/user.entity';
+import type { SocialProvider } from '../user/entities/social-account.entity';
 import { UserService } from '../user/user.service';
 import type { OAuthProfile } from '../user/user.service';
 import { apiError, toLocale } from '../../common/i18n';
@@ -38,6 +40,25 @@ import {
   ClientRequestStatus,
 } from '../client/entities/client-request.entity';
 import { Invitation } from '../invitation/entities/invitation.entity';
+import { stripHtml } from '../../common/utils/text.utils';
+import { AppleAccountService } from './apple/apple-account.service';
+import { AppleIdentityService } from './apple/apple-identity.service';
+import type { AppleIdentity } from './apple/apple-identity.service';
+import type { AppleAuthDto } from './dto/apple-auth.dto';
+
+/** The first name an account gets when the provider shared none. */
+const PLACEHOLDER_FIRST_NAME = 'User';
+
+/** The name column's size. */
+const NAME_MAX_LENGTH = 100;
+
+type OAuthFound = Awaited<ReturnType<UserService['findOrCreateFromOAuth']>>;
+
+/** Extra writes a provider makes inside the sign-in transaction, after the account is found or made. */
+type OAuthInTransaction = (
+  found: OAuthFound,
+  transaction: Transaction,
+) => Promise<void>;
 
 /** Return type of generateTokens; used for typing buildAuthResponse and responses */
 export interface AuthTokens {
@@ -83,6 +104,8 @@ export class AuthService {
     private readonly cryptoService: CryptoService,
     private readonly emailVerifier: EmailVerifierService,
     private readonly accountDeletionService: AccountDeletionService,
+    private readonly appleIdentity: AppleIdentityService,
+    private readonly appleAccounts: AppleAccountService,
     @Inject(WINSTON_MODULE_NEST_PROVIDER)
     private readonly logger: LoggerService,
   ) {}
@@ -728,6 +751,7 @@ export class AuthService {
     let payload: {
       sub: string;
       email?: string;
+      email_verified?: boolean;
       given_name?: string;
       family_name?: string;
     } | null;
@@ -764,7 +788,8 @@ export class AuthService {
     const profile = {
       providerUserId: payload.sub,
       email,
-      firstName: payload.given_name?.trim() || 'User',
+      emailVerified: payload.email_verified === true,
+      firstName: payload.given_name?.trim() || PLACEHOLDER_FIRST_NAME,
       lastName: payload.family_name?.trim() || '',
       language,
     };
@@ -841,12 +866,115 @@ export class AuthService {
     const profile = {
       providerUserId: me.id,
       email,
-      firstName: me.first_name?.trim() || 'User',
+      // Facebook does not say whether it checked the address, so a
+      // Facebook sign-in never joins an existing account by email.
+      emailVerified: false,
+      firstName: me.first_name?.trim() || PLACEHOLDER_FIRST_NAME,
       lastName: me.last_name?.trim() || '',
       language,
     };
 
     return this.handleOAuthSignIn('FACEBOOK', profile);
+  }
+
+  /**
+   * Sign in with Apple, from the iPhone app or the web app's popup.
+   *
+   * Order, as for Stripe: check the identity token, then trade the code for
+   * a refresh token over HTTP outside any transaction, then sign in inside
+   * one and store what Apple gave. A failed trade never blocks the sign-in;
+   * there is just no grant to revoke until the next Apple sign-in stores one.
+   *
+   * The name: Apple shares it only on the first authorization, and only
+   * with the app (never in the token), so the client forwards it. It names
+   * a new account, or fills in one still on the placeholder because an
+   * earlier attempt failed after Apple shared it. Otherwise a name someone
+   * set in MotionHive is never overwritten.
+   */
+  async registerWithApple(dto: AppleAuthDto) {
+    if (!this.appleIdentity.isAvailable) {
+      throw new BadRequestException(
+        apiError('auth.providerUnavailable', { provider: 'Apple' }),
+      );
+    }
+
+    let identity: AppleIdentity;
+    try {
+      identity = await this.appleIdentity.verifyIdentityToken(
+        dto.identityToken,
+        dto.rawNonce,
+      );
+    } catch (err) {
+      let message = 'unknown';
+      if (err instanceof Error) {
+        message = err.message;
+      }
+      this.logger.warn(
+        `Apple identity token rejected: ${message}`,
+        'AuthService',
+      );
+      throw new UnauthorizedException(
+        apiError('auth.providerSignInFailed', { provider: 'Apple' }),
+      );
+    }
+
+    if (!identity.email) {
+      throw new BadRequestException(
+        apiError('auth.providerNoEmail', { provider: 'Apple' }),
+      );
+    }
+
+    let refreshToken: string | null = null;
+    if (dto.authorizationCode) {
+      const exchange = await this.appleIdentity.exchangeCode(
+        dto.authorizationCode,
+        identity,
+      );
+      if (exchange.status === 'ok') {
+        refreshToken = exchange.refreshToken;
+      } else {
+        this.logger.warn(
+          `Apple code not exchanged (${exchange.status}): ${exchange.reason}`,
+          'AuthService',
+        );
+      }
+    }
+
+    const firstName = stripHtml(dto.firstName, NAME_MAX_LENGTH);
+    const lastName = stripHtml(dto.lastName, NAME_MAX_LENGTH);
+    let profileFirstName = firstName;
+    if (!profileFirstName) {
+      profileFirstName = PLACEHOLDER_FIRST_NAME;
+    }
+
+    const profile: OAuthProfile = {
+      providerUserId: identity.sub,
+      email: identity.email,
+      emailVerified: identity.emailVerified,
+      firstName: profileFirstName,
+      lastName,
+      language: dto.language,
+    };
+
+    return this.handleOAuthSignIn('APPLE', profile, async (found, tx) => {
+      if (
+        !found.isNewUser &&
+        firstName &&
+        this.hasPlaceholderName(found.user)
+      ) {
+        found.user = await this.userService.updateUser(
+          found.user.id,
+          { firstName, lastName },
+          tx,
+        );
+      }
+      await this.appleAccounts.recordSignIn(identity, refreshToken, tx);
+    });
+  }
+
+  /** Still named as a provider that shared no name left it. */
+  private hasPlaceholderName(user: User): boolean {
+    return user.firstName === PLACEHOLDER_FIRST_NAME && !user.lastName;
   }
 
   /**
@@ -856,11 +984,12 @@ export class AuthService {
    * we require the user to link their account explicitly (prevents OAuth account takeover).
    */
   private async handleOAuthSignIn(
-    provider: 'GOOGLE' | 'FACEBOOK',
+    provider: SocialProvider,
     profile: OAuthProfile,
+    inTransaction?: OAuthInTransaction,
   ) {
     const transaction = await this.sequelize.transaction();
-    let found: Awaited<ReturnType<UserService['findOrCreateFromOAuth']>>;
+    let found: OAuthFound;
     try {
       found = await this.userService.findOrCreateFromOAuth(
         provider,
@@ -876,6 +1005,10 @@ export class AuthService {
           undefined,
           transaction,
         );
+      }
+
+      if (inTransaction) {
+        await inTransaction(found, transaction);
       }
 
       await transaction.commit();
@@ -899,6 +1032,15 @@ export class AuthService {
     // at first signup OR are covered by the one-time backfill.
     if (isNewUser) {
       this.linkGuestStripeCustomers(user.id, user.email);
+      // Invitations sent to this address before the account existed, as
+      // on the email sign-up. A relay address matches none, which is fine:
+      // client invite links work by their token.
+      this.linkPendingInvitations(user.id, user.email).catch((err: Error) =>
+        this.logger.error(
+          `Failed to link pending invitations: ${err.message}`,
+          'AuthService',
+        ),
+      );
     }
 
     const tokens = await this.generateAndStoreTokens(user.id, user.email);

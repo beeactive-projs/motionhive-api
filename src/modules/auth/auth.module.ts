@@ -15,6 +15,7 @@ import { ProfileModule } from '../profile/profile.module';
 import { PaymentModule } from '../payment/payment.module';
 import { CryptoService } from '../../common/services/crypto.service';
 import { EmailVerifierService } from '../../common/services/email-verifier.service';
+import { AppleModule } from './apple/apple.module';
 
 @Module({
   imports: [
@@ -24,10 +25,12 @@ import { EmailVerifierService } from '../../common/services/email-verifier.servi
     ProfileModule,
     // PaymentModule exports CustomerService — used by AuthService to
     // link any guest stripe_customer rows to a newly-registered user
-    // on every signup path (email/password, Google, Facebook).
+    // on every signup path (email/password, Google, Apple, Facebook).
     PaymentModule,
     // Every sign-in checks for a deletion in its cooling-off.
     AccountDeletionModule,
+    // Sign in with Apple: token checks and the stored grant.
+    AppleModule,
     SequelizeModule.forFeature([RefreshToken]),
     JwtModule.registerAsync({
       imports: [ConfigModule],

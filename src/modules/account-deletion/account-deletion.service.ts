@@ -19,6 +19,7 @@ import { Sequelize } from 'sequelize-typescript';
 import { apiError, day, toLocale } from '../../common/i18n';
 import type { AuthenticatedUser } from '../../common/types/authenticated-request';
 import { EmailService } from '../../common/services/email.service';
+import { AppleAccountService } from '../auth/apple/apple-account.service';
 import { RefreshToken } from '../auth/entities/refresh-token.entity';
 import { TokenTypes, type JwtPayload } from '../auth/types/jwt-payload';
 import { DeviceToken } from '../notification/entities/device-token.entity';
@@ -117,6 +118,7 @@ export class AccountDeletionService {
     private readonly jwtService: JwtService,
     private readonly configService: ConfigService,
     private readonly sequelize: Sequelize,
+    private readonly appleAccounts: AppleAccountService,
     @Inject(WINSTON_MODULE_NEST_PROVIDER)
     private readonly logger: LoggerService,
   ) {}
@@ -415,6 +417,11 @@ export class AccountDeletionService {
       `Account deletion scheduled for ${person.id} on ${scheduledFor.toISOString()}`,
       'AccountDeletionService',
     );
+
+    // Apple asks apps to end the person's Sign in with Apple grant when
+    // the account goes. Never throws; the erasure tries again if Apple
+    // could not be reached. A restore signs in with Apple afresh.
+    await this.appleAccounts.revokeForUser(person.id);
 
     // notify-after-commit: the wind-down tells everyone affected.
     if (await this.windDownService.windDown(person.id)) {

@@ -590,6 +590,7 @@ describe('ProgressService — a coach reading a client', () => {
           weightKg: 93.33,
           recordedAt: logPlan.at.toISOString(),
           deltaKg: 11.66,
+          first: false,
         },
       ]);
       expect(sqlOf().some((s) => s.includes('one_rep_max'))).toBe(false);
@@ -761,6 +762,7 @@ describe('ProgressService — a coach reading a client', () => {
           weightKg: 120,
           recordedAt: storedOneRepMaxes[4].recordedAt.toISOString(),
           deltaKg: 10,
+          first: false,
         },
         {
           exerciseId: SQUAT,
@@ -768,6 +770,8 @@ describe('ProgressService — a coach reading a client', () => {
           weightKg: 140,
           recordedAt: logFree.at.toISOString(),
           deltaKg: 140,
+          // The first squat ever: a best, not a record beaten.
+          first: true,
         },
       ]);
 

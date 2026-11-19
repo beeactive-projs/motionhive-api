@@ -13,6 +13,7 @@ import { Role } from '../../role/entities/role.entity';
 import { UserRole } from '../../role/entities/user-role.entity';
 import { SocialAccount } from './social-account.entity';
 import type { StoredWorkoutSettings } from '../workout-settings';
+import { ExerciseLevel } from '../../exercise/entities/exercise.enums';
 
 /**
  * Visibility level a user can pick for an individual profile field.
@@ -247,6 +248,17 @@ export class User extends Model {
     defaultValue: {},
   })
   declare workoutSettings: StoredWorkoutSettings;
+
+  /**
+   * How the person rates their own training (migration 081), asked in the
+   * welcome flow. Same scale as `exercise.level` and `program.level`, so
+   * suggestions can match on it. Null until answered.
+   */
+  @Column({
+    type: DataType.ENUM(...Object.values(ExerciseLevel)),
+    allowNull: true,
+  })
+  declare fitnessLevel: ExerciseLevel | null;
 
   @CreatedAt
   declare createdAt: Date;

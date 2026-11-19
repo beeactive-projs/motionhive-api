@@ -13,6 +13,7 @@ import { estimateOneRepMaxEpley } from '../workout/one-rep-max.estimate';
 import { streakFromWeeks } from '../workout/training-streak';
 import {
   COUNTED_SET_SQL,
+  KG_TOTAL_EXERCISE_SQL,
   NO_VOLUME,
   VOLUME_SUMS_SQL,
   type VolumeSumsRow,
@@ -63,6 +64,8 @@ export interface ProgressOverview {
     recordedAt: string;
     /** Improvement on the previous best; equals weight for a first-ever. */
     deltaKg: number;
+    /** The first time on this lift: a best, not a record beaten. */
+    first: boolean;
   }>;
   /** Lifetime, not windowed — used to pick the empty/near-empty state. */
   lifetimeWorkouts: number;
@@ -240,8 +243,13 @@ export interface RosterClient {
   daysSinceLastWorkout: number | null;
   activePlans: number;
   /**
+   * Plans the coach paused. A client whose only plans are paused is not
+   * "no plan": the coach chose the break, so they are not flagged.
+   */
+  pausedPlans: number;
+  /**
    * Why this client needs looking at, or null when they don't:
-   *   NO_PLAN       — no active plan at all, so nothing is being asked of them
+   *   NO_PLAN       — no active or paused plan, so nothing is being asked of them
    *   NEVER_STARTED — assigned work, nothing ever logged
    *   SILENT        — no workout in 14+ days
    *   DROPPED       — adherence fell 20+ points against the prior window
@@ -663,6 +671,7 @@ export class ProgressService {
       prevCompleted: string;
       lastWorkoutAt: Date | null;
       activePlans: string;
+      pausedPlans: string;
     }>(
       `
       WITH ${coachClientsCte(!!clientId)},
@@ -702,6 +711,10 @@ export class ProgressService {
           -- Both windows and nothing older: every count above is inside it.
           AND aw.scheduled_date > (:today::date - (:days::int * 2))
           AND aw.scheduled_date <= :today::date
+          -- A paused or cancelled plan asks nothing: its open days are not
+          -- due (the nightly skip leaves them open too). What was done or
+          -- skipped on it still counts.
+          AND (pa.status NOT IN ('PAUSED', 'CANCELLED') OR aw.status IS NOT NULL)
         GROUP BY pa.client_id
       ),
       -- Only these clients' logs: unscoped, this took the latest workout
@@ -719,11 +732,14 @@ export class ProgressService {
         GROUP BY wl.user_id
       ),
       plan_counts AS (
-        SELECT client_id, COUNT(*) AS active_plans
+        SELECT
+          client_id,
+          COUNT(*) FILTER (WHERE status = 'ACTIVE') AS active_plans,
+          COUNT(*) FILTER (WHERE status = 'PAUSED') AS paused_plans
         FROM program_assignment
         WHERE instructor_id = :instructorId
           AND deleted_at IS NULL
-          AND status = 'ACTIVE'
+          AND status IN ('ACTIVE', 'PAUSED')
         GROUP BY client_id
       )
       SELECT
@@ -738,7 +754,8 @@ export class ProgressService {
         COALESCE(w.prev_due, 0)            AS "prevDue",
         COALESCE(w.prev_completed, 0)      AS "prevCompleted",
         ls.last_at                         AS "lastWorkoutAt",
-        COALESCE(pc.active_plans, 0)       AS "activePlans"
+        COALESCE(pc.active_plans, 0)       AS "activePlans",
+        COALESCE(pc.paused_plans, 0)       AS "pausedPlans"
       FROM clients c
       JOIN "user" u       ON u.id = c.client_id
       LEFT JOIN windowed w   ON w.client_id = c.client_id
@@ -934,6 +951,7 @@ export class ProgressService {
       prevCompleted: string;
       lastWorkoutAt: Date | null;
       activePlans: string;
+      pausedPlans?: string;
     },
     today: string,
   ): RosterClient {
@@ -942,6 +960,7 @@ export class ProgressService {
     const prevDue = Number(r.prevDue);
     const prevCompleted = Number(r.prevCompleted);
     const activePlans = Number(r.activePlans);
+    const pausedPlans = Number(r.pausedPlans ?? 0);
 
     // Nothing due is not 0% — it means the question doesn't apply.
     const adherencePercent =
@@ -979,8 +998,10 @@ export class ProgressService {
       lastWorkoutAt: r.lastWorkoutAt ? r.lastWorkoutAt.toISOString() : null,
       daysSinceLastWorkout: daysSince,
       activePlans,
+      pausedPlans,
       attention: this._attentionReason({
         activePlans,
+        pausedPlans,
         lastWorkoutAt: r.lastWorkoutAt,
         daysSince,
         adherencePercent,
@@ -997,6 +1018,7 @@ export class ProgressService {
    */
   private _attentionReason(input: {
     activePlans: number;
+    pausedPlans: number;
     lastWorkoutAt: Date | null;
     daysSince: number | null;
     adherencePercent: number | null;
@@ -1005,7 +1027,14 @@ export class ProgressService {
     // Someone with no active plan has nothing to be behind on — but that is
     // the coach's omission, not the client being fine. Returning null here
     // sorted them into "On track" beside people who are actually training.
-    if (input.activePlans === 0) return 'NO_PLAN';
+    if (input.activePlans === 0) {
+      // Paused on purpose: nothing is asked of them until it resumes, and
+      // the coach knows why. Not flagged, and not "no plan".
+      if (input.pausedPlans > 0) {
+        return null;
+      }
+      return 'NO_PLAN';
+    }
 
     if (input.lastWorkoutAt == null) return 'NEVER_STARTED';
     if ((input.daysSince ?? 0) >= 14) return 'SILENT';
@@ -1070,11 +1099,13 @@ export class ProgressService {
           -- Load-bearing working sets only; see the volume rule on this class.
           COALESCE(SUM(ls.reps * ls.weight_kg)
                    FILTER (WHERE ls.weight_kg IS NOT NULL
-                             AND ls.set_type <> 'WARMUP'), 0) AS volume_kg,
+                             AND ls.set_type <> 'WARMUP'
+                             AND ${KG_TOTAL_EXERCISE_SQL}), 0) AS volume_kg,
           COUNT(ls.id)                                         AS sets_completed
         FROM windowed w
         JOIN logged_exercise le ON le.workout_log_id = w.id AND le.is_skipped = FALSE
         JOIN logged_set ls      ON ls.logged_exercise_id = le.id AND ls.is_completed = TRUE
+        LEFT JOIN exercise ex   ON ex.id = le.exercise_id
       )
       SELECT
         (SELECT COUNT(*) FROM windowed)                              AS "workouts",
@@ -1131,8 +1162,10 @@ export class ProgressService {
         FROM logs l
         JOIN logged_exercise le ON le.workout_log_id = l.id AND le.is_skipped = FALSE
         JOIN logged_set ls      ON ls.logged_exercise_id = le.id
+        LEFT JOIN exercise ex   ON ex.id = le.exercise_id
         WHERE ${COUNTED_SET_SQL}
           AND ls.weight_kg IS NOT NULL
+          AND ${KG_TOTAL_EXERCISE_SQL}
         GROUP BY le.workout_log_id
       )
       SELECT
@@ -1294,6 +1327,9 @@ export class ProgressService {
         priorKg == null
           ? weightKg
           : Math.round((weightKg - priorKg) * 100) / 100,
+      // The first time on a lift is a best, not a record beaten: the finish
+      // screen and History never call it one, so neither may Home.
+      first: priorKg == null,
     };
   }
 
@@ -1436,10 +1472,14 @@ export class ProgressService {
           COALESCE(wl.completed_at, wl.started_at) AS performed_at,
           ls.reps,
           ls.weight_kg,
-          ls.weight_kg * (30 + ls.reps)            AS strength
+          -- Epley × 30, a single taken as its own weight like the shared
+          -- function, so the ranking agrees with the value.
+          CASE WHEN ls.reps = 1 THEN ls.weight_kg * 30
+               ELSE ls.weight_kg * (30 + ls.reps) END AS strength
         FROM workout_log wl
         JOIN logged_exercise le ON le.workout_log_id = wl.id
         JOIN logged_set ls      ON ls.logged_exercise_id = le.id AND ls.is_completed = TRUE
+        LEFT JOIN exercise ex   ON ex.id = le.exercise_id
         WHERE wl.user_id = :userId
           AND wl.status = 'COMPLETED'
           AND le.exercise_id IS NOT NULL
@@ -1447,6 +1487,9 @@ export class ProgressService {
           -- The sets the estimate covers; it returns nothing for others.
           AND ls.reps BETWEEN 1 AND 12
           AND ls.weight_kg > 0
+          -- As records at finish: never a warm-up, never a bodyweight move.
+          AND ls.set_type <> 'WARMUP'
+          AND (ex.kind IS NULL OR ex.kind <> 'BODYWEIGHT')
           ${scoped.sql}
         ORDER BY wl.id, le.exercise_id, strength DESC
       ),

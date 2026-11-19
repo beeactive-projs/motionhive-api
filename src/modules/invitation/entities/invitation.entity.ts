@@ -5,7 +5,6 @@ import {
   DataType,
   ForeignKey,
   BelongsTo,
-  CreatedAt,
 } from 'sequelize-typescript';
 import { User } from '../../user/entities/user.entity';
 import { Role } from '../../role/entities/role.entity';
@@ -92,7 +91,14 @@ export class Invitation extends Model {
   })
   declare declinedAt: Date;
 
-  @CreatedAt
+  // A plain column, not `@CreatedAt`: with `timestamps: false` that
+  // decorator mapped nothing, so ordering by it asked for a "createdAt"
+  // column the table does not have.
+  @Column({
+    type: DataType.DATE,
+    allowNull: false,
+    defaultValue: DataType.NOW,
+  })
   declare createdAt: Date;
 
   // Relationships

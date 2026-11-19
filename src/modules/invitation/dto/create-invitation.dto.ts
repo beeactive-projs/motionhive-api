@@ -1,5 +1,6 @@
 import {
   IsEmail,
+  IsIn,
   IsNotEmpty,
   IsOptional,
   IsString,
@@ -24,12 +25,18 @@ export class CreateInvitationDto {
   @IsNotEmpty()
   groupId: string;
 
+  /**
+   * Kept so a client that sends the old default still validates; USER is
+   * the only role a group invitation gives. It used to take any role name,
+   * SUPER_ADMIN included.
+   */
   @ApiPropertyOptional({
     example: 'USER',
-    description: 'Role to assign (default: USER)',
+    enum: ['USER'],
+    description: 'Always USER: a group invitation gives no other role.',
   })
-  @IsString()
   @IsOptional()
+  @IsIn(['USER'])
   roleName?: string;
 
   @ApiPropertyOptional({

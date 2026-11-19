@@ -19,6 +19,7 @@ import { CryptoService } from '../../common/services/crypto.service';
 import { EmailService } from '../../common/services/email.service';
 import { NotificationService } from '../notification/notification.service';
 import { User } from '../user/entities/user.entity';
+import { InstructorClient } from '../client/entities/instructor-client.entity';
 import {
   makeModelMock,
   makeSilentLogger,
@@ -46,7 +47,8 @@ describe('InvitationService', () => {
     sendInvitationEmail: jest.Mock;
     sendInvitationAcceptedEmail: jest.Mock;
   };
-  let notificationService: { notify: jest.Mock };
+  let notificationService: { notify: jest.Mock; notifyMany: jest.Mock };
+  let instructorClientModel: ModelMock;
   let configService: { get: jest.Mock };
 
   const tx = {
@@ -81,7 +83,11 @@ describe('InvitationService', () => {
       sendInvitationEmail: jest.fn().mockResolvedValue(undefined),
       sendInvitationAcceptedEmail: jest.fn().mockResolvedValue(undefined),
     };
-    notificationService = { notify: jest.fn().mockResolvedValue(undefined) };
+    notificationService = {
+      notify: jest.fn().mockResolvedValue(undefined),
+      notifyMany: jest.fn().mockResolvedValue(undefined),
+    };
+    instructorClientModel = makeModelMock();
     configService = {
       get: jest.fn((key: string) => {
         if (key === 'FRONTEND_URL') return 'https://app.test';
@@ -101,6 +107,10 @@ describe('InvitationService', () => {
         InvitationService,
         { provide: getModelToken(Invitation), useValue: invitationModel },
         { provide: getModelToken(GroupMember), useValue: memberModel },
+        {
+          provide: getModelToken(InstructorClient),
+          useValue: instructorClientModel,
+        },
         { provide: Sequelize, useValue: sequelize },
         { provide: GroupService, useValue: groupService },
         { provide: RoleService, useValue: roleService },
@@ -162,6 +172,25 @@ describe('InvitationService', () => {
           roleName: 'USER',
         }),
       ).rejects.toBeInstanceOf(BadRequestException);
+    });
+
+    it('gives the USER role and no other, whatever the body asks for', async () => {
+      memberModel.findOne.mockResolvedValue(null);
+      invitationModel.findOne.mockResolvedValue(null);
+      invitationModel.create.mockResolvedValue({ id: 'inv-2' });
+
+      await service.create('owner-1', {
+        groupId: 'g-1',
+        email: 'invitee@x.com',
+        // What the DTO now refuses; the service ignores it either way.
+        roleName: 'SUPER_ADMIN',
+      });
+
+      expect(roleService.findByName).toHaveBeenCalledWith('USER');
+      expect(roleService.findByName).not.toHaveBeenCalledWith('SUPER_ADMIN');
+      expect(invitationModel.create).toHaveBeenCalledWith(
+        expect.objectContaining({ roleId: 'role-user' }),
+      );
     });
 
     it('creates an invitation, emails the invitee, and returns the link', async () => {
@@ -388,6 +417,146 @@ describe('InvitationService', () => {
         notificationService.notify.mock.calls[0][0],
       );
       expect(text.body).not.toContain('invitee@x.com');
+    });
+  });
+  // =====================================================================
+  // inviteMembers (a coach inviting their clients, answered in the app)
+  // =====================================================================
+  describe('inviteMembers', () => {
+    const dto = { groupId: 'g-1', userIds: ['c-1', 'c-2', 'c-3'] };
+
+    beforeEach(() => {
+      sequelize.transaction.mockImplementation(
+        (work?: (t: typeof tx) => Promise<unknown>) => {
+          if (work) {
+            return work(tx);
+          }
+          return Promise.resolve(tx);
+        },
+      );
+      instructorClientModel.findAll.mockResolvedValue([
+        { clientId: 'c-1' },
+        { clientId: 'c-2' },
+        { clientId: 'c-3' },
+      ]);
+      jest.spyOn(User, 'findAll').mockResolvedValue([
+        { id: 'c-1', email: 'Ana@X.com' },
+        { id: 'c-2', email: 'bo@x.com' },
+        { id: 'c-3', email: 'cy@x.com' },
+      ] as User[]);
+      memberModel.findAll.mockResolvedValue([{ userId: 'c-2' }]);
+      invitationModel.findAll.mockResolvedValue([{ email: 'cy@x.com' }]);
+      (invitationModel as ModelMock & { bulkCreate?: jest.Mock }).bulkCreate =
+        jest.fn().mockResolvedValue([]);
+    });
+
+    it('refuses anyone who is not one of my active clients', async () => {
+      instructorClientModel.findAll.mockResolvedValue([{ clientId: 'c-1' }]);
+
+      await expect(service.inviteMembers('owner-1', dto)).rejects.toThrow(
+        ForbiddenException,
+      );
+      expect(notificationService.notifyMany).not.toHaveBeenCalled();
+    });
+
+    it('refuses inviting myself', async () => {
+      await expect(
+        service.inviteMembers('owner-1', {
+          groupId: 'g-1',
+          userIds: ['owner-1'],
+        }),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('skips members and open invitations, then notifies the rest once', async () => {
+      const result = await service.inviteMembers('owner-1', dto);
+
+      expect(result).toEqual({ invited: 1, skipped: 2 });
+      const bulkCreate = (
+        invitationModel as ModelMock & { bulkCreate: jest.Mock }
+      ).bulkCreate;
+      const [rows, options] = bulkCreate.mock.calls[0] as [
+        Array<{ email: string; groupId: string }>,
+        { transaction: unknown },
+      ];
+      expect(rows).toHaveLength(1);
+      expect(rows[0].email).toBe('ana@x.com');
+      expect(options.transaction).toBe(tx);
+      expect(notificationService.notifyMany).toHaveBeenCalledWith(
+        ['c-1'],
+        expect.objectContaining({ data: { screen: 'groups' } }),
+      );
+      expect(emailService.sendInvitationEmail).not.toHaveBeenCalled();
+    });
+
+    it('writes nothing when everyone is already in or invited', async () => {
+      memberModel.findAll.mockResolvedValue([
+        { userId: 'c-1' },
+        { userId: 'c-2' },
+      ]);
+
+      const result = await service.inviteMembers('owner-1', dto);
+
+      expect(result).toEqual({ invited: 0, skipped: 3 });
+      expect(notificationService.notifyMany).not.toHaveBeenCalled();
+    });
+  });
+
+  // =====================================================================
+  // acceptMine / declineMine (the invite card, by id)
+  // =====================================================================
+  describe('answering in the app', () => {
+    function myInvite(overrides: Partial<Invitation> = {}) {
+      return {
+        id: 'inv-1',
+        inviterId: 'owner-1',
+        email: 'invitee@x.com',
+        groupId: 'g-1',
+        roleId: 'role-user',
+        expiresAt: new Date(Date.now() + 86_400_000),
+        acceptedAt: null,
+        declinedAt: null,
+        group: { id: 'g-1', name: 'Yoga' },
+        update: jest.fn().mockResolvedValue(undefined),
+        ...overrides,
+      } as unknown as Invitation;
+    }
+
+    it('accepts my invitation whatever the case of my email', async () => {
+      invitationModel.findByPk.mockResolvedValue(myInvite());
+
+      const result = await service.acceptMine(
+        'inv-1',
+        'user-1',
+        'Invitee@X.com',
+      );
+
+      expect(result.groupId).toBe('g-1');
+      expect(groupService.addMember).toHaveBeenCalledWith('g-1', 'user-1', tx);
+    });
+
+    it("answers 404 for someone else's invitation, never 403", async () => {
+      invitationModel.findByPk.mockResolvedValue(myInvite());
+
+      await expect(
+        service.acceptMine('inv-1', 'user-2', 'other@x.com'),
+      ).rejects.toBeInstanceOf(NotFoundException);
+      await expect(
+        service.declineMine('inv-1', 'other@x.com'),
+      ).rejects.toBeInstanceOf(NotFoundException);
+      expect(groupService.addMember).not.toHaveBeenCalled();
+    });
+
+    it('declines my invitation', async () => {
+      const invite = myInvite();
+      invitationModel.findByPk.mockResolvedValue(invite);
+      jest.spyOn(User, 'findByPk').mockResolvedValue(null);
+
+      await service.declineMine('inv-1', 'invitee@x.com');
+
+      expect(invite.update).toHaveBeenCalledWith(
+        expect.objectContaining({ declinedAt: expect.any(Date) as Date }),
+      );
     });
   });
 });

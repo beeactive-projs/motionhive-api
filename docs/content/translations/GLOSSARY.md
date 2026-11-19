@@ -296,7 +296,7 @@ The movement words a translator meets most. Everything else is in `glossary.json
 | hinge (cue) | flexie din șold | UI term |
 | brace (cue) | contractă abdomenul | proposal |
 | reps per leg (cue) | repetări pe fiecare picior | proposal |
-| to failure (cue) | până la cedare | UI term |
+| to failure (cue) | până la epuizare | UI term |
 
 ## Open questions for the owner
 

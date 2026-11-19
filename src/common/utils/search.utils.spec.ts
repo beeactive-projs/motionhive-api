@@ -1,6 +1,7 @@
 import {
   buildSearchTerm,
   escapeLikeWildcards,
+  foldText,
   foldedContains,
   normalizeSearchTerm,
 } from './search.utils';
@@ -27,6 +28,13 @@ describe('search.utils', () => {
 
     it('still strips diacritics and collapses whitespace', () => {
       expect(buildSearchTerm('  Ștefan   Pop ')).toBe('%Stefan Pop%');
+    });
+  });
+
+  describe('foldText', () => {
+    it('compares blind to case and accents, as fold_for_search does', () => {
+      expect(foldText(' Forță ')).toBe('forta');
+      expect(foldText('ȘTEFAN')).toBe(foldText('stefan'));
     });
   });
 

@@ -232,6 +232,35 @@ export const ClientDocs = {
     ],
   } as ApiEndpointOptions,
 
+  getSentRequests: {
+    summary: 'List requests I sent',
+    description:
+      'The requests the caller sent to coaches that are still pending and not expired, with the coach (id, name, avatar, handle).',
+    auth: true,
+    responses: [
+      {
+        status: 200,
+        description: 'Sent requests listed',
+        example: [
+          {
+            id: 'request-uuid',
+            fromUserId: 'user-uuid',
+            toUserId: 'instructor-uuid',
+            type: 'CLIENT_TO_INSTRUCTOR',
+            status: 'PENDING',
+            toUser: {
+              id: 'instructor-uuid',
+              firstName: 'Ana',
+              lastName: 'Pop',
+              avatarUrl: null,
+              handle: 'anapop',
+            },
+          },
+        ],
+      },
+      { status: 401, description: 'Unauthorized' },
+    ],
+  },
   getPendingRequests: {
     summary: 'List pending requests',
     description:

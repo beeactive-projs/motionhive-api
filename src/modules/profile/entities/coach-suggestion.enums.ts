@@ -7,6 +7,6 @@
  * they will be mixed into the same list and marked so the client can say so.
  */
 export enum CoachSuggestionReason {
-  /** Ranked by the server: same country first, then a photo, then experience. */
+  /** Ranked by the server: shared interests, same country, a photo, then experience. */
   SUGGESTED = 'SUGGESTED',
 }

@@ -51,6 +51,10 @@ export const workout: Catalog['errors']['workout'] = {
   blockNeedsWeeks: 'Alege pentru câte săptămâni se repetă rutina.',
   cannotSkipCompleted:
     'Antrenamentul e deja terminat, așa că nu mai poți sări peste el.',
+  dayAlreadyFinished:
+    'Ziua aceasta din plan e deja făcută, așa că nu o mai poți începe.',
+  planNotActive:
+    'Planul e {status, select, PAUSED {pus pe pauză} COMPLETED {încheiat} CANCELLED {anulat} other {inactiv}}, așa că nu îi poți începe antrenamentele.',
   pickTrainingDays:
     'Programul are {count, plural, one {o zi de antrenament} few {# zile de antrenament} other {# de zile de antrenament}} pe săptămână. Alege exact {count, plural, one {o zi} few {# zile} other {# de zile}}.',
   assignmentClosed:

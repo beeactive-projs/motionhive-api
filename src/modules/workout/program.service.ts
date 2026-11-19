@@ -1114,7 +1114,7 @@ export class ProgramService {
       });
     }
 
-    await program.update({
+    const changes = {
       ...(dto.folder !== undefined && {
         folder: dto.folder?.trim() || null,
       }),
@@ -1137,6 +1137,17 @@ export class ProgramService {
       ...(dto.defaultRestSeconds !== undefined && {
         defaultRestSeconds: dto.defaultRestSeconds ?? null,
       }),
+    };
+    await this.sequelize.transaction(async (tx) => {
+      await program.update(changes, { transaction: tx });
+      // A routine's one workout carries its name too, and assigning copies
+      // the workout's: renamed together, or a client sees the old name.
+      if (program.isSingleWorkout && dto.name !== undefined) {
+        await this.workoutModel.update(
+          { name: dto.name.trim() },
+          { where: { programId: program.id }, transaction: tx },
+        );
+      }
     });
     return program;
   }
@@ -1515,6 +1526,74 @@ export class ProgramService {
       }
     });
     return row;
+  }
+
+  /**
+   * Several exercises of a program day change superset group at once (a
+   * link that renumbers its neighbours, an unlink). One transaction: every
+   * id must be an exercise of this day or nothing changes, and a superset
+   * left with one exercise is undone in the same transaction.
+   * @Arguments programId, workoutId, items, ownerId
+   */
+  async setSupersets(
+    programId: string,
+    workoutId: string,
+    items: { id: string; supersetGroupId: number | null }[],
+    ownerId: string,
+  ): Promise<void> {
+    await this._loadWorkout(programId, workoutId, ownerId);
+    const ids = [...new Set(items.map((item) => item.id))];
+    // One update per group, rather than one per exercise.
+    const byGroup = new Map<number | null, string[]>();
+    for (const item of items) {
+      const group = item.supersetGroupId ?? null;
+      byGroup.set(group, [...(byGroup.get(group) ?? []), item.id]);
+    }
+    await this.sequelize.transaction(async (tx) => {
+      const found = await this.prescribedExerciseModel.findAll({
+        where: { id: ids, programWorkoutId: workoutId },
+        attributes: ['id'],
+        transaction: tx,
+      });
+      if (found.length !== ids.length) {
+        throw new NotFoundException(apiError('exercise.notFound'));
+      }
+      for (const [group, groupIds] of byGroup) {
+        await this.prescribedExerciseModel.update(
+          { supersetGroupId: group },
+          {
+            where: { id: groupIds, programWorkoutId: workoutId },
+            transaction: tx,
+          },
+        );
+      }
+      // Any superset now down to one exercise is no superset.
+      const rows = await this.prescribedExerciseModel.findAll({
+        where: {
+          programWorkoutId: workoutId,
+          supersetGroupId: { [Op.ne]: null },
+        },
+        attributes: ['id', 'supersetGroupId'],
+        transaction: tx,
+      });
+      const members = new Map<number, string[]>();
+      for (const row of rows) {
+        const group = row.supersetGroupId as number;
+        members.set(group, [...(members.get(group) ?? []), row.id]);
+      }
+      const alone: string[] = [];
+      for (const groupIds of members.values()) {
+        if (groupIds.length === 1) {
+          alone.push(groupIds[0]);
+        }
+      }
+      if (alone.length > 0) {
+        await this.prescribedExerciseModel.update(
+          { supersetGroupId: null },
+          { where: { id: alone }, transaction: tx },
+        );
+      }
+    });
   }
 
   async removeExercise(

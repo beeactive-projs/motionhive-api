@@ -10,13 +10,21 @@ import { InjectModel } from '@nestjs/sequelize';
 import { ConfigService } from '@nestjs/config';
 import { WINSTON_MODULE_NEST_PROVIDER } from 'nest-winston';
 import { Sequelize } from 'sequelize-typescript';
+import { Op, col, fn, literal, where } from 'sequelize';
 import { Invitation } from './entities/invitation.entity';
 import { CreateInvitationDto } from './dto/create-invitation.dto';
+import { InviteMembersDto } from './dto/invite-members.dto';
+import {
+  InstructorClient,
+  InstructorClientStatus,
+} from '../client/entities/instructor-client.entity';
+import { categoryIdsSql } from '../category/category-sql';
+import { normalizeEmail } from '../../common/utils/text.utils';
 import { GroupService } from '../group/group.service';
 import { RoleService } from '../role/role.service';
 import { CryptoService, EmailService } from '../../common/services';
 import { buildPaginatedResponse } from '../../common/dto/pagination.dto';
-import { User, USER_SAFE_ATTRIBUTES } from '../user/entities/user.entity';
+import { User } from '../user/entities/user.entity';
 import { Group } from '../group/entities/group.entity';
 import { Role } from '../role/entities/role.entity';
 import { GroupMember } from '../group/entities/group-member.entity';
@@ -25,9 +33,92 @@ import {
   groupInvitationReceived,
   groupInvitationAccepted,
   groupInvitationDeclined,
+  groupInvitationsReceived,
 } from '../group/notifications';
 import { apiError, toLocale } from '../../common/i18n';
 import type { Locale } from '../../common/i18n';
+
+/**
+ * How long an invitation answered inside the app stays open: no link
+ * travels, so it can wait as long as a client request does.
+ */
+const IN_APP_INVITATION_DAYS = 30;
+
+/** Members of the invited group, over the `group` alias of the include. */
+const INVITED_GROUP_MEMBER_COUNT_SQL =
+  '(SELECT COUNT(*)::int FROM group_member gm WHERE gm.group_id = "group"."id" AND gm.left_at IS NULL)';
+
+/** What the invited group trains, over the same alias. */
+const INVITED_GROUP_CATEGORY_IDS_SQL = categoryIdsSql('group', '"group"."id"');
+
+/** One of my invitations as the invite card reads it. */
+export interface PendingInvitation {
+  id: string;
+  message: string | null;
+  createdAt: Date;
+  expiresAt: Date;
+  inviter: {
+    id: string;
+    firstName: string;
+    lastName: string;
+    handle: string | null;
+    avatarUrl: string | null;
+  } | null;
+  group: {
+    id: string;
+    name: string;
+    slug: string;
+    logoUrl: string | null;
+    description: string | null;
+    memberCount: number;
+    categoryIds: string[];
+  };
+}
+
+/** Whether two addresses are the same mailbox, whatever their case. */
+function sameEmail(a: string, b: string): boolean {
+  return normalizeEmail(a) === normalizeEmail(b);
+}
+
+/** An invitation row, with its includes, in the card's shape. */
+function toPendingInvitation(row: Invitation): PendingInvitation {
+  const group = row.group;
+  let inviter: PendingInvitation['inviter'] = null;
+  if (row.inviter) {
+    inviter = {
+      id: row.inviter.id,
+      firstName: row.inviter.firstName,
+      lastName: row.inviter.lastName,
+      handle: row.inviter.handle ?? null,
+      avatarUrl: row.inviter.avatarUrl ?? null,
+    };
+  }
+  let categoryIds: string[] = [];
+  const rawCategoryIds: unknown = group.getDataValue(
+    'categoryIds' as keyof typeof group,
+  );
+  if (Array.isArray(rawCategoryIds)) {
+    categoryIds = rawCategoryIds as string[];
+  }
+  return {
+    id: row.id,
+    message: row.message ?? null,
+    createdAt: row.createdAt,
+    expiresAt: row.expiresAt,
+    inviter,
+    group: {
+      id: group.id,
+      name: group.name,
+      slug: group.slug,
+      logoUrl: group.logoUrl ?? null,
+      description: group.description ?? null,
+      memberCount: Number(
+        group.getDataValue('memberCount' as keyof typeof group) ?? 0,
+      ),
+      categoryIds,
+    },
+  };
+}
 
 /**
  * Invitation Service
@@ -46,6 +137,8 @@ export class InvitationService {
     private readonly invitationModel: typeof Invitation,
     @InjectModel(GroupMember)
     private readonly memberModel: typeof GroupMember,
+    @InjectModel(InstructorClient)
+    private readonly instructorClientModel: typeof InstructorClient,
     private readonly sequelize: Sequelize,
     private readonly groupService: GroupService,
     private readonly roleService: RoleService,
@@ -91,9 +184,9 @@ export class InvitationService {
       throw new BadRequestException(apiError('invitation.alreadyMember'));
     }
 
-    // Find the role to assign
-    const roleName = dto.roleName || 'USER';
-    const role = await this.roleService.findByName(roleName);
+    // A group invitation gives the USER role and nothing else, whatever
+    // the body says (the DTO also refuses anything but USER).
+    const role = await this.roleService.findByName('USER');
 
     // Check for existing pending invitation
     const existing = await this.invitationModel.findOne({
@@ -217,6 +310,48 @@ export class InvitationService {
       throw new NotFoundException(apiError('invitation.notFound'));
     }
 
+    return this.acceptInvitation(invitation, userId, userEmail);
+  }
+
+  /**
+   * Accept one of my invitations from inside the app (the invite card), by
+   * its id: the plain token only ever travels in an email. An invitation
+   * sent to someone else answers 404, so an id never confirms it exists.
+   */
+  async acceptMine(
+    invitationId: string,
+    userId: string,
+    userEmail: string,
+  ): Promise<{ message: string; groupId: string }> {
+    const invitation = await this.invitationModel.findByPk(invitationId, {
+      include: [Group, Role],
+    });
+    if (!invitation || !sameEmail(invitation.email, userEmail)) {
+      throw new NotFoundException(apiError('invitation.notFound'));
+    }
+    return this.acceptInvitation(invitation, userId, userEmail);
+  }
+
+  /** Decline one of my invitations from inside the app, by its id. */
+  async declineMine(
+    invitationId: string,
+    userEmail: string,
+  ): Promise<{ message: string }> {
+    const invitation = await this.invitationModel.findByPk(invitationId, {
+      include: [{ model: Group, attributes: ['id', 'name'] }],
+    });
+    if (!invitation || !sameEmail(invitation.email, userEmail)) {
+      throw new NotFoundException(apiError('invitation.notFound'));
+    }
+    return this.declineInvitation(invitation, userEmail);
+  }
+
+  /** The checks and writes behind both ways of accepting. */
+  private async acceptInvitation(
+    invitation: Invitation,
+    userId: string,
+    userEmail: string,
+  ): Promise<{ message: string; groupId: string }> {
     if (invitation.acceptedAt) {
       throw new BadRequestException(apiError('invitation.alreadyAccepted'));
     }
@@ -339,6 +474,14 @@ export class InvitationService {
       throw new NotFoundException(apiError('invitation.notFound'));
     }
 
+    return this.declineInvitation(invitation, userEmail);
+  }
+
+  /** The checks and writes behind both ways of declining. */
+  private async declineInvitation(
+    invitation: Invitation,
+    userEmail: string,
+  ): Promise<{ message: string }> {
     if (invitation.acceptedAt || invitation.declinedAt) {
       throw new BadRequestException(apiError('invitation.alreadyAnswered'));
     }
@@ -534,7 +677,11 @@ export class InvitationService {
   }
 
   /**
-   * List pending invitations for the authenticated user's email
+   * My invitations still waiting on an answer, newest first, as the invite
+   * card shows them: who asked, the group (name, picture, description,
+   * member count, what it trains) and their note. Expired invitations and
+   * closed groups are left out, the inviter is named without their email or
+   * phone, and the stored token never leaves.
    */
   async getMyPendingInvitations(
     userEmail: string,
@@ -543,26 +690,38 @@ export class InvitationService {
   ) {
     const offset = (page - 1) * limit;
 
-    const { rows: data, count: totalItems } =
+    const { rows, count: totalItems } =
       await this.invitationModel.findAndCountAll({
         where: {
-          email: userEmail,
+          [Op.and]: [
+            where(
+              fn('lower', col('Invitation.email')),
+              normalizeEmail(userEmail),
+            ),
+          ],
           acceptedAt: null,
           declinedAt: null,
+          expiresAt: { [Op.gt]: new Date() },
         },
         include: [
           {
             model: User,
             as: 'inviter',
-            attributes: USER_SAFE_ATTRIBUTES,
+            attributes: ['id', 'firstName', 'lastName', 'handle', 'avatarUrl'],
           },
           {
             model: Group,
-            attributes: ['id', 'name', 'slug'],
-          },
-          {
-            model: Role,
-            attributes: ['id', 'name', 'displayName'],
+            required: true,
+            where: { isActive: true },
+            attributes: [
+              'id',
+              'name',
+              'slug',
+              'logoUrl',
+              'description',
+              [literal(INVITED_GROUP_MEMBER_COUNT_SQL), 'memberCount'],
+              [literal(INVITED_GROUP_CATEGORY_IDS_SQL), 'categoryIds'],
+            ],
           },
         ],
         order: [['createdAt', 'DESC']],
@@ -571,7 +730,133 @@ export class InvitationService {
         distinct: true,
       });
 
+    const data = rows.map((row) => toPendingInvitation(row));
     return buildPaginatedResponse(data, totalItems, page, limit);
+  }
+
+  /**
+   * Invite several of my clients to my group at once: the client group
+   * setup on Home and Invite people on a group. Each person gets one
+   * notification and answers inside the app, so no email or link goes out.
+   * Members and people with an invitation still open are skipped.
+   */
+  async inviteMembers(
+    inviterId: string,
+    dto: InviteMembersDto,
+  ): Promise<{ invited: number; skipped: number }> {
+    const group = await this.groupService.assertOwnerAndGet(
+      dto.groupId,
+      inviterId,
+    );
+    const userIds = dto.userIds.filter((id) => id !== inviterId);
+    if (userIds.length !== dto.userIds.length) {
+      throw new BadRequestException(apiError('invitation.cannotInviteSelf'));
+    }
+
+    // Only the owner's own clients: the setup lists nobody else, and an id
+    // picked from anywhere else would let a coach notify strangers.
+    const clients = await this.instructorClientModel.findAll({
+      where: {
+        instructorId: inviterId,
+        clientId: { [Op.in]: userIds },
+        status: InstructorClientStatus.ACTIVE,
+      },
+      attributes: ['clientId'],
+    });
+    if (clients.length !== userIds.length) {
+      throw new ForbiddenException(apiError('invitation.notYourClients'));
+    }
+
+    const users = await User.findAll({
+      where: { id: { [Op.in]: userIds } },
+      attributes: ['id', 'email'],
+    });
+    const members = await this.memberModel.findAll({
+      where: {
+        groupId: group.id,
+        userId: { [Op.in]: userIds },
+        leftAt: null,
+      },
+      attributes: ['userId'],
+    });
+    const memberIds = new Set(members.map((member) => member.userId));
+    const emails = users.map((user) => normalizeEmail(user.email));
+    const open = await this.invitationModel.findAll({
+      where: {
+        groupId: group.id,
+        [Op.and]: [where(fn('lower', col('email')), { [Op.in]: emails })],
+        acceptedAt: null,
+        declinedAt: null,
+        expiresAt: { [Op.gt]: new Date() },
+      },
+      attributes: ['email'],
+    });
+    const invitedEmails = new Set(
+      open.map((invitation) => normalizeEmail(invitation.email)),
+    );
+
+    const toInvite = users.filter((user) => {
+      if (memberIds.has(user.id)) {
+        return false;
+      }
+      return !invitedEmails.has(normalizeEmail(user.email));
+    });
+    const skipped = userIds.length - toInvite.length;
+    if (toInvite.length === 0) {
+      return { invited: 0, skipped };
+    }
+
+    const role = await this.roleService.findByName('USER');
+    const expiresAt = new Date();
+    expiresAt.setDate(expiresAt.getDate() + IN_APP_INVITATION_DAYS);
+
+    await this.sequelize.transaction(async (transaction) => {
+      await this.invitationModel.bulkCreate(
+        toInvite.map((user) => ({
+          inviterId,
+          email: normalizeEmail(user.email),
+          roleId: role.id,
+          groupId: group.id,
+          // Never sent anywhere: an in-app invitation is answered by id. The
+          // column still needs a unique value.
+          token: this.cryptoService.hashToken(
+            this.cryptoService.generateToken(),
+          ),
+          expiresAt,
+        })),
+        { transaction },
+      );
+    });
+
+    // notify-after-commit: the invitations exist before anyone is told.
+    const inviter = await User.findByPk(inviterId, {
+      attributes: ['firstName', 'lastName'],
+    });
+    let inviterName: string | null = null;
+    if (inviter) {
+      inviterName =
+        `${inviter.firstName ?? ''} ${inviter.lastName ?? ''}`.trim() || null;
+    }
+    await this.notificationService
+      .notifyMany(
+        toInvite.map((user) => user.id),
+        groupInvitationsReceived(
+          { id: group.id, name: group.name },
+          inviterName,
+        ),
+      )
+      .catch((err: Error) =>
+        this.logger.error(
+          `Failed to notify invitees for group ${group.id}: ${err.message}`,
+          'InvitationService',
+        ),
+      );
+
+    this.logger.log(
+      `Invited ${toInvite.length} clients to group ${group.id} (${skipped} skipped)`,
+      'InvitationService',
+    );
+    return { invited: toInvite.length, skipped };
   }
 
   /**

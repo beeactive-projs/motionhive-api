@@ -206,6 +206,58 @@ describe('WorkoutLogService (smoke — not exhaustive)', () => {
       ).rejects.toThrow(NotFoundException);
     });
 
+    it('refuses to start a day of the plan that is already done', async () => {
+      assignedWorkoutModel.findByPk.mockResolvedValueOnce({
+        id: 'aw-1',
+        status: 'COMPLETED',
+        exercises: [],
+      });
+      assignedWorkoutModel.findOne.mockResolvedValueOnce({
+        assignment: { clientId: 'me', status: 'ACTIVE' },
+      });
+
+      await expect(
+        service.start('me', { assignedWorkoutId: 'aw-1' }),
+      ).rejects.toThrow(ConflictException);
+      expect(logModel.create).not.toHaveBeenCalled();
+    });
+
+    it('lets a skipped day be made up, on a pending plan too', async () => {
+      assignedWorkoutModel.findByPk.mockResolvedValueOnce({
+        id: 'aw-1',
+        status: 'SKIPPED',
+        name: 'Day 1',
+        programAssignmentId: 'pa-1',
+        update: jest.fn().mockResolvedValue(undefined),
+        exercises: [],
+      });
+      assignedWorkoutModel.findOne.mockResolvedValueOnce({
+        assignment: { clientId: 'me', status: 'PENDING' },
+      });
+      // No exercises: the 1RM lookup is never asked.
+      logModel.create.mockResolvedValueOnce({ id: 'wl-1' });
+
+      await service.start('me', { assignedWorkoutId: 'aw-1' });
+
+      expect(logModel.create).toHaveBeenCalled();
+    });
+
+    it('refuses to start a day of a plan that is not active', async () => {
+      assignedWorkoutModel.findByPk.mockResolvedValueOnce({
+        id: 'aw-1',
+        status: null,
+        exercises: [],
+      });
+      assignedWorkoutModel.findOne.mockResolvedValueOnce({
+        assignment: { clientId: 'me', status: 'PAUSED' },
+      });
+
+      await expect(
+        service.start('me', { assignedWorkoutId: 'aw-1' }),
+      ).rejects.toThrow(ConflictException);
+      expect(logModel.create).not.toHaveBeenCalled();
+    });
+
     it('refuses to start while another workout is in progress', async () => {
       logModel.findOne.mockResolvedValueOnce({
         id: 'wl-open',
@@ -601,7 +653,7 @@ describe('WorkoutLogService (smoke — not exhaustive)', () => {
     beforeEach(() => {
       assignedWorkoutModel.findByPk.mockResolvedValueOnce(aw);
       assignedWorkoutModel.findOne.mockResolvedValueOnce({
-        assignment: { clientId: 'me' },
+        assignment: { clientId: 'me', status: 'ACTIVE' },
       });
       // Latest 1RM for ex-1 = 100kg.
       oneRepMaxModel.findAll.mockResolvedValueOnce([
@@ -1350,6 +1402,36 @@ describe('WorkoutLogService (smoke — not exhaustive)', () => {
       expect(args.pausedSeconds).toBeLessThanOrEqual(121);
     });
 
+    it('ends the pause when Continue was tapped, saved later', async () => {
+      const pausedAt = new Date(Date.now() - 10 * 60_000);
+      const log = openLog({ pausedAt, pausedSeconds: 30 });
+      logModel.findByPk.mockResolvedValueOnce(log);
+      const tapped = new Date(pausedAt.getTime() + 4 * 60_000);
+      await service.resume('wl-1', 'me', tapped.toISOString());
+      expect(log.update).toHaveBeenCalledWith({
+        pausedAt: null,
+        pausedSeconds: 30 + 4 * 60,
+      });
+    });
+
+    it('holds a sent time inside the pause', async () => {
+      const pausedAt = new Date(Date.now() - 60_000);
+      const early = openLog({ pausedAt, pausedSeconds: 0 });
+      logModel.findByPk.mockResolvedValueOnce(early);
+      await service.resume('wl-1', 'me', '2020-01-01T00:00:00.000Z');
+      expect(early.update).toHaveBeenCalledWith({
+        pausedAt: null,
+        pausedSeconds: 0,
+      });
+
+      const late = openLog({ pausedAt, pausedSeconds: 0 });
+      logModel.findByPk.mockResolvedValueOnce(late);
+      await service.resume('wl-1', 'me', '2099-01-01T00:00:00.000Z');
+      const args = late.update.mock.calls[0][0] as { pausedSeconds: number };
+      expect(args.pausedSeconds).toBeGreaterThanOrEqual(59);
+      expect(args.pausedSeconds).toBeLessThanOrEqual(61);
+    });
+
     it('does nothing when resuming a running workout', async () => {
       const log = openLog();
       logModel.findByPk.mockResolvedValueOnce(log);
@@ -1378,8 +1460,12 @@ describe('WorkoutLogService (smoke — not exhaustive)', () => {
       expect(service.estimateOneRepMaxEpley(15, 80)).toBeNull();
       expect(service.estimateOneRepMaxEpley(0, 80)).toBeNull();
     });
-    it('estimates 100kg × 1 = 100', () => {
-      expect(service.estimateOneRepMaxEpley(1, 100)).toBeCloseTo(103.33, 1);
+    it('takes a single as its own max: 100kg × 1 = 100', () => {
+      expect(service.estimateOneRepMaxEpley(1, 100)).toBe(100);
+    });
+    it('estimates nothing past what can be stored (a typo, 1000 for 100)', () => {
+      expect(service.estimateOneRepMaxEpley(12, 9000)).toBeNull();
+      expect(service.estimateOneRepMaxEpley(5, 1000)).toBeCloseTo(1166.67, 1);
     });
     it('estimates 80kg × 5 ≈ 93.33', () => {
       expect(service.estimateOneRepMaxEpley(5, 80)).toBeCloseTo(93.33, 1);
@@ -2135,6 +2221,12 @@ describe('WorkoutLogService (smoke — not exhaustive)', () => {
       userId: 'me',
       status: WorkoutLogStatus.InProgress,
     };
+    const destroySets = jest.fn();
+
+    beforeEach(() => {
+      destroySets.mockReset().mockResolvedValue(1);
+      (loggedSetModel as Record<string, jest.Mock>).destroy = destroySets;
+    });
 
     it('refuses on a completed log', async () => {
       logModel.findByPk.mockResolvedValueOnce({
@@ -2148,25 +2240,177 @@ describe('WorkoutLogService (smoke — not exhaustive)', () => {
 
     it('404s when the set belongs to a different log', async () => {
       logModel.findByPk.mockResolvedValueOnce(inProgressLog);
-      loggedSetModel.findByPk.mockResolvedValueOnce({
-        id: 'ls-1',
-        exercise: { workoutLogId: 'wl-OTHER' },
-      });
+      // The query is scoped to this log, so another log's set is not found.
+      loggedSetModel.findAll.mockResolvedValueOnce([]);
       await expect(
         service.removeSetFromLog('wl-1', 'ls-1', 'me'),
       ).rejects.toThrow(NotFoundException);
+      expect(destroySets).not.toHaveBeenCalled();
     });
 
-    it('destroys the row on the happy path', async () => {
-      const destroy = jest.fn().mockResolvedValue(undefined);
+    it('deletes the row on the happy path', async () => {
       logModel.findByPk.mockResolvedValueOnce(inProgressLog);
-      loggedSetModel.findByPk.mockResolvedValueOnce({
-        id: 'ls-1',
-        exercise: { workoutLogId: 'wl-1' },
-        destroy,
-      });
+      loggedSetModel.findAll.mockResolvedValueOnce([{ id: 'ls-1' }]);
       await service.removeSetFromLog('wl-1', 'ls-1', 'me');
-      expect(destroy).toHaveBeenCalledTimes(1);
+      expect(destroySets).toHaveBeenCalledWith({
+        where: { id: ['ls-1'] },
+        transaction: fakeTx,
+      });
+    });
+  });
+
+  describe('removeSetsFromLog', () => {
+    const inProgressLog = {
+      id: 'wl-1',
+      userId: 'me',
+      status: WorkoutLogStatus.InProgress,
+    };
+    const destroySets = jest.fn();
+
+    beforeEach(() => {
+      destroySets.mockReset().mockResolvedValue(2);
+      (loggedSetModel as Record<string, jest.Mock>).destroy = destroySets;
+    });
+
+    it('deletes the whole round in one transaction', async () => {
+      logModel.findByPk.mockResolvedValueOnce(inProgressLog);
+      loggedSetModel.findAll.mockResolvedValueOnce([
+        { id: 'ls-1' },
+        { id: 'ls-2' },
+      ]);
+
+      await service.removeSetsFromLog('wl-1', ['ls-1', 'ls-2'], 'me');
+
+      const [query] = loggedSetModel.findAll.mock.calls[0] as [
+        { where: { id: string[] }; include: { where: unknown }[] },
+      ];
+      expect(query.where.id).toEqual(['ls-1', 'ls-2']);
+      expect(query.include[0].where).toEqual({ workoutLogId: 'wl-1' });
+      expect(destroySets).toHaveBeenCalledWith({
+        where: { id: ['ls-1', 'ls-2'] },
+        transaction: fakeTx,
+      });
+    });
+
+    it('deletes nothing when one set is not in this workout', async () => {
+      logModel.findByPk.mockResolvedValueOnce(inProgressLog);
+      loggedSetModel.findAll.mockResolvedValueOnce([{ id: 'ls-1' }]);
+
+      await expect(
+        service.removeSetsFromLog('wl-1', ['ls-1', 'ls-other'], 'me'),
+      ).rejects.toThrow(NotFoundException);
+      expect(destroySets).not.toHaveBeenCalled();
+    });
+
+    it('refuses on a finished workout', async () => {
+      logModel.findByPk.mockResolvedValueOnce({
+        ...inProgressLog,
+        status: WorkoutLogStatus.Completed,
+      });
+
+      await expect(
+        service.removeSetsFromLog('wl-1', ['ls-1'], 'me'),
+      ).rejects.toThrow(BadRequestException);
+      expect(destroySets).not.toHaveBeenCalled();
+    });
+  });
+
+  // ─── Mid-session: superset links ─────────────────────────────────
+
+  describe('setSupersets', () => {
+    const inProgressLog = {
+      id: 'wl-1',
+      userId: 'me',
+      status: WorkoutLogStatus.InProgress,
+    };
+
+    it('saves every changed group in one transaction, one update per group', async () => {
+      logModel.findByPk.mockResolvedValueOnce(inProgressLog);
+      loggedExerciseModel.findAll.mockResolvedValueOnce([
+        { id: 'le-1' },
+        { id: 'le-2' },
+        { id: 'le-3' },
+      ]);
+
+      await service.setSupersets(
+        'wl-1',
+        [
+          { id: 'le-1', supersetGroupId: 1 },
+          { id: 'le-2', supersetGroupId: 1 },
+          { id: 'le-3', supersetGroupId: null },
+        ],
+        'me',
+      );
+
+      expect(sequelize.transaction).toHaveBeenCalledTimes(1);
+      const [query] = loggedExerciseModel.findAll.mock.calls[0] as [
+        { where: unknown },
+      ];
+      expect(query.where).toEqual({
+        id: ['le-1', 'le-2', 'le-3'],
+        workoutLogId: 'wl-1',
+      });
+      expect(loggedExerciseModel.update).toHaveBeenCalledTimes(2);
+      expect(loggedExerciseModel.update).toHaveBeenCalledWith(
+        { supersetGroupId: 1 },
+        {
+          where: { id: ['le-1', 'le-2'], workoutLogId: 'wl-1' },
+          transaction: fakeTx,
+        },
+      );
+      expect(loggedExerciseModel.update).toHaveBeenCalledWith(
+        { supersetGroupId: null },
+        { where: { id: ['le-3'], workoutLogId: 'wl-1' }, transaction: fakeTx },
+      );
+    });
+
+    it('changes nothing when one exercise is not in this workout', async () => {
+      logModel.findByPk.mockResolvedValueOnce(inProgressLog);
+      loggedExerciseModel.findAll.mockResolvedValueOnce([{ id: 'le-1' }]);
+
+      await expect(
+        service.setSupersets(
+          'wl-1',
+          [
+            { id: 'le-1', supersetGroupId: 1 },
+            { id: 'le-other', supersetGroupId: 1 },
+          ],
+          'me',
+        ),
+      ).rejects.toThrow(NotFoundException);
+      expect(loggedExerciseModel.update).not.toHaveBeenCalled();
+    });
+
+    it('refuses on a finished workout', async () => {
+      logModel.findByPk.mockResolvedValueOnce({
+        ...inProgressLog,
+        status: WorkoutLogStatus.Completed,
+      });
+
+      await expect(
+        service.setSupersets(
+          'wl-1',
+          [{ id: 'le-1', supersetGroupId: 1 }],
+          'me',
+        ),
+      ).rejects.toThrow(BadRequestException);
+      expect(loggedExerciseModel.update).not.toHaveBeenCalled();
+    });
+
+    it('hides a workout that is not yours', async () => {
+      logModel.findByPk.mockResolvedValueOnce({
+        ...inProgressLog,
+        userId: 'someone',
+      });
+
+      await expect(
+        service.setSupersets(
+          'wl-1',
+          [{ id: 'le-1', supersetGroupId: 1 }],
+          'me',
+        ),
+      ).rejects.toThrow(NotFoundException);
+      expect(loggedExerciseModel.update).not.toHaveBeenCalled();
     });
   });
 
@@ -3006,7 +3250,7 @@ describe('WorkoutLogService (smoke — not exhaustive)', () => {
 
     it('404s when the workout was never started (no log row)', async () => {
       assignedWorkoutModel.findOne.mockResolvedValueOnce({
-        assignment: { clientId: 'me' },
+        assignment: { clientId: 'me', status: 'ACTIVE' },
       });
       logModel.findOne.mockResolvedValueOnce(null);
       await expect(service.findByAssignedWorkout('aw-1', 'me')).rejects.toThrow(
@@ -3016,7 +3260,7 @@ describe('WorkoutLogService (smoke — not exhaustive)', () => {
 
     it('returns the latest log when one exists', async () => {
       assignedWorkoutModel.findOne.mockResolvedValueOnce({
-        assignment: { clientId: 'me' },
+        assignment: { clientId: 'me', status: 'ACTIVE' },
       });
       logModel.findOne.mockResolvedValueOnce({ id: 'wl-1' });
       const out = await service.findByAssignedWorkout('aw-1', 'me');
@@ -3213,6 +3457,65 @@ describe('WorkoutLogService (smoke — not exhaustive)', () => {
     });
   });
 
+  describe('complete — what can set a record', () => {
+    const open = () => ({
+      id: 'wl-1',
+      userId: 'me',
+      status: WorkoutLogStatus.InProgress,
+      startedAt: new Date(Date.now() - 3_600_000),
+      pausedSeconds: 0,
+      pausedAt: null,
+      programAssignmentId: null,
+      assignedWorkoutId: null,
+      update: jest.fn().mockResolvedValue(undefined),
+      get() {
+        return this;
+      },
+    });
+
+    it('leaves warm-ups out, as the set menu promises', async () => {
+      logModel.findByPk.mockResolvedValueOnce(open());
+      loggedSetModel.findOne.mockResolvedValueOnce(null);
+      loggedExerciseModel.findAll.mockResolvedValueOnce([
+        {
+          exerciseId: 'bench',
+          exercise: { kind: 'STRENGTH' },
+          sets: [
+            { isCompleted: true, setType: 'WARMUP', reps: 1, weightKg: 100 },
+            { isCompleted: true, setType: 'NORMAL', reps: 5, weightKg: 85 },
+          ],
+        },
+      ]);
+      oneRepMaxModel.findAll.mockResolvedValueOnce([]);
+
+      await service.complete('wl-1', {}, 'me');
+
+      // 85 × 5 by Epley, not the warm-up single's 100.
+      expect(oneRepMaxModel.create).toHaveBeenCalledWith(
+        expect.objectContaining({ exerciseId: 'bench', weightKg: 99.17 }),
+        { transaction: fakeTx },
+      );
+    });
+
+    it('gives a bodyweight exercise no record, whatever weight was added', async () => {
+      logModel.findByPk.mockResolvedValueOnce(open());
+      loggedSetModel.findOne.mockResolvedValueOnce(null);
+      loggedExerciseModel.findAll.mockResolvedValueOnce([
+        {
+          exerciseId: 'pull-up',
+          exercise: { kind: 'BODYWEIGHT' },
+          sets: [
+            { isCompleted: true, setType: 'NORMAL', reps: 8, weightKg: 20 },
+          ],
+        },
+      ]);
+
+      await service.complete('wl-1', {}, 'me');
+
+      expect(oneRepMaxModel.create).not.toHaveBeenCalled();
+    });
+  });
+
   describe('logSet — the rest actually taken', () => {
     const live = { id: 'wl-1', userId: 'me', status: 'IN_PROGRESS' };
     const setRow = () => ({
@@ -3255,6 +3558,54 @@ describe('WorkoutLogService (smoke — not exhaustive)', () => {
         restAfterSeconds: null,
         restSource: 'BREAK',
       });
+    });
+
+    it('stamps a tick at the moment it was tapped, held inside the workout', async () => {
+      const startedAt = new Date(Date.now() - 30 * 60_000);
+      const tapped = new Date(Date.now() - 5 * 60_000);
+      const cases: Array<[string, number]> = [
+        [tapped.toISOString(), tapped.getTime()],
+        ['2020-01-01T00:00:00.000Z', startedAt.getTime()],
+      ];
+      for (const [sent, expected] of cases) {
+        const set = setRow();
+        logModel.findByPk.mockResolvedValueOnce({ ...live, startedAt });
+        loggedSetModel.findByPk.mockResolvedValueOnce(set);
+
+        await service.logSet(
+          'wl-1',
+          'ls-1',
+          { isCompleted: true, reps: 8, completedAt: sent },
+          'me',
+        );
+
+        expect(set.update).toHaveBeenCalledWith({
+          reps: 8,
+          isCompleted: true,
+          completedAt: new Date(expected),
+        });
+      }
+    });
+
+    it('stamps a tick now when no time is sent, and never one in the future', async () => {
+      const startedAt = new Date(Date.now() - 30 * 60_000);
+      for (const sent of [undefined, '2099-01-01T00:00:00.000Z']) {
+        const set = setRow();
+        logModel.findByPk.mockResolvedValueOnce({ ...live, startedAt });
+        loggedSetModel.findByPk.mockResolvedValueOnce(set);
+        const before = Date.now();
+
+        await service.logSet(
+          'wl-1',
+          'ls-1',
+          { isCompleted: true, completedAt: sent },
+          'me',
+        );
+
+        const args = set.update.mock.calls[0][0] as { completedAt: Date };
+        expect(args.completedAt.getTime()).toBeGreaterThanOrEqual(before);
+        expect(args.completedAt.getTime()).toBeLessThanOrEqual(Date.now());
+      }
     });
 
     it('clears the source when sent null', async () => {

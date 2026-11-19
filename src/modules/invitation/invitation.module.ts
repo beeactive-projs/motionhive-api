@@ -10,6 +10,7 @@ import { GroupMember } from '../group/entities/group-member.entity';
 import { RoleModule } from '../role/role.module';
 import { User } from '../user/entities/user.entity';
 import { CryptoService } from '../../common/services';
+import { InstructorClient } from '../client/entities/instructor-client.entity';
 
 /**
  * Invitation Module
@@ -21,7 +22,12 @@ import { CryptoService } from '../../common/services';
  */
 @Module({
   imports: [
-    SequelizeModule.forFeature([Invitation, GroupMember, User]),
+    SequelizeModule.forFeature([
+      Invitation,
+      GroupMember,
+      User,
+      InstructorClient,
+    ]),
     GroupModule,
     RoleModule,
   ],

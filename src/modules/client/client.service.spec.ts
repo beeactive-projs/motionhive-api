@@ -27,6 +27,7 @@ import { RoleService } from '../role/role.service';
 import { EmailService } from '../../common/services/email.service';
 import { NotificationService } from '../notification/notification.service';
 import { User } from '../user/entities/user.entity';
+import { UserBlock } from '../messaging/entities/user-block.entity';
 import {
   makeModelMock,
   makeSilentLogger,
@@ -57,6 +58,8 @@ describe('ClientService', () => {
     sendClientRequestDeclinedEmail: jest.Mock;
     sendClientCollaborationEndedEmail: jest.Mock;
     sendClientInvitationEmail: jest.Mock;
+    sendExistingUserClientInvitationEmail: jest.Mock;
+    sendCollaborationEndedEmail: jest.Mock;
   };
   let notificationService: { notify: jest.Mock };
   let clientImportService: { requeueInviteEmail: jest.Mock };
@@ -84,6 +87,10 @@ describe('ClientService', () => {
       sendClientRequestDeclinedEmail: jest.fn().mockResolvedValue(undefined),
       sendClientCollaborationEndedEmail: jest.fn().mockResolvedValue(undefined),
       sendClientInvitationEmail: jest.fn().mockResolvedValue(undefined),
+      sendExistingUserClientInvitationEmail: jest
+        .fn()
+        .mockResolvedValue(undefined),
+      sendCollaborationEndedEmail: jest.fn().mockResolvedValue(undefined),
     };
     notificationService = { notify: jest.fn().mockResolvedValue(undefined) };
     clientImportService = {
@@ -98,6 +105,8 @@ describe('ClientService', () => {
       firstName: 'Test',
       lastName: 'User',
     } as User);
+    // Default: nobody blocked anybody.
+    jest.spyOn(UserBlock, 'findOne').mockResolvedValue(null);
 
     const moduleRef = await Test.createTestingModule({
       providers: [
@@ -594,6 +603,177 @@ describe('ClientService', () => {
       ).rejects.toBeInstanceOf(BadRequestException);
     });
   });
+  // =====================================================================
+  // Ending and restarting coaching: the client always agrees
+  // =====================================================================
+  describe('ending and restarting coaching', () => {
+    function relationship(status: InstructorClientStatus) {
+      return {
+        id: 'rel-1',
+        instructorId: 'instr-1',
+        clientId: 'client-1',
+        status,
+        client: { firstName: 'Casey', lastName: 'Client', email: 'c@x.com' },
+        instructor: { firstName: 'Iris', lastName: 'Inst', email: 'i@x.com' },
+        update: jest.fn().mockResolvedValue(undefined),
+      } as unknown as InstructorClient;
+    }
+
+    it('refuses to make a former client active again without them', async () => {
+      const rel = relationship(InstructorClientStatus.ARCHIVED);
+      instructorClientModel.findOne.mockResolvedValue(rel);
+
+      await expect(
+        service.updateClient('instr-1', 'client-1', {
+          status: InstructorClientStatus.ACTIVE,
+        }),
+      ).rejects.toBeInstanceOf(ConflictException);
+      expect(rel.update).not.toHaveBeenCalled();
+    });
+
+    it('still saves notes on a former client', async () => {
+      const rel = relationship(InstructorClientStatus.ARCHIVED);
+      instructorClientModel.findOne.mockResolvedValue(rel);
+
+      await service.updateClient('instr-1', 'client-1', {
+        notes: 'Back in May',
+      });
+
+      expect(rel.update).toHaveBeenCalledWith({ notes: 'Back in May' });
+    });
+
+    it('tells the client in the app when the coach ends it', async () => {
+      instructorClientModel.findOne.mockResolvedValue(
+        relationship(InstructorClientStatus.ACTIVE),
+      );
+
+      await service.updateClient('instr-1', 'client-1', {
+        status: InstructorClientStatus.ARCHIVED,
+      });
+
+      expect(notificationService.notify).toHaveBeenCalledWith(
+        expect.objectContaining({
+          userId: 'client-1',
+          message: { key: 'client.coachEnded', params: { name: 'Iris Inst' } },
+        }),
+      );
+    });
+
+    it('invites a former client again, keeping their one row for the accept', async () => {
+      // No ACTIVE row, no pending request.
+      instructorClientModel.findOne.mockResolvedValue(null);
+      clientRequestModel.findOne.mockResolvedValue(null);
+      clientRequestModel.create.mockResolvedValue({ id: 'req-2' });
+
+      const request = await service.sendClientInvitation('instr-1', 'client-1');
+
+      expect(request).toEqual({ id: 'req-2' });
+      expect(clientRequestModel.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          fromUserId: 'instr-1',
+          toUserId: 'client-1',
+          type: ClientRequestType.INSTRUCTOR_TO_CLIENT,
+        }),
+        expect.anything(),
+      );
+      expect(instructorClientModel.create).not.toHaveBeenCalled();
+    });
+
+    it('refuses an invitation or a request between people when either blocked the other', async () => {
+      instructorClientModel.findOne.mockResolvedValue(null);
+      clientRequestModel.findOne.mockResolvedValue(null);
+      instructorProfileModel.findOne.mockResolvedValue(null);
+      jest
+        .spyOn(UserBlock, 'findOne')
+        .mockResolvedValue({ id: 'block-1' } as UserBlock);
+
+      await expect(
+        service.sendClientInvitation('instr-1', 'client-1'),
+      ).rejects.toBeInstanceOf(ForbiddenException);
+      await expect(
+        service.requestToBeClient('client-1', 'instr-1'),
+      ).rejects.toBeInstanceOf(ForbiddenException);
+      expect(clientRequestModel.create).not.toHaveBeenCalled();
+    });
+
+    it('still refuses to invite someone who is already a client', async () => {
+      instructorClientModel.findOne.mockResolvedValue(
+        relationship(InstructorClientStatus.ACTIVE),
+      );
+
+      await expect(
+        service.sendClientInvitation('instr-1', 'client-1'),
+      ).rejects.toBeInstanceOf(ConflictException);
+    });
+  });
+
+  describe('getSentRequests', () => {
+    it("lists the caller's own waiting requests, with no coach email", async () => {
+      clientRequestModel.findAll.mockResolvedValue([]);
+
+      await service.getSentRequests('client-1');
+
+      const opts = clientRequestModel.findAll.mock.calls[0][0] as {
+        where: Record<string, unknown>;
+        include: { as: string; attributes: string[] }[];
+      };
+      expect(opts.where).toMatchObject({
+        fromUserId: 'client-1',
+        type: ClientRequestType.CLIENT_TO_INSTRUCTOR,
+        status: ClientRequestStatus.PENDING,
+      });
+      expect(opts.include[0].as).toBe('toUser');
+      expect(opts.include[0].attributes).not.toContain('email');
+    });
+  });
+
+  describe('acceptByToken', () => {
+    function pendingInvite() {
+      return {
+        id: 'req-1',
+        fromUserId: 'instr-1',
+        status: ClientRequestStatus.PENDING,
+        expiresAt: new Date(Date.now() + 86_400_000),
+        coachNote: null,
+        update: jest.fn().mockResolvedValue(undefined),
+      } as unknown as ClientRequest;
+    }
+
+    it('refuses the coach opening their own link', async () => {
+      clientRequestModel.findOne.mockResolvedValue(pendingInvite());
+
+      await expect(
+        service.acceptByToken('tok', 'instr-1'),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      expect(instructorClientModel.create).not.toHaveBeenCalled();
+    });
+
+    it('tells the coach who accepted through the link', async () => {
+      clientRequestModel.findOne.mockResolvedValue(pendingInvite());
+      instructorClientModel.findOne.mockResolvedValue(null);
+
+      await service.acceptByToken('tok', 'client-1');
+
+      expect(instructorClientModel.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          instructorId: 'instr-1',
+          clientId: 'client-1',
+          status: InstructorClientStatus.ACTIVE,
+        }),
+        expect.anything(),
+      );
+      expect(notificationService.notify).toHaveBeenCalledWith(
+        expect.objectContaining({
+          userId: 'instr-1',
+          message: {
+            key: 'client.invitationAccepted',
+            params: { name: 'Test User' },
+          },
+        }),
+      );
+    });
+  });
+
   // =====================================================================
   // Listing: direction, search, and a count that explains itself
   // =====================================================================

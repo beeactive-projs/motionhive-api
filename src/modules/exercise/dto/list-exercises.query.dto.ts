@@ -9,6 +9,7 @@ import {
   MaxLength,
 } from 'class-validator';
 import { PaginationDto } from '../../../common/dto/pagination.dto';
+import { toQueryList } from '../../../common/utils/query.utils';
 import {
   ExerciseForce,
   ExerciseKind,
@@ -55,23 +56,6 @@ export const ExerciseSortKey = {
 export type ExerciseSortKey =
   (typeof ExerciseSortKey)[keyof typeof ExerciseSortKey];
 
-/**
- * Comma-separated string → string[] coercion for query params.
- * `?kind=STRENGTH,CARDIO` arrives as a string from the URL; the
- * Transform splits it before class-validator sees it.
- */
-function toStringArray(value: unknown): string[] | undefined {
-  if (value == null) return undefined;
-  if (Array.isArray(value)) return value.map(String);
-  if (typeof value === 'string') {
-    return value
-      .split(',')
-      .map((s) => s.trim())
-      .filter(Boolean);
-  }
-  return undefined;
-}
-
 export class ListExercisesQueryDto extends PaginationDto {
   @ApiPropertyOptional({
     example: 'squat',
@@ -94,7 +78,7 @@ export class ListExercisesQueryDto extends PaginationDto {
     description: 'Comma-separated list of kinds, e.g. ?kind=STRENGTH,CARDIO',
   })
   @IsOptional()
-  @Transform(({ value }) => toStringArray(value))
+  @Transform(({ value }) => toQueryList(value))
   @IsArray()
   @IsEnum(ExerciseKind, { each: true })
   kind?: ExerciseKind[];
@@ -104,7 +88,7 @@ export class ListExercisesQueryDto extends PaginationDto {
     description: 'Filter by primary muscle UUIDs (comma-separated).',
   })
   @IsOptional()
-  @Transform(({ value }) => toStringArray(value))
+  @Transform(({ value }) => toQueryList(value))
   @IsArray()
   @IsUUID('4', { each: true })
   primaryMuscleId?: string[];
@@ -114,7 +98,7 @@ export class ListExercisesQueryDto extends PaginationDto {
     description: 'Filter by equipment UUIDs (comma-separated).',
   })
   @IsOptional()
-  @Transform(({ value }) => toStringArray(value))
+  @Transform(({ value }) => toQueryList(value))
   @IsArray()
   @IsUUID('4', { each: true })
   equipmentId?: string[];
@@ -125,7 +109,7 @@ export class ListExercisesQueryDto extends PaginationDto {
     example: [ExerciseLevel.Beginner, ExerciseLevel.Intermediate],
   })
   @IsOptional()
-  @Transform(({ value }) => toStringArray(value))
+  @Transform(({ value }) => toQueryList(value))
   @IsArray()
   @IsEnum(ExerciseLevel, { each: true })
   level?: ExerciseLevel[];
@@ -136,7 +120,7 @@ export class ListExercisesQueryDto extends PaginationDto {
     example: [MovementPattern.Squat],
   })
   @IsOptional()
-  @Transform(({ value }) => toStringArray(value))
+  @Transform(({ value }) => toQueryList(value))
   @IsArray()
   @IsEnum(MovementPattern, { each: true })
   movementPattern?: MovementPattern[];
@@ -147,7 +131,7 @@ export class ListExercisesQueryDto extends PaginationDto {
     example: [ExerciseMechanic.Compound],
   })
   @IsOptional()
-  @Transform(({ value }) => toStringArray(value))
+  @Transform(({ value }) => toQueryList(value))
   @IsArray()
   @IsEnum(ExerciseMechanic, { each: true })
   mechanic?: ExerciseMechanic[];
@@ -158,7 +142,7 @@ export class ListExercisesQueryDto extends PaginationDto {
     example: [ExerciseForce.Push],
   })
   @IsOptional()
-  @Transform(({ value }) => toStringArray(value))
+  @Transform(({ value }) => toQueryList(value))
   @IsArray()
   @IsEnum(ExerciseForce, { each: true })
   force?: ExerciseForce[];

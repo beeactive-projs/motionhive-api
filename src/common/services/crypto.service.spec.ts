@@ -43,4 +43,41 @@ describe('CryptoService', () => {
       jest.useRealTimers();
     }
   });
+  describe('encrypt / decrypt', () => {
+    const key = Buffer.alloc(32, 7);
+
+    it('reads back what it encrypted, and never encrypts the same way twice', () => {
+      const first = service.encrypt('apple-refresh-token', key);
+      const second = service.encrypt('apple-refresh-token', key);
+
+      expect(first).not.toBe(second);
+      expect(first).toMatch(/^v1\./);
+      expect(first).not.toContain('apple-refresh-token');
+      expect(service.decrypt(first, key)).toBe('apple-refresh-token');
+      expect(service.decrypt(second, key)).toBe('apple-refresh-token');
+    });
+
+    it('refuses a value that was changed', () => {
+      const parts = service.encrypt('apple-refresh-token', key).split('.');
+      const body = Buffer.from(parts[3], 'base64url');
+      body[0] = body[0] ^ 1;
+      parts[3] = body.toString('base64url');
+
+      expect(() => service.decrypt(parts.join('.'), key)).toThrow();
+    });
+
+    it('refuses another key, and text that is not an encrypted value', () => {
+      const sealed = service.encrypt('apple-refresh-token', key);
+
+      expect(() => service.decrypt(sealed, Buffer.alloc(32, 8))).toThrow();
+      expect(() => service.decrypt('plain text', key)).toThrow();
+    });
+
+    it('reads a base64 key only when it is 32 bytes', () => {
+      expect(service.parseKey(key.toString('base64'))).toEqual(key);
+      expect(service.parseKey(Buffer.alloc(16).toString('base64'))).toBeNull();
+      expect(service.parseKey(undefined)).toBeNull();
+      expect(service.parseKey('')).toBeNull();
+    });
+  });
 });

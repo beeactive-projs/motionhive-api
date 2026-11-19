@@ -1,6 +1,7 @@
 import { IsOptional, IsString, IsNumber, Min, Max } from 'class-validator';
 import { ApiPropertyOptional } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
+import { CategoryIdsFilter } from '../../category/dto/category-ids';
 
 export class DiscoverInstructorsDto {
   @ApiPropertyOptional({
@@ -26,6 +27,9 @@ export class DiscoverInstructorsDto {
   @IsString()
   @IsOptional()
   country?: string;
+
+  @CategoryIdsFilter('Coaches who coach any of these categories')
+  categoryIds?: string[];
 
   @ApiPropertyOptional({ example: 1, description: 'Page number', default: 1 })
   @Type(() => Number)
