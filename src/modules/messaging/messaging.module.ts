@@ -13,6 +13,7 @@ import { MessagingSuspension } from './entities/messaging-suspension.entity';
 import { AdminMessageAccessLog } from './entities/admin-message-access-log.entity';
 import { MessagingVelocityAlarm } from './entities/messaging-velocity-alarm.entity';
 import { User } from '../user/entities/user.entity';
+import { ClientRequest } from '../client/entities/client-request.entity';
 import { InstructorClient } from '../client/entities/instructor-client.entity';
 import { RoleModule } from '../role/role.module';
 import { UserModule } from '../user/user.module';
@@ -53,6 +54,8 @@ import { MessagingStreamTicketService } from './auth/messaging-stream-ticket.ser
       MessagingVelocityAlarm,
       User,
       InstructorClient,
+      // A block ends the coaching between the two, requests included.
+      ClientRequest,
     ]),
     RoleModule,
     // UserModule exports UserService, used by SseJwtStrategy.validate

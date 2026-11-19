@@ -243,8 +243,13 @@ export interface RosterClient {
   daysSinceLastWorkout: number | null;
   activePlans: number;
   /**
+   * Plans the coach paused. A client whose only plans are paused is not
+   * "no plan": the coach chose the break, so they are not flagged.
+   */
+  pausedPlans: number;
+  /**
    * Why this client needs looking at, or null when they don't:
-   *   NO_PLAN       — no active plan at all, so nothing is being asked of them
+   *   NO_PLAN       — no active or paused plan, so nothing is being asked of them
    *   NEVER_STARTED — assigned work, nothing ever logged
    *   SILENT        — no workout in 14+ days
    *   DROPPED       — adherence fell 20+ points against the prior window
@@ -666,6 +671,7 @@ export class ProgressService {
       prevCompleted: string;
       lastWorkoutAt: Date | null;
       activePlans: string;
+      pausedPlans: string;
     }>(
       `
       WITH ${coachClientsCte(!!clientId)},
@@ -705,6 +711,10 @@ export class ProgressService {
           -- Both windows and nothing older: every count above is inside it.
           AND aw.scheduled_date > (:today::date - (:days::int * 2))
           AND aw.scheduled_date <= :today::date
+          -- A paused or cancelled plan asks nothing: its open days are not
+          -- due (the nightly skip leaves them open too). What was done or
+          -- skipped on it still counts.
+          AND (pa.status NOT IN ('PAUSED', 'CANCELLED') OR aw.status IS NOT NULL)
         GROUP BY pa.client_id
       ),
       -- Only these clients' logs: unscoped, this took the latest workout
@@ -722,11 +732,14 @@ export class ProgressService {
         GROUP BY wl.user_id
       ),
       plan_counts AS (
-        SELECT client_id, COUNT(*) AS active_plans
+        SELECT
+          client_id,
+          COUNT(*) FILTER (WHERE status = 'ACTIVE') AS active_plans,
+          COUNT(*) FILTER (WHERE status = 'PAUSED') AS paused_plans
         FROM program_assignment
         WHERE instructor_id = :instructorId
           AND deleted_at IS NULL
-          AND status = 'ACTIVE'
+          AND status IN ('ACTIVE', 'PAUSED')
         GROUP BY client_id
       )
       SELECT
@@ -741,7 +754,8 @@ export class ProgressService {
         COALESCE(w.prev_due, 0)            AS "prevDue",
         COALESCE(w.prev_completed, 0)      AS "prevCompleted",
         ls.last_at                         AS "lastWorkoutAt",
-        COALESCE(pc.active_plans, 0)       AS "activePlans"
+        COALESCE(pc.active_plans, 0)       AS "activePlans",
+        COALESCE(pc.paused_plans, 0)       AS "pausedPlans"
       FROM clients c
       JOIN "user" u       ON u.id = c.client_id
       LEFT JOIN windowed w   ON w.client_id = c.client_id
@@ -937,6 +951,7 @@ export class ProgressService {
       prevCompleted: string;
       lastWorkoutAt: Date | null;
       activePlans: string;
+      pausedPlans?: string;
     },
     today: string,
   ): RosterClient {
@@ -945,6 +960,7 @@ export class ProgressService {
     const prevDue = Number(r.prevDue);
     const prevCompleted = Number(r.prevCompleted);
     const activePlans = Number(r.activePlans);
+    const pausedPlans = Number(r.pausedPlans ?? 0);
 
     // Nothing due is not 0% — it means the question doesn't apply.
     const adherencePercent =
@@ -982,8 +998,10 @@ export class ProgressService {
       lastWorkoutAt: r.lastWorkoutAt ? r.lastWorkoutAt.toISOString() : null,
       daysSinceLastWorkout: daysSince,
       activePlans,
+      pausedPlans,
       attention: this._attentionReason({
         activePlans,
+        pausedPlans,
         lastWorkoutAt: r.lastWorkoutAt,
         daysSince,
         adherencePercent,
@@ -1000,6 +1018,7 @@ export class ProgressService {
    */
   private _attentionReason(input: {
     activePlans: number;
+    pausedPlans: number;
     lastWorkoutAt: Date | null;
     daysSince: number | null;
     adherencePercent: number | null;
@@ -1008,7 +1027,14 @@ export class ProgressService {
     // Someone with no active plan has nothing to be behind on — but that is
     // the coach's omission, not the client being fine. Returning null here
     // sorted them into "On track" beside people who are actually training.
-    if (input.activePlans === 0) return 'NO_PLAN';
+    if (input.activePlans === 0) {
+      // Paused on purpose: nothing is asked of them until it resumes, and
+      // the coach knows why. Not flagged, and not "no plan".
+      if (input.pausedPlans > 0) {
+        return null;
+      }
+      return 'NO_PLAN';
+    }
 
     if (input.lastWorkoutAt == null) return 'NEVER_STARTED';
     if ((input.daysSince ?? 0) >= 14) return 'SILENT';

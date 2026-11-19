@@ -184,9 +184,9 @@ export class InvitationService {
       throw new BadRequestException(apiError('invitation.alreadyMember'));
     }
 
-    // Find the role to assign
-    const roleName = dto.roleName || 'USER';
-    const role = await this.roleService.findByName(roleName);
+    // A group invitation gives the USER role and nothing else, whatever
+    // the body says (the DTO also refuses anything but USER).
+    const role = await this.roleService.findByName('USER');
 
     // Check for existing pending invitation
     const existing = await this.invitationModel.findOne({

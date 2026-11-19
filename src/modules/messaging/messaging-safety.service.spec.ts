@@ -12,6 +12,9 @@ import { ConversationParticipant } from './entities/conversation-participant.ent
 import { MessagingSuspension } from './entities/messaging-suspension.entity';
 import { UserBlock, UserBlockReason } from './entities/user-block.entity';
 import { InstructorClient } from '../client/entities/instructor-client.entity';
+import { ClientRequest } from '../client/entities/client-request.entity';
+import { Sequelize } from 'sequelize-typescript';
+import { Op } from 'sequelize';
 import { User } from '../user/entities/user.entity';
 import { makeSilentLogger } from '../../../test/helpers/sequelize-mocks';
 
@@ -19,6 +22,7 @@ interface ModelMock {
   findOne: jest.Mock;
   findAll: jest.Mock;
   create: jest.Mock;
+  update?: jest.Mock;
 }
 
 describe('MessagingSafetyService — Stage 3', () => {
@@ -27,6 +31,7 @@ describe('MessagingSafetyService — Stage 3', () => {
   let suspensionModel: ModelMock;
   let participantModel: ModelMock;
   let instructorClientModel: ModelMock;
+  let clientRequestModel: { update: jest.Mock };
   let userFindByPkSpy: jest.SpyInstance;
 
   beforeEach(async () => {
@@ -41,10 +46,12 @@ describe('MessagingSafetyService — Stage 3', () => {
       findAll: jest.fn(),
       create: jest.fn(),
     };
+    clientRequestModel = { update: jest.fn().mockResolvedValue([0]) };
     instructorClientModel = {
       findOne: jest.fn(),
       findAll: jest.fn(),
       create: jest.fn(),
+      update: jest.fn().mockResolvedValue([0]),
     };
 
     userFindByPkSpy = jest.spyOn(User, 'findByPk');
@@ -71,6 +78,17 @@ describe('MessagingSafetyService — Stage 3', () => {
         {
           provide: getModelToken(InstructorClient),
           useValue: instructorClientModel,
+        },
+        {
+          provide: getModelToken(ClientRequest),
+          useValue: clientRequestModel,
+        },
+        {
+          provide: Sequelize,
+          useValue: {
+            transaction: (cb: (tx: unknown) => unknown) =>
+              Promise.resolve(cb({ id: 'tx' })),
+          },
         },
         { provide: WINSTON_MODULE_NEST_PROVIDER, useValue: makeSilentLogger() },
       ],
@@ -133,12 +151,44 @@ describe('MessagingSafetyService — Stage 3', () => {
 
       const result = await service.block('a', 'b', UserBlockReason.SPAM);
 
-      expect(blockModel.create).toHaveBeenCalledWith({
-        blockerId: 'a',
-        blockedId: 'b',
-        reason: UserBlockReason.SPAM,
-      });
+      expect(blockModel.create).toHaveBeenCalledWith(
+        {
+          blockerId: 'a',
+          blockedId: 'b',
+          reason: UserBlockReason.SPAM,
+        },
+        { transaction: { id: 'tx' } },
+      );
       expect(result.id).toBe('new');
+    });
+
+    it('ends any coaching between the two, either way round, in the same transaction', async () => {
+      userFindByPkSpy.mockResolvedValue({ id: 'b' });
+      blockModel.findOne.mockResolvedValue(null);
+      blockModel.create.mockResolvedValue({ id: 'new' });
+
+      await service.block('a', 'b');
+
+      expect(instructorClientModel.update).toHaveBeenCalledWith(
+        { status: 'ARCHIVED' },
+        {
+          where: {
+            status: 'ACTIVE',
+            [Op.or]: [
+              { instructorId: 'a', clientId: 'b' },
+              { instructorId: 'b', clientId: 'a' },
+            ],
+          },
+          transaction: { id: 'tx' },
+        },
+      );
+      expect(clientRequestModel.update).toHaveBeenCalledWith(
+        expect.objectContaining({ status: 'CANCELLED' }),
+        expect.objectContaining({
+          where: expect.objectContaining({ status: 'PENDING' }),
+          transaction: { id: 'tx' },
+        }),
+      );
     });
   });
 

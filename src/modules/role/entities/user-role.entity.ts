@@ -47,7 +47,8 @@ export class UserRole extends Model {
     type: DataType.CHAR(36),
     allowNull: true,
   })
-  declare groupId: string;
+  /** Null for a platform role; a group id for a role inside that group. */
+  declare groupId: string | null;
 
   @Column({
     type: DataType.DATE,

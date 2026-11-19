@@ -8,12 +8,17 @@ import {
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/sequelize';
 import { WINSTON_MODULE_NEST_PROVIDER } from 'nest-winston';
-import { Op } from 'sequelize';
+import { Op, Transaction } from 'sequelize';
+import { Sequelize } from 'sequelize-typescript';
 import { apiError, ApiErrorBody } from '../../common/i18n';
 import {
   InstructorClient,
   InstructorClientStatus,
 } from '../client/entities/instructor-client.entity';
+import {
+  ClientRequest,
+  ClientRequestStatus,
+} from '../client/entities/client-request.entity';
 import { User, USER_SAFE_ATTRIBUTES } from '../user/entities/user.entity';
 import { ConversationParticipant } from './entities/conversation-participant.entity';
 import { MessagingSuspension } from './entities/messaging-suspension.entity';
@@ -64,6 +69,9 @@ export class MessagingSafetyService {
     private readonly participantModel: typeof ConversationParticipant,
     @InjectModel(InstructorClient)
     private readonly instructorClientModel: typeof InstructorClient,
+    @InjectModel(ClientRequest)
+    private readonly clientRequestModel: typeof ClientRequest,
+    private readonly sequelize: Sequelize,
     @Inject(WINSTON_MODULE_NEST_PROVIDER)
     private readonly logger: LoggerService,
   ) {}
@@ -219,16 +227,63 @@ export class MessagingSafetyService {
     if (existing) {
       throw new ConflictException(apiError('messaging.alreadyBlocked'));
     }
-    const row = await this.userBlockModel.create({
-      blockerId,
-      blockedId,
-      reason: reason ?? null,
+    const row = await this.sequelize.transaction(async (transaction) => {
+      const created = await this.userBlockModel.create(
+        {
+          blockerId,
+          blockedId,
+          reason: reason ?? null,
+        },
+        { transaction },
+      );
+      await this.endCoachingBetween(blockerId, blockedId, transaction);
+      return created;
     });
     this.logger.log?.(
       `User ${blockerId} blocked ${blockedId} (reason=${reason ?? 'NONE'})`,
       'MessagingSafetyService',
     );
     return row;
+  }
+
+  /**
+   * A block ends any coaching between the two, whichever side coaches
+   * (owner, 2026-11-19): an ACTIVE relationship is archived, so the coach
+   * loses the client's training and plans, and a request still waiting
+   * either way is cancelled. Silent, like the block itself: nobody is
+   * told. Unblocking does not restore it; that takes a new invitation.
+   */
+  private async endCoachingBetween(
+    userA: string,
+    userB: string,
+    transaction: Transaction,
+  ): Promise<void> {
+    await this.instructorClientModel.update(
+      { status: InstructorClientStatus.ARCHIVED },
+      {
+        where: {
+          status: InstructorClientStatus.ACTIVE,
+          [Op.or]: [
+            { instructorId: userA, clientId: userB },
+            { instructorId: userB, clientId: userA },
+          ],
+        },
+        transaction,
+      },
+    );
+    await this.clientRequestModel.update(
+      { status: ClientRequestStatus.CANCELLED, respondedAt: new Date() },
+      {
+        where: {
+          status: ClientRequestStatus.PENDING,
+          [Op.or]: [
+            { fromUserId: userA, toUserId: userB },
+            { fromUserId: userB, toUserId: userA },
+          ],
+        },
+        transaction,
+      },
+    );
   }
 
   async unblock(blockerId: string, blockedId: string): Promise<void> {

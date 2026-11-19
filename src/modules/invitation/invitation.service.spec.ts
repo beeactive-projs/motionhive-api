@@ -174,6 +174,25 @@ describe('InvitationService', () => {
       ).rejects.toBeInstanceOf(BadRequestException);
     });
 
+    it('gives the USER role and no other, whatever the body asks for', async () => {
+      memberModel.findOne.mockResolvedValue(null);
+      invitationModel.findOne.mockResolvedValue(null);
+      invitationModel.create.mockResolvedValue({ id: 'inv-2' });
+
+      await service.create('owner-1', {
+        groupId: 'g-1',
+        email: 'invitee@x.com',
+        // What the DTO now refuses; the service ignores it either way.
+        roleName: 'SUPER_ADMIN',
+      });
+
+      expect(roleService.findByName).toHaveBeenCalledWith('USER');
+      expect(roleService.findByName).not.toHaveBeenCalledWith('SUPER_ADMIN');
+      expect(invitationModel.create).toHaveBeenCalledWith(
+        expect.objectContaining({ roleId: 'role-user' }),
+      );
+    });
+
     it('creates an invitation, emails the invitee, and returns the link', async () => {
       memberModel.findOne.mockResolvedValue(null);
       invitationModel.findOne.mockResolvedValue(null);
