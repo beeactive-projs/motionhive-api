@@ -87,6 +87,43 @@ export class ConversationParticipant extends Model {
   })
   declare clearedAt: Date | null;
 
+  /**
+   * When this person took the chat in. Null = it is a message request
+   * waiting for them (migration 090). Sending in a chat accepts it.
+   */
+  @Column({
+    type: DataType.DATE,
+    allowNull: true,
+  })
+  declare acceptedAt: Date | null;
+
+  /**
+   * When the request to this person started, set once on its first
+   * message. The sender's waiting limit counts their messages from here.
+   */
+  @Column({
+    type: DataType.DATE,
+    allowNull: true,
+  })
+  declare requestAt: Date | null;
+
+  /** This person deleted the request. Nothing tells the sender. */
+  @Column({
+    type: DataType.DATE,
+    allowNull: true,
+  })
+  declare declinedAt: Date | null;
+
+  /**
+   * This person archived the chat: out of their list and quiet, and it
+   * stays archived when messages arrive. Writing in it brings it back.
+   */
+  @Column({
+    type: DataType.DATE,
+    allowNull: true,
+  })
+  declare archivedAt: Date | null;
+
   @Column({
     type: DataType.DATE,
     defaultValue: DataType.NOW,

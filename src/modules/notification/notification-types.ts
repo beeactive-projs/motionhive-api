@@ -65,6 +65,8 @@ export enum NotificationType {
   POST_REJECTED = 'POST_REJECTED',
   // ── Messaging ────────────────────────────────────────────
   MESSAGE_RECEIVED = 'MESSAGE_RECEIVED',
+  /** Someone not connected with the reader wrote: a message request (migration 090). */
+  MESSAGE_REQUEST_RECEIVED = 'MESSAGE_REQUEST_RECEIVED',
   // ── Workouts (exercises + programs) ──────────────────────
   EXERCISE_FORKED = 'EXERCISE_FORKED',
   PROGRAM_ASSIGNED = 'PROGRAM_ASSIGNED',

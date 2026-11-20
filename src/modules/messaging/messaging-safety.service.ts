@@ -8,9 +8,14 @@ import {
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/sequelize';
 import { WINSTON_MODULE_NEST_PROVIDER } from 'nest-winston';
-import { Op, Transaction } from 'sequelize';
+import { Op, QueryTypes, Transaction } from 'sequelize';
 import { Sequelize } from 'sequelize-typescript';
 import { apiError, ApiErrorBody } from '../../common/i18n';
+import {
+  BOOKING_CONNECTION_DAYS,
+  COACH_REQUEST_MESSAGE_LIMIT,
+  REQUEST_MESSAGE_LIMIT,
+} from './constants';
 import {
   InstructorClient,
   InstructorClientStatus,
@@ -19,7 +24,11 @@ import {
   ClientRequest,
   ClientRequestStatus,
 } from '../client/entities/client-request.entity';
-import { User, USER_CARD_ATTRIBUTES } from '../user/entities/user.entity';
+import {
+  MessagePolicy,
+  User,
+  USER_CARD_ATTRIBUTES,
+} from '../user/entities/user.entity';
 import { ConversationParticipant } from './entities/conversation-participant.entity';
 import { MessagingSuspension } from './entities/messaging-suspension.entity';
 import { UserBlock, UserBlockReason } from './entities/user-block.entity';
@@ -38,6 +47,28 @@ export type CanMessageResult =
   | { kind: 'forbidden'; reason: ApiErrorBody };
 
 export type SilentDropReason = 'BLOCKED_BY_RECIPIENT';
+
+/**
+ * Where a message that is allowed lands (migration 090):
+ *   - 'direct':  straight into the recipient's chats.
+ *   - 'request': in their message requests; `limit` is how many messages
+ *                the sender may send before it is accepted.
+ *   - 'refused': the recipient takes messages from connections only.
+ */
+export type MessageDelivery =
+  | { kind: 'direct' }
+  | { kind: 'request'; limit: number }
+  | { kind: 'refused'; reason: ApiErrorBody };
+
+/** How a message request's sender and its reader might know each other. */
+export interface RequestContext {
+  /** One group both are active members of (first by name), or null. */
+  sharedGroupName: string | null;
+  /** How many groups they share. */
+  sharedGroupCount: number;
+  /** The person writing coaches on MotionHive. */
+  isCoach: boolean;
+}
 
 const NEW_ACCOUNT_HOURS = 48;
 const NEW_ACCOUNT_WINDOW_MS = NEW_ACCOUNT_HOURS * 60 * 60 * 1000;
@@ -101,6 +132,11 @@ export class MessagingSafetyService {
        * send path loads the sender up front). Skips one lookup.
        */
       senderCreatedAt?: Date | null;
+      /**
+       * The recipient already took this chat in (they wrote first, or
+       * accepted). A new account may always answer someone who wrote to it.
+       */
+      recipientAccepted?: boolean;
     } = {},
   ): Promise<CanMessageResult> {
     if (senderId === recipientId) {
@@ -121,6 +157,7 @@ export class MessagingSafetyService {
         senderId,
         recipientId,
         opts.senderCreatedAt ?? null,
+        opts.recipientAccepted ?? false,
       ),
     ]);
 
@@ -344,18 +381,17 @@ export class MessagingSafetyService {
 
   /**
    * Returns true when the sender's account is younger than the
-   * configured window AND there is no ACTIVE InstructorClient row
-   * between sender and recipient in EITHER direction.
-   *
-   * Why both directions: an instructor messaging a brand-new client
-   * shouldn't be blocked — they already have an ACTIVE link. The
-   * direction of the relationship (instructor vs client side) is not
-   * what matters for messaging; the existence of a confirmed link is.
+   * configured window AND the sender may not write to the recipient
+   * directly (no coaching, recent booking or group they run between
+   * them: `mayWriteDirectly`) AND the recipient has not already taken
+   * the chat in. A new account answers anyone who wrote to it, but
+   * cannot start message requests.
    */
   private async senderIsThrottledByAccountAge(
     senderId: string,
     recipientId: string,
     knownCreatedAt: Date | null,
+    recipientAccepted: boolean,
   ): Promise<boolean> {
     let createdAt = knownCreatedAt;
     if (!createdAt) {
@@ -374,18 +410,237 @@ export class MessagingSafetyService {
     if (ageMs >= NEW_ACCOUNT_WINDOW_MS) {
       return false;
     }
+    if (recipientAccepted) {
+      return false;
+    }
 
-    const activeLink = await this.instructorClientModel.findOne({
-      where: {
-        status: InstructorClientStatus.ACTIVE,
-        [Op.or]: [
-          { instructorId: senderId, clientId: recipientId },
-          { instructorId: recipientId, clientId: senderId },
-        ],
+    const connected = await this.mayWriteDirectly(senderId, recipientId);
+    return !connected;
+  }
+
+  // =========================================================================
+  // Message requests (migration 090)
+  // =========================================================================
+
+  /**
+   * Where a message from `senderId` lands when the recipient has not taken
+   * the chat in yet. Connected people go straight in; otherwise the
+   * recipient's "Who can message you" decides: straight in, a message
+   * request, or refused. Blocks and suspensions are `canMessage`'s job and
+   * are checked before this.
+   */
+  async deliveryFor(
+    senderId: string,
+    recipientId: string,
+  ): Promise<MessageDelivery> {
+    const [connected, policy] = await Promise.all([
+      this.mayWriteDirectly(senderId, recipientId),
+      this.messagePolicyOf(recipientId),
+    ]);
+    if (connected) {
+      return { kind: 'direct' };
+    }
+    if (policy === MessagePolicy.Everyone) {
+      return { kind: 'direct' };
+    }
+    if (policy === MessagePolicy.Connections) {
+      return {
+        kind: 'refused',
+        reason: apiError('messaging.connectionsOnly'),
+      };
+    }
+    const limits = await this.requestLimitsFor([recipientId]);
+    return { kind: 'request', limit: limits.get(recipientId) ?? 0 };
+  }
+
+  /**
+   * True when the sender may write straight into the recipient's chats
+   * because of what they share (docs/research/messaging/WHO_CAN_MESSAGE.md
+   * §3.1):
+   *   - ACTIVE coaching, either way round;
+   *   - the recipient sent the sender a coaching request or invitation that
+   *     is still waiting (you can always answer someone who reached out;
+   *     the person who sent it gets nothing from this);
+   *   - a booking (confirmed, pending approval or waitlisted) by one of them
+   *     in the other's session, ahead or ended within BOOKING_CONNECTION_DAYS;
+   *   - a group they are both in, where one of them is its owner or a
+   *     moderator.
+   * One query. Raw SQL, so this module imports no session or group code.
+   */
+  async mayWriteDirectly(
+    senderId: string,
+    recipientId: string,
+  ): Promise<boolean> {
+    if (senderId === recipientId) {
+      return false;
+    }
+    const rows = await this.sequelize.query<{ connected: number }>(
+      `SELECT 1 AS connected
+       WHERE EXISTS (
+           SELECT 1 FROM instructor_client ic
+           WHERE ic.status = 'ACTIVE'
+             AND ((ic.instructor_id = :sender AND ic.client_id = :recipient)
+               OR (ic.instructor_id = :recipient AND ic.client_id = :sender))
+         )
+         OR EXISTS (
+           SELECT 1 FROM client_request cr
+           WHERE cr.status = 'PENDING'
+             AND cr.from_user_id = :recipient
+             AND cr.to_user_id = :sender
+             AND cr.expires_at > NOW()
+         )
+         OR EXISTS (
+           SELECT 1
+           FROM session_participant sp
+           JOIN session_instance si
+             ON si.id = sp.instance_id AND si.deleted_at IS NULL
+           WHERE sp.status IN ('CONFIRMED', 'PENDING_APPROVAL', 'WAITLISTED')
+             AND si.start_at > NOW() - (:bookingDays * INTERVAL '1 day')
+             AND ((sp.user_id = :sender AND si.instructor_id = :recipient)
+               OR (sp.user_id = :recipient AND si.instructor_id = :sender))
+         )
+         OR EXISTS (
+           SELECT 1
+           FROM group_member a
+           JOIN group_member b
+             ON b.group_id = a.group_id AND b.left_at IS NULL
+           JOIN "group" g
+             ON g.id = a.group_id AND g.deleted_at IS NULL
+           WHERE a.user_id = :sender
+             AND b.user_id = :recipient
+             AND a.left_at IS NULL
+             AND (a.role IN ('OWNER', 'MODERATOR')
+               OR b.role IN ('OWNER', 'MODERATOR'))
+         )`,
+      {
+        replacements: {
+          sender: senderId,
+          recipient: recipientId,
+          bookingDays: BOOKING_CONNECTION_DAYS,
+        },
+        type: QueryTypes.SELECT,
       },
-      attributes: ['id'],
-    });
+    );
+    return rows.length > 0;
+  }
 
-    return !activeLink;
+  /** The person's "Who can message you"; the default for a missing account. */
+  async messagePolicyOf(userId: string): Promise<MessagePolicy> {
+    const user = await User.findByPk(userId, {
+      attributes: ['id', 'messagePolicy'],
+    });
+    if (!user?.messagePolicy) {
+      return MessagePolicy.Requests;
+    }
+    return user.messagePolicy;
+  }
+
+  /**
+   * How many messages someone may send to each of these people while a
+   * request waits: COACH_REQUEST_MESSAGE_LIMIT for a coach taking clients,
+   * REQUEST_MESSAGE_LIMIT for anyone else.
+   */
+  async requestLimitsFor(recipientIds: string[]): Promise<Map<string, number>> {
+    const limits = new Map<string, number>();
+    if (recipientIds.length === 0) {
+      return limits;
+    }
+    for (const id of recipientIds) {
+      limits.set(id, REQUEST_MESSAGE_LIMIT);
+    }
+    const coaches = await this.sequelize.query<{ userId: string }>(
+      `SELECT user_id AS "userId"
+       FROM instructor_profile
+       WHERE user_id IN (:ids)
+         AND is_accepting_clients = TRUE
+         AND deleted_at IS NULL`,
+      { replacements: { ids: recipientIds }, type: QueryTypes.SELECT },
+    );
+    for (const row of coaches) {
+      limits.set(row.userId, COACH_REQUEST_MESSAGE_LIMIT);
+    }
+    return limits;
+  }
+
+  /**
+   * How many message requests `senderId` started since `since`: the request
+   * rows of other people in chats the sender is in.
+   */
+  async requestsStartedSince(senderId: string, since: Date): Promise<number> {
+    const rows = await this.sequelize.query<{ count: string }>(
+      `SELECT COUNT(*) AS count
+       FROM conversation_participant r
+       JOIN conversation_participant s
+         ON s.conversation_id = r.conversation_id AND s.user_id = :sender
+       WHERE r.user_id <> :sender
+         AND r.request_at > :since`,
+      {
+        replacements: { sender: senderId, since },
+        type: QueryTypes.SELECT,
+      },
+    );
+    return Number(rows[0]?.count ?? 0);
+  }
+
+  /**
+   * What a reader is told about the people whose requests they are looking
+   * at: a group in common and whether the writer coaches. Two queries for
+   * any number of people.
+   */
+  async requestContextsFor(
+    viewerId: string,
+    otherIds: string[],
+  ): Promise<Map<string, RequestContext>> {
+    const contexts = new Map<string, RequestContext>();
+    if (otherIds.length === 0) {
+      return contexts;
+    }
+    for (const id of otherIds) {
+      contexts.set(id, {
+        sharedGroupName: null,
+        sharedGroupCount: 0,
+        isCoach: false,
+      });
+    }
+
+    const [groups, coaches] = await Promise.all([
+      this.sequelize.query<{ userId: string; name: string; count: string }>(
+        `SELECT o.user_id AS "userId", MIN(g.name) AS name, COUNT(*) AS count
+         FROM group_member me
+         JOIN group_member o
+           ON o.group_id = me.group_id AND o.left_at IS NULL
+         JOIN "group" g
+           ON g.id = me.group_id AND g.deleted_at IS NULL
+         WHERE me.user_id = :viewer
+           AND me.left_at IS NULL
+           AND o.user_id IN (:others)
+         GROUP BY o.user_id`,
+        {
+          replacements: { viewer: viewerId, others: otherIds },
+          type: QueryTypes.SELECT,
+        },
+      ),
+      this.sequelize.query<{ userId: string }>(
+        `SELECT user_id AS "userId"
+         FROM instructor_profile
+         WHERE user_id IN (:others) AND deleted_at IS NULL`,
+        { replacements: { others: otherIds }, type: QueryTypes.SELECT },
+      ),
+    ]);
+
+    for (const row of groups) {
+      const context = contexts.get(row.userId);
+      if (context) {
+        context.sharedGroupName = row.name;
+        context.sharedGroupCount = Number(row.count);
+      }
+    }
+    for (const row of coaches) {
+      const context = contexts.get(row.userId);
+      if (context) {
+        context.isCoach = true;
+      }
+    }
+    return contexts;
   }
 }

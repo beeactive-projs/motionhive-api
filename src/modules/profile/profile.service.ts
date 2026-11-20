@@ -39,6 +39,7 @@ import {
 import { RoleService } from '../role/role.service';
 import { UserService } from '../user/user.service';
 import {
+  MessagePolicy,
   User,
   USER_SAFE_ATTRIBUTES,
   type PrivacyControlledField,
@@ -1108,7 +1109,12 @@ export class ProfileService {
       this.getInstructorProfile(user.id),
       this.roleService.getUserRoles(user.id),
       User.findByPk(user.id, {
-        attributes: ['handle', 'privacySettings'],
+        attributes: [
+          'handle',
+          'privacySettings',
+          'findByName',
+          'messagePolicy',
+        ],
       }),
     ]);
 
@@ -1129,6 +1135,10 @@ export class ProfileService {
         city: user.city,
         handle: full?.handle ?? null,
         privacySettings: full?.privacySettings ?? {},
+        // The Privacy screen's two messaging choices (migrations 090, 091).
+        // Changed through PATCH /users/me and PATCH /messaging/settings.
+        findByName: full?.findByName ?? true,
+        whoCanMessage: full?.messagePolicy ?? MessagePolicy.Requests,
       },
       roles: roles.map((r) => r.name),
       hasInstructorProfile: !!instructorProfile,

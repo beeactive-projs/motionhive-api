@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { ShareModule } from '../share/share.module';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { JwtModule } from '@nestjs/jwt';
 import { SequelizeModule } from '@nestjs/sequelize';
@@ -7,6 +8,7 @@ import { Conversation } from './entities/conversation.entity';
 import { ConversationParticipant } from './entities/conversation-participant.entity';
 import { ConversationMembershipEvent } from './entities/conversation-membership-event.entity';
 import { Message } from './entities/message.entity';
+import { MessageAttachment } from './entities/message-attachment.entity';
 import { UserBlock } from './entities/user-block.entity';
 import { MessageReport } from './entities/message-report.entity';
 import { MessagingSuspension } from './entities/messaging-suspension.entity';
@@ -47,6 +49,7 @@ import { MessagingStreamTicketService } from './auth/messaging-stream-ticket.ser
       ConversationParticipant,
       ConversationMembershipEvent,
       Message,
+      MessageAttachment,
       UserBlock,
       MessageReport,
       MessagingSuspension,
@@ -58,6 +61,8 @@ import { MessagingStreamTicketService } from './auth/messaging-stream-ticket.ser
       ClientRequest,
     ]),
     RoleModule,
+    // Cards for the public things a message can carry.
+    ShareModule,
     // UserModule exports UserService, used by SseJwtStrategy.validate
     // to resolve the user behind the query-param token.
     UserModule,

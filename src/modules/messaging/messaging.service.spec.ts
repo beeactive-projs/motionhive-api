@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   ForbiddenException,
+  HttpException,
   NotFoundException,
 } from '@nestjs/common';
 import { getModelToken } from '@nestjs/sequelize';
@@ -19,6 +20,8 @@ import { NotificationType } from '../notification/notification-types';
 import { Conversation, ConversationType } from './entities/conversation.entity';
 import { ConversationParticipant } from './entities/conversation-participant.entity';
 import { Message, MessageKind } from './entities/message.entity';
+import { MessageAttachment } from './entities/message-attachment.entity';
+import { ShareService } from '../share/share.service';
 import { User } from '../user/entities/user.entity';
 import { makeSilentLogger } from '../../../test/helpers/sequelize-mocks';
 import { apiError } from '../../common/i18n';
@@ -59,7 +62,15 @@ describe('MessagingService — Stage 2 core', () => {
   let conv: ConvMock;
   let part: PartMock;
   let msg: MsgMock;
-  let safety: { canMessage: jest.Mock; assertParticipant: jest.Mock };
+  let safety: {
+    canMessage: jest.Mock;
+    assertParticipant: jest.Mock;
+    deliveryFor: jest.Mock;
+    requestsStartedSince: jest.Mock;
+    requestLimitsFor: jest.Mock;
+    requestContextsFor: jest.Mock;
+    messagePolicyOf: jest.Mock;
+  };
   let content: { detectThreats: jest.Mock };
   let rateLimit: {
     assertSendAllowed: jest.Mock;
@@ -67,6 +78,13 @@ describe('MessagingService — Stage 2 core', () => {
     shouldSuppressMessageEmail: jest.Mock;
   };
   let velocity: { recordSendAndMaybeAlarm: jest.Mock };
+  let attachments: {
+    create: jest.Mock;
+    findAll: jest.Mock;
+    findOne: jest.Mock;
+    destroy: jest.Mock;
+  };
+  let share: { cardsFor: jest.Mock; shareableCard: jest.Mock };
   let notifications: { notify: jest.Mock };
   let emitter: {
     emitMessageCreated: jest.Mock;
@@ -75,6 +93,9 @@ describe('MessagingService — Stage 2 core', () => {
     emitConversationMuted: jest.Mock;
     emitConversationUnread: jest.Mock;
     emitConversationCleared: jest.Mock;
+    emitConversationAccepted: jest.Mock;
+    emitConversationDeclined: jest.Mock;
+    emitConversationArchived: jest.Mock;
     subscribeForUser: jest.Mock;
   };
   let userFindByPkSpy: jest.SpyInstance;
@@ -138,6 +159,13 @@ describe('MessagingService — Stage 2 core', () => {
       // tests continue to work unchanged. Stage 3 tests override.
       canMessage: jest.fn().mockResolvedValue({ kind: 'allowed' }),
       assertParticipant: jest.fn().mockResolvedValue(undefined),
+      // Default: connected, so a first message lands straight in the chat
+      // as it did before message requests. Request tests override.
+      deliveryFor: jest.fn().mockResolvedValue({ kind: 'direct' }),
+      requestsStartedSince: jest.fn().mockResolvedValue(0),
+      requestLimitsFor: jest.fn().mockResolvedValue(new Map()),
+      requestContextsFor: jest.fn().mockResolvedValue(new Map()),
+      messagePolicyOf: jest.fn().mockResolvedValue('REQUESTS'),
     };
     content = {
       detectThreats: jest.fn().mockReturnValue({
@@ -156,6 +184,16 @@ describe('MessagingService — Stage 2 core', () => {
     velocity = {
       recordSendAndMaybeAlarm: jest.fn().mockResolvedValue(undefined),
     };
+    attachments = {
+      create: jest.fn().mockResolvedValue({}),
+      findAll: jest.fn().mockResolvedValue([]),
+      findOne: jest.fn().mockResolvedValue(null),
+      destroy: jest.fn().mockResolvedValue(0),
+    };
+    share = {
+      cardsFor: jest.fn().mockResolvedValue(new Map()),
+      shareableCard: jest.fn().mockResolvedValue(null),
+    };
     notifications = {
       notify: jest.fn().mockResolvedValue({
         notificationId: 'n-1',
@@ -171,6 +209,9 @@ describe('MessagingService — Stage 2 core', () => {
       emitConversationMuted: jest.fn(),
       emitConversationUnread: jest.fn(),
       emitConversationCleared: jest.fn(),
+      emitConversationAccepted: jest.fn(),
+      emitConversationDeclined: jest.fn(),
+      emitConversationArchived: jest.fn(),
       subscribeForUser: jest.fn(),
     };
 
@@ -194,6 +235,8 @@ describe('MessagingService — Stage 2 core', () => {
         { provide: getModelToken(Conversation), useValue: conv },
         { provide: getModelToken(ConversationParticipant), useValue: part },
         { provide: getModelToken(Message), useValue: msg },
+        { provide: getModelToken(MessageAttachment), useValue: attachments },
+        { provide: ShareService, useValue: share },
         { provide: 'SEQUELIZE', useValue: sequelize },
         {
           provide: (await import('sequelize-typescript')).Sequelize,
@@ -784,7 +827,10 @@ describe('MessagingService — Stage 2 core', () => {
       await service.deleteOwnMessage('u', 'm-2');
 
       expect(conv.update).toHaveBeenCalledWith(
-        { lastMessagePreview: 'see you Monday' },
+        {
+          lastMessagePreview: 'see you Monday',
+          lastMessageAttachmentType: null,
+        },
         expect.objectContaining({ where: { id: 'c-1' } }),
       );
     });
@@ -1506,6 +1552,7 @@ describe('MessagingService — Stage 2 core', () => {
     });
 
     it('markRead emits conversation.read to the *other* participants', async () => {
+      part.findOne.mockResolvedValue({ id: 'p-1', acceptedAt: new Date() });
       part.findAll.mockResolvedValue([{ userId: recipient }]);
 
       await service.markRead(sender, 'conv-1');
@@ -1613,10 +1660,15 @@ describe('MessagingService — Stage 2 core', () => {
     }
 
     it('getUnreadCount totals one grouped query instead of counting per thread', async () => {
+      const acceptedAt = new Date('2026-04-01T00:00:00Z');
       part.findAll.mockResolvedValue([
-        { conversationId: 'c1', lastReadAt: null },
-        { conversationId: 'c2', lastReadAt: new Date('2026-05-01T00:00:00Z') },
-        { conversationId: 'c3', lastReadAt: null },
+        { conversationId: 'c1', lastReadAt: null, acceptedAt },
+        {
+          conversationId: 'c2',
+          lastReadAt: new Date('2026-05-01T00:00:00Z'),
+          acceptedAt,
+        },
+        { conversationId: 'c3', lastReadAt: null, acceptedAt },
       ]);
       msg.findAll.mockResolvedValue([
         { conversationId: 'c1', count: '2' },
@@ -1625,22 +1677,42 @@ describe('MessagingService — Stage 2 core', () => {
 
       const result = await service.getUnreadCount(me);
 
-      expect(result).toEqual({ count: 7 });
+      expect(result).toEqual({ count: 7, inbox: 7, requests: 0 });
       expect(msg.findAll).toHaveBeenCalledTimes(1);
       // The old shape was one count() per conversation, serially.
       expect(msg.count).not.toHaveBeenCalled();
     });
 
     it('getUnreadCount counts a thread marked unread as one when nothing in it is unread', async () => {
+      const acceptedAt = new Date('2026-04-01T00:00:00Z');
       part.findAll.mockResolvedValue([
-        { conversationId: 'c1', lastReadAt: null, markedUnread: true },
-        { conversationId: 'c2', lastReadAt: null, markedUnread: true },
-        { conversationId: 'c3', lastReadAt: null, markedUnread: false },
+        {
+          conversationId: 'c1',
+          lastReadAt: null,
+          markedUnread: true,
+          acceptedAt,
+        },
+        {
+          conversationId: 'c2',
+          lastReadAt: null,
+          markedUnread: true,
+          acceptedAt,
+        },
+        {
+          conversationId: 'c3',
+          lastReadAt: null,
+          markedUnread: false,
+          acceptedAt,
+        },
       ]);
       // c1 has real unread messages, so its mark adds nothing on top.
       msg.findAll.mockResolvedValue([{ conversationId: 'c1', count: 3 }]);
 
-      expect(await service.getUnreadCount(me)).toEqual({ count: 4 });
+      expect(await service.getUnreadCount(me)).toEqual({
+        count: 4,
+        inbox: 4,
+        requests: 0,
+      });
     });
 
     it('getUnreadCount counts from a "Delete chat" when it is later than the last read', async () => {
@@ -1685,7 +1757,11 @@ describe('MessagingService — Stage 2 core', () => {
     it('getUnreadCount asks nothing further when the user has no threads', async () => {
       part.findAll.mockResolvedValue([]);
 
-      expect(await service.getUnreadCount(me)).toEqual({ count: 0 });
+      expect(await service.getUnreadCount(me)).toEqual({
+        count: 0,
+        inbox: 0,
+        requests: 0,
+      });
       expect(msg.findAll).not.toHaveBeenCalled();
     });
 
@@ -1834,6 +1910,747 @@ describe('MessagingService — Stage 2 core', () => {
         other,
         expect.objectContaining({ senderCreatedAt: createdAt }),
       );
+    });
+  });
+  // ─────────────────────────── message requests (migration 090) ───────
+
+  describe('message requests', () => {
+    const me = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
+    const other = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
+    const requestAt = new Date('2026-11-20T08:00:00Z');
+    const accepted = new Date('2026-11-01T08:00:00Z');
+
+    const conversation = {
+      id: 'conv-r',
+      type: ConversationType.DIRECT,
+      name: null,
+      avatarUrl: null,
+      lastMessageAt: new Date('2026-11-20T08:00:00Z'),
+      lastMessagePreview: 'hi',
+    };
+
+    interface RowState {
+      acceptedAt?: Date | null;
+      requestAt?: Date | null;
+      declinedAt?: Date | null;
+      archivedAt?: Date | null;
+      mutedUntil?: Date | null;
+    }
+
+    function row(userId: string, state: RowState) {
+      return {
+        id: `p-${userId.slice(0, 1)}`,
+        conversationId: conversation.id,
+        userId,
+        lastReadAt: null,
+        mutedUntil: null,
+        leftAt: null,
+        clearedAt: null,
+        acceptedAt: null,
+        requestAt: null,
+        declinedAt: null,
+        archivedAt: null,
+        markedUnread: false,
+        conversation,
+        user: {
+          id: userId,
+          firstName: 'Bob',
+          lastName: 'Builder',
+          avatarUrl: null,
+        },
+        ...state,
+      };
+    }
+
+    /** The chat already exists: the lookup and the re-read after the send. */
+    function existingChat(self: RowState, theirs: RowState) {
+      const rows = [row(me, self), row(other, theirs)];
+      part.findAll.mockResolvedValueOnce(rows).mockResolvedValueOnce(rows);
+    }
+
+    function sendable() {
+      userFindByPkSpy.mockResolvedValue({
+        id: other,
+        firstName: 'Bob',
+        lastName: 'Builder',
+        avatarUrl: null,
+      });
+      msg.findOne.mockResolvedValue(null);
+      msg.create.mockResolvedValue({
+        id: 'msg-r',
+        conversationId: conversation.id,
+        senderId: me,
+        kind: MessageKind.TEXT,
+        body: 'hi',
+        deletedAt: null,
+        createdAt: new Date('2026-11-20T09:00:00Z'),
+      });
+    }
+
+    function notifiedTypes(): string[] {
+      return notifications.notify.mock.calls.map(
+        (c: [{ type: string }]) => c[0].type,
+      );
+    }
+
+    async function flush() {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+
+    it('a first message to someone not connected starts a request: no email, one notice, waiting', async () => {
+      sendable();
+      safety.deliveryFor.mockResolvedValue({ kind: 'request', limit: 3 });
+      part.findAll
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([
+          row(me, { acceptedAt: accepted }),
+          row(other, { requestAt }),
+        ]);
+      conv.findOne.mockResolvedValue(null);
+      conv.create.mockResolvedValue({ ...conversation });
+
+      const result = await service.sendMessage(me, other, 'hi');
+      await flush();
+
+      const created = part.bulkCreate.mock.calls[0][0] as Array<{
+        userId: string;
+        acceptedAt: Date | null;
+        requestAt: Date | null;
+      }>;
+      const recipientRow = created.find((r) => r.userId === other);
+      const senderRow = created.find((r) => r.userId === me);
+      expect(recipientRow?.acceptedAt).toBeNull();
+      expect(recipientRow?.requestAt).toBeInstanceOf(Date);
+      expect(senderRow?.acceptedAt).toBeInstanceOf(Date);
+      expect(result.conversation.waiting).toEqual({ remaining: 2 });
+      expect(notifiedTypes()).toEqual([
+        NotificationType.MESSAGE_REQUEST_RECEIVED,
+      ]);
+      expect(notifications.notify.mock.calls[0][0].channelOverride).toEqual({
+        email: false,
+      });
+      expect(emitter.emitMessageCreated).toHaveBeenCalledWith(
+        [other],
+        expect.objectContaining({ isRequest: true }),
+      );
+    });
+
+    it('a second message while waiting announces nothing and counts down', async () => {
+      sendable();
+      safety.deliveryFor.mockResolvedValue({ kind: 'request', limit: 3 });
+      existingChat({ acceptedAt: accepted }, { requestAt });
+      msg.count.mockResolvedValueOnce(1);
+
+      const result = await service.sendMessage(me, other, 'hi');
+      await flush();
+
+      expect(result.conversation.waiting).toEqual({ remaining: 1 });
+      expect(notifications.notify).not.toHaveBeenCalled();
+      expect(safety.requestsStartedSince).not.toHaveBeenCalled();
+      expect(emitter.emitMessageCreated).toHaveBeenCalledTimes(1);
+    });
+
+    it('refuses past the limit while the request waits, and writes nothing', async () => {
+      sendable();
+      safety.deliveryFor.mockResolvedValue({ kind: 'request', limit: 3 });
+      existingChat({ acceptedAt: accepted }, { requestAt });
+      msg.count.mockResolvedValueOnce(3);
+
+      await expect(service.sendMessage(me, other, 'hi')).rejects.toEqual(
+        new ForbiddenException(
+          apiError('messaging.requestWaiting', { name: 'Bob' }),
+        ),
+      );
+      expect(msg.create).not.toHaveBeenCalled();
+    });
+
+    it('a coach taking clients gets the higher limit from the safety service', async () => {
+      sendable();
+      safety.deliveryFor.mockResolvedValue({ kind: 'request', limit: 10 });
+      existingChat({ acceptedAt: accepted }, { requestAt });
+      msg.count.mockResolvedValueOnce(3);
+
+      const result = await service.sendMessage(me, other, 'hi');
+
+      expect(result.conversation.waiting).toEqual({ remaining: 6 });
+    });
+
+    it('caps new requests a day with a 429', async () => {
+      sendable();
+      safety.deliveryFor.mockResolvedValue({ kind: 'request', limit: 3 });
+      safety.requestsStartedSince.mockResolvedValue(20);
+      part.findAll.mockResolvedValueOnce([]);
+
+      const error = await service
+        .sendMessage(me, other, 'hi')
+        .catch((e: unknown) => e);
+
+      expect(error).toBeInstanceOf(HttpException);
+      expect((error as HttpException).getStatus()).toBe(429);
+      expect(conv.create).not.toHaveBeenCalled();
+      expect(msg.create).not.toHaveBeenCalled();
+    });
+
+    it('refuses plainly when the recipient takes messages from connections only', async () => {
+      sendable();
+      safety.deliveryFor.mockResolvedValue({
+        kind: 'refused',
+        reason: apiError('messaging.connectionsOnly'),
+      });
+      part.findAll.mockResolvedValueOnce([]);
+
+      await expect(service.sendMessage(me, other, 'hi')).rejects.toBeInstanceOf(
+        ForbiddenException,
+      );
+      expect(msg.create).not.toHaveBeenCalled();
+    });
+
+    it('a declined request keeps the message but tells the recipient nothing', async () => {
+      sendable();
+      safety.deliveryFor.mockResolvedValue({ kind: 'request', limit: 3 });
+      existingChat(
+        { acceptedAt: accepted },
+        { requestAt, declinedAt: new Date('2026-11-20T08:30:00Z') },
+      );
+      msg.count.mockResolvedValueOnce(1);
+
+      const result = await service.sendMessage(me, other, 'hi');
+      await flush();
+
+      expect(result.delivered).toBe(true);
+      expect(result.conversation.waiting).toEqual({ remaining: 1 });
+      expect(msg.create).toHaveBeenCalledTimes(1);
+      expect(emitter.emitMessageCreated).not.toHaveBeenCalled();
+      expect(notifications.notify).not.toHaveBeenCalled();
+    });
+
+    it('replying to a request accepts it, without asking the request rules', async () => {
+      sendable();
+      existingChat({ requestAt }, { acceptedAt: accepted });
+
+      await service.sendMessage(me, other, 'hi');
+      await flush();
+
+      expect(safety.deliveryFor).not.toHaveBeenCalled();
+      expect(part.update).toHaveBeenCalledWith(
+        expect.objectContaining({ acceptedAt: expect.any(Date) }),
+        expect.objectContaining({ where: { id: `p-${me.slice(0, 1)}` } }),
+      );
+      expect(emitter.emitConversationAccepted).toHaveBeenCalledWith(
+        [me, other],
+        expect.objectContaining({ userId: me }),
+      );
+      expect(notifiedTypes()).toEqual([NotificationType.MESSAGE_RECEIVED]);
+    });
+
+    it('once connected, a waiting request becomes a chat for the recipient', async () => {
+      sendable();
+      safety.deliveryFor.mockResolvedValue({ kind: 'direct' });
+      existingChat({ acceptedAt: accepted }, { requestAt });
+
+      const result = await service.sendMessage(me, other, 'hi');
+      await flush();
+
+      expect(part.update).toHaveBeenCalledWith(
+        { acceptedAt: expect.any(Date), declinedAt: null },
+        expect.objectContaining({ where: { id: `p-${other.slice(0, 1)}` } }),
+      );
+      expect(result.conversation.waiting).toBeNull();
+      expect(notifiedTypes()).toEqual([NotificationType.MESSAGE_RECEIVED]);
+    });
+
+    it('an archived chat stays quiet: no push, no email', async () => {
+      sendable();
+      existingChat(
+        { acceptedAt: accepted },
+        { acceptedAt: accepted, archivedAt: new Date('2026-11-10T00:00:00Z') },
+      );
+
+      await service.sendMessage(me, other, 'hi');
+      await flush();
+
+      const override = notifications.notify.mock.calls[0][0].channelOverride;
+      expect(override).toEqual({ in_app: false, email: false, push: false });
+    });
+
+    it('writing in a chat you archived brings it back', async () => {
+      sendable();
+      existingChat(
+        { acceptedAt: accepted, archivedAt: new Date('2026-11-10T00:00:00Z') },
+        { acceptedAt: accepted },
+      );
+
+      await service.sendMessage(me, other, 'hi');
+
+      expect(part.update).toHaveBeenCalledWith(
+        { acceptedAt: accepted, declinedAt: null, archivedAt: null },
+        expect.objectContaining({ where: { id: `p-${me.slice(0, 1)}` } }),
+      );
+    });
+
+    it('a blocked sender sees the same chat and the same waiting state, and nothing is written', async () => {
+      sendable();
+      safety.canMessage.mockResolvedValue({
+        kind: 'silentDrop',
+        reason: 'BLOCKED_BY_RECIPIENT',
+      });
+      safety.deliveryFor.mockResolvedValue({ kind: 'request', limit: 3 });
+      existingChat({ acceptedAt: accepted }, { requestAt });
+      msg.count.mockResolvedValueOnce(1);
+
+      const result = await service.sendMessage(me, other, 'hi');
+
+      expect(result.delivered).toBe(false);
+      expect(result.conversation.id).toBe(conversation.id);
+      expect(result.conversation.waiting).toEqual({ remaining: 1 });
+      expect(msg.create).not.toHaveBeenCalled();
+    });
+
+    it('lists by folder', async () => {
+      part.findAndCountAll.mockResolvedValue({ rows: [], count: 0 });
+
+      await service.listConversations(me, 1, 20, 'requests');
+      await service.listConversations(me, 1, 20, 'inbox');
+      await service.listConversations(me, 1, 20, 'archived');
+      await service.listConversations(me, 1, 20);
+
+      const wheres = part.findAndCountAll.mock.calls.map(
+        (c: [{ where: Record<string, unknown> }]) => c[0].where,
+      );
+      expect(wheres[0]).toMatchObject({ acceptedAt: null, declinedAt: null });
+      expect(wheres[1]).toMatchObject({
+        acceptedAt: { [Op.ne]: null },
+        archivedAt: null,
+      });
+      expect(wheres[2]).toMatchObject({
+        acceptedAt: { [Op.ne]: null },
+        archivedAt: { [Op.ne]: null },
+      });
+      // Older apps: everything but a deleted request.
+      expect(wheres[3]).toMatchObject({ declinedAt: null });
+      expect(wheres[3]).not.toHaveProperty('acceptedAt');
+    });
+
+    it('request rows carry their context, waiting rows their count, and no read receipt', async () => {
+      const incoming = { ...row(me, { requestAt }), conversationId: 'c-in' };
+      const outgoing = {
+        ...row(me, { acceptedAt: accepted }),
+        conversationId: 'c-out',
+      };
+      part.findAndCountAll.mockResolvedValue({
+        rows: [incoming, outgoing],
+        count: 2,
+      });
+      msg.findAll
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([{ conversationId: 'c-out', count: 2 }]);
+      part.findAll.mockResolvedValue([
+        { ...row(other, { acceptedAt: accepted }), conversationId: 'c-in' },
+        {
+          ...row(other, { requestAt }),
+          conversationId: 'c-out',
+          lastReadAt: new Date('2026-11-20T09:30:00Z'),
+        },
+      ]);
+      const context = {
+        sharedGroupName: 'Morning Runners',
+        sharedGroupCount: 1,
+        isCoach: true,
+      };
+      safety.requestContextsFor.mockResolvedValue(new Map([[other, context]]));
+      safety.requestLimitsFor.mockResolvedValue(new Map([[other, 3]]));
+
+      const page = await service.listConversations(me, 1, 20);
+
+      const [request, waiting] = page.items;
+      expect(request.isRequest).toBe(true);
+      expect(request.requestContext).toEqual(context);
+      expect(request.waiting).toBeNull();
+      expect(waiting.isRequest).toBe(false);
+      expect(waiting.waiting).toEqual({ remaining: 1 });
+      expect(waiting.lastReadByOther).toBeNull();
+    });
+
+    it('unread counts keep requests and archived chats out of the chats badge', async () => {
+      part.findAll.mockResolvedValue([
+        { conversationId: 'c1', lastReadAt: null, acceptedAt: accepted },
+        {
+          conversationId: 'c2',
+          lastReadAt: null,
+          acceptedAt: accepted,
+          archivedAt: accepted,
+        },
+        {
+          conversationId: 'c3',
+          lastReadAt: null,
+          acceptedAt: null,
+          conversation: { lastMessageAt: requestAt },
+        },
+      ]);
+      msg.findAll.mockResolvedValue([
+        { conversationId: 'c1', count: 2 },
+        { conversationId: 'c2', count: 4 },
+        { conversationId: 'c3', count: 1 },
+      ]);
+
+      expect(await service.getUnreadCount(me)).toEqual({
+        count: 7,
+        inbox: 2,
+        requests: 1,
+      });
+    });
+
+    it('reading a request tells its sender nothing', async () => {
+      part.findOne.mockResolvedValue({ id: 'p-1', acceptedAt: null });
+
+      await service.markRead(me, 'conv-r');
+
+      expect(emitter.emitConversationRead).not.toHaveBeenCalled();
+    });
+
+    it('accepting a request tells both sides', async () => {
+      part.findOne.mockResolvedValue(row(me, { requestAt }));
+      part.findAll.mockResolvedValue([{ userId: other }]);
+      jest
+        .spyOn(service, 'getConversation')
+        .mockResolvedValue({ id: conversation.id } as never);
+
+      await service.acceptRequest(me, conversation.id);
+
+      expect(part.update).toHaveBeenCalledWith(
+        { acceptedAt: expect.any(Date), declinedAt: null },
+        { where: { id: `p-${me.slice(0, 1)}` } },
+      );
+      expect(emitter.emitConversationAccepted).toHaveBeenCalledWith(
+        [me, other],
+        expect.objectContaining({ userId: me }),
+      );
+    });
+
+    it('deleting a request hides it for me and tells only my own sessions', async () => {
+      part.findOne.mockResolvedValue(row(me, { requestAt }));
+
+      await service.declineRequest(me, conversation.id);
+
+      expect(part.update).toHaveBeenCalledWith(
+        {
+          declinedAt: expect.any(Date),
+          clearedAt: expect.any(Date),
+          markedUnread: false,
+        },
+        { where: { id: `p-${me.slice(0, 1)}` } },
+      );
+      expect(emitter.emitConversationDeclined).toHaveBeenCalledWith(
+        [me],
+        expect.anything(),
+      );
+    });
+
+    it('only a request can be deleted as one, and only an accepted chat archived', async () => {
+      part.findOne.mockResolvedValue(row(me, { acceptedAt: accepted }));
+      await expect(
+        service.declineRequest(me, conversation.id),
+      ).rejects.toBeInstanceOf(BadRequestException);
+
+      part.findOne.mockResolvedValue(row(me, { requestAt }));
+      await expect(
+        service.setArchived(me, conversation.id, true),
+      ).rejects.toBeInstanceOf(BadRequestException);
+    });
+
+    it('archives and unarchives', async () => {
+      part.findOne.mockResolvedValue(row(me, { acceptedAt: accepted }));
+
+      await service.setArchived(me, conversation.id, true);
+      await service.setArchived(me, conversation.id, false);
+
+      expect(part.update.mock.calls[0][0]).toEqual({
+        archivedAt: expect.any(Date),
+      });
+      expect(part.update.mock.calls[1][0]).toEqual({ archivedAt: null });
+    });
+
+    it('reach never reveals a block by the other person', async () => {
+      part.findAll.mockResolvedValue([]);
+      safety.canMessage.mockResolvedValue({
+        kind: 'silentDrop',
+        reason: 'BLOCKED_BY_RECIPIENT',
+      });
+      safety.deliveryFor.mockResolvedValue({ kind: 'request', limit: 3 });
+
+      expect(await service.reach(me, other)).toEqual({
+        status: 'REQUEST',
+        requestLimit: 3,
+      });
+    });
+
+    it('reach names the refusals the caller may know about', async () => {
+      part.findAll.mockResolvedValue([]);
+      safety.canMessage.mockResolvedValue({
+        kind: 'forbidden',
+        reason: apiError('messaging.youBlockedThem'),
+      });
+      expect((await service.reach(me, other)).status).toBe('YOU_BLOCKED');
+
+      safety.canMessage.mockResolvedValue({ kind: 'allowed' });
+      safety.deliveryFor.mockResolvedValue({
+        kind: 'refused',
+        reason: apiError('messaging.connectionsOnly'),
+      });
+      expect((await service.reach(me, other)).status).toBe('CONNECTIONS_ONLY');
+
+      part.findAll.mockResolvedValue([
+        row(me, { acceptedAt: accepted }),
+        row(other, { acceptedAt: accepted }),
+      ]);
+      expect((await service.reach(me, other)).status).toBe('DIRECT');
+    });
+  });
+  // ─────────────────────────── sharing (migration 092) ────────────────
+
+  describe('sharing', () => {
+    const me = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
+    const other = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
+    const sessionRef = {
+      type: 'SESSION' as const,
+      id: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+    };
+    const card = {
+      type: 'SESSION' as const,
+      state: 'AVAILABLE' as const,
+      name: 'Morning yoga flow',
+      startAt: new Date('2026-11-21T08:00:00Z'),
+      endAt: new Date('2026-11-21T09:00:00Z'),
+      durationMinutes: 60,
+      timezone: 'Europe/Bucharest',
+      online: false,
+      placeName: 'Herăstrău',
+      placeCity: 'București',
+      capacity: 12,
+      confirmedCount: 8,
+      priceCents: null,
+      currency: null,
+    };
+
+    function sendable() {
+      userFindByPkSpy.mockResolvedValue({
+        id: other,
+        firstName: 'Bob',
+        lastName: 'Builder',
+        avatarUrl: null,
+      });
+      const accepted = new Date('2026-11-01T00:00:00Z');
+      const rows = [
+        {
+          id: 'p-a',
+          conversationId: 'conv-s',
+          userId: me,
+          acceptedAt: accepted,
+          leftAt: null,
+          conversation: { id: 'conv-s', type: ConversationType.DIRECT },
+        },
+        {
+          id: 'p-b',
+          conversationId: 'conv-s',
+          userId: other,
+          acceptedAt: accepted,
+          leftAt: null,
+          conversation: { id: 'conv-s', type: ConversationType.DIRECT },
+          user: { id: other, firstName: 'Bob', lastName: 'Builder' },
+        },
+      ];
+      part.findAll.mockResolvedValue(rows);
+      msg.findOne.mockResolvedValue(null);
+      // INSERT ... RETURNING hands back the row as written.
+      msg.create.mockImplementation((values: { body: string }) =>
+        Promise.resolve({
+          id: 'msg-s',
+          conversationId: 'conv-s',
+          senderId: me,
+          kind: MessageKind.TEXT,
+          body: values.body,
+          deletedAt: null,
+          createdAt: new Date('2026-11-20T09:00:00Z'),
+        }),
+      );
+    }
+
+    async function flush() {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+
+    it('refuses something that is not public, before writing anything', async () => {
+      sendable();
+      share.shareableCard.mockResolvedValue(null);
+
+      await expect(
+        service.sendMessage(me, other, '', sessionRef),
+      ).rejects.toEqual(
+        new BadRequestException(apiError('messaging.notShareable')),
+      );
+      expect(msg.create).not.toHaveBeenCalled();
+    });
+
+    it('an empty message is still refused when it shares nothing', async () => {
+      sendable();
+      await expect(service.sendMessage(me, other, '  ')).rejects.toBeInstanceOf(
+        BadRequestException,
+      );
+    });
+
+    it('stores the type and id only, and answers with the card and the name as body', async () => {
+      sendable();
+      share.shareableCard.mockResolvedValue(card);
+
+      const result = await service.sendMessage(me, other, '', sessionRef);
+      await flush();
+
+      expect(attachments.create).toHaveBeenCalledWith(
+        {
+          messageId: 'msg-s',
+          targetType: 'SESSION',
+          targetId: sessionRef.id,
+          position: 0,
+        },
+        expect.anything(),
+      );
+      expect(conv.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          lastMessagePreview: 'Morning yoga flow',
+          lastMessageAttachmentType: 'SESSION',
+        }),
+        expect.anything(),
+      );
+      expect(result.message).toMatchObject({
+        body: 'Morning yoga flow',
+        caption: '',
+        attachments: [{ type: 'SESSION', id: sessionRef.id, card }],
+      });
+      // The live event carries type and id; the card comes with the read.
+      expect(
+        emitter.emitMessageCreated.mock.calls[0][1].message.attachments,
+      ).toEqual([sessionRef]);
+      // Announced as a share, with the session's name.
+      expect(notifications.notify.mock.calls[0][0].message).toEqual({
+        key: 'messaging.shared',
+        params: {
+          name: 'Bob Builder',
+          type: 'SESSION',
+          title: 'Morning yoga flow',
+        },
+      });
+    });
+
+    it('with a caption, the caption is the message and the preview', async () => {
+      sendable();
+      share.shareableCard.mockResolvedValue(card);
+
+      const result = await service.sendMessage(
+        me,
+        other,
+        'Thursday has 4 spots',
+        sessionRef,
+      );
+      await flush();
+
+      expect(result.message.body).toBe('Thursday has 4 spots');
+      expect(result.message.caption).toBe('Thursday has 4 spots');
+      expect(notifications.notify.mock.calls[0][0].message.key).toBe(
+        'messaging.received',
+      );
+    });
+
+    it('reads cards for a page of messages in one go, and none for a deleted one', async () => {
+      msg.findAll.mockResolvedValue([
+        {
+          id: 'm-1',
+          conversationId: 'c',
+          senderId: other,
+          kind: MessageKind.TEXT,
+          body: '',
+          deletedAt: null,
+          createdAt: new Date(),
+        },
+        {
+          id: 'm-2',
+          conversationId: 'c',
+          senderId: other,
+          kind: MessageKind.TEXT,
+          body: '[deleted]',
+          deletedAt: new Date(),
+          createdAt: new Date(),
+        },
+      ]);
+      part.findOne.mockResolvedValue({ clearedAt: null });
+      attachments.findAll.mockResolvedValue([
+        {
+          messageId: 'm-1',
+          targetType: 'SESSION',
+          targetId: sessionRef.id,
+          position: 0,
+        },
+      ]);
+      share.cardsFor.mockResolvedValue(
+        new Map([[`SESSION:${sessionRef.id}`, card]]),
+      );
+
+      const page = await service.listMessages(me, 'c', { limit: 25 });
+
+      expect(attachments.findAll).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { messageId: { [Op.in]: ['m-1'] } } }),
+      );
+      expect(page.items[0]).toMatchObject({
+        body: 'Morning yoga flow',
+        attachments: [{ card }],
+      });
+      expect(page.items[1]).toMatchObject({
+        body: '[deleted]',
+        attachments: [],
+      });
+    });
+
+    it('shares to several people, one result each, and keeps going past a refusal', async () => {
+      share.shareableCard.mockResolvedValue(card);
+      const send = jest
+        .spyOn(service, 'sendMessage')
+        .mockResolvedValueOnce({
+          conversation: { id: 'c-1', waiting: null },
+        } as never)
+        .mockRejectedValueOnce(
+          new ForbiddenException(apiError('messaging.connectionsOnly')),
+        )
+        .mockResolvedValueOnce({
+          conversation: { id: 'c-3', waiting: { remaining: 2 } },
+        } as never);
+
+      const { results } = await service.shareTo(
+        me,
+        ['u-1', 'u-2', 'u-2', 'u-3', me],
+        sessionRef,
+        'Join?',
+      );
+
+      expect(send).toHaveBeenCalledTimes(3);
+      expect(results).toEqual([
+        {
+          recipientId: 'u-1',
+          status: 'SENT',
+          conversationId: 'c-1',
+          reason: null,
+        },
+        {
+          recipientId: 'u-2',
+          status: 'REFUSED',
+          conversationId: null,
+          reason: 'messaging.connectionsOnly',
+        },
+        {
+          recipientId: 'u-3',
+          status: 'WAITING',
+          conversationId: 'c-3',
+          reason: null,
+        },
+      ]);
     });
   });
 });

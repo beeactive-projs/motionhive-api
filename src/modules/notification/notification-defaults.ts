@@ -164,6 +164,9 @@ export const NOTIFICATION_DEFAULTS: Record<
   // throttles email to the first message after a quiet period, and
   // drops push for a muted conversation.
   [NotificationType.MESSAGE_RECEIVED]: ON_EVERYTHING_BUT_SMS,
+  // A request is announced once, in the app and by push. Never by email:
+  // we don't email a stranger's words to someone who didn't ask for them.
+  [NotificationType.MESSAGE_REQUEST_RECEIVED]: IN_APP_AND_PUSH,
 
   // ── Workouts ─────────────────────────────────────────────
   // Fork notifications are high-volume on popular public exercises;

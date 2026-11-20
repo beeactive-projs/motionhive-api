@@ -1086,6 +1086,47 @@ export const NOTIFICATION_SAMPLES: NotificationSample[] = [
   },
   {
     audience: 'client',
+    variant: 'shared a session',
+    build: () =>
+      messaging.messageReceived({
+        ...MSG,
+        preview: '',
+        shared: { type: 'SESSION', title: 'Morning yoga flow' },
+      }),
+  },
+  {
+    audience: 'client',
+    variant: 'shared a routine, no name',
+    build: () =>
+      messaging.messageReceived({
+        ...MSG,
+        senderName: null,
+        preview: '',
+        shared: { type: 'ROUTINE', title: null },
+      }),
+  },
+  {
+    audience: 'client',
+    variant: 'message request',
+    build: () =>
+      messaging.messageRequestReceived({
+        recipientId: U,
+        conversationId: 'conv-1',
+        senderName: 'Ana Pop',
+      }),
+  },
+  {
+    audience: 'client',
+    variant: 'message request, no name',
+    build: () =>
+      messaging.messageRequestReceived({
+        recipientId: U,
+        conversationId: 'conv-1',
+        senderName: null,
+      }),
+  },
+  {
+    audience: 'client',
     variant: 'previews hidden',
     build: () =>
       messaging.messageReceived({ ...MSG, hidePreviewInEmail: true }),

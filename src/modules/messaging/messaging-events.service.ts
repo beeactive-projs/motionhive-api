@@ -18,6 +18,9 @@ export type MessagingStreamEvent =
   | { type: 'conversation.muted'; payload: ConversationMutedPayload }
   | { type: 'conversation.unread'; payload: ConversationUnreadPayload }
   | { type: 'conversation.cleared'; payload: ConversationClearedPayload }
+  | { type: 'conversation.accepted'; payload: ConversationAcceptedPayload }
+  | { type: 'conversation.declined'; payload: ConversationDeclinedPayload }
+  | { type: 'conversation.archived'; payload: ConversationArchivedPayload }
   | { type: 'heartbeat'; payload: { ts: number } };
 
 export interface MessageCreatedPayload {
@@ -28,7 +31,18 @@ export interface MessageCreatedPayload {
     body: string;
     kind: string;
     createdAt: string;
+    /**
+     * Public things the message carries, type and id only (migration 092).
+     * The card, in the reader's language, comes with the message's own read.
+     */
+    attachments?: Array<{ type: string; id: string }>;
   };
+  /**
+   * The recipient hasn't taken this chat in: it belongs in their message
+   * requests, not their chats (migration 090). Apps older than requests
+   * ignore it and show the chat as before.
+   */
+  isRequest?: boolean;
 }
 
 export interface MessageDeletedPayload {
@@ -60,6 +74,32 @@ export interface ConversationClearedPayload {
   conversationId: string;
   userId: string;
   clearedAt: string;
+}
+
+/**
+ * `userId` took the chat in (accepted a message request, or replied to
+ * one). Sent to both sides: the sender's composer opens again.
+ */
+export interface ConversationAcceptedPayload {
+  conversationId: string;
+  userId: string;
+  acceptedAt: string;
+}
+
+/**
+ * The reader deleted a message request. Sent to the reader's own sessions
+ * only: the sender is never told.
+ */
+export interface ConversationDeclinedPayload {
+  conversationId: string;
+  userId: string;
+}
+
+/** The reader archived or unarchived the chat. Sent to the reader only. */
+export interface ConversationArchivedPayload {
+  conversationId: string;
+  userId: string;
+  archived: boolean;
 }
 
 /**
@@ -207,6 +247,27 @@ export class MessagingEventsService implements OnModuleDestroy {
     payload: ConversationClearedPayload,
   ): void {
     this.publish(recipientIds, { type: 'conversation.cleared', payload });
+  }
+
+  emitConversationAccepted(
+    recipientIds: string[],
+    payload: ConversationAcceptedPayload,
+  ): void {
+    this.publish(recipientIds, { type: 'conversation.accepted', payload });
+  }
+
+  emitConversationDeclined(
+    recipientIds: string[],
+    payload: ConversationDeclinedPayload,
+  ): void {
+    this.publish(recipientIds, { type: 'conversation.declined', payload });
+  }
+
+  emitConversationArchived(
+    recipientIds: string[],
+    payload: ConversationArchivedPayload,
+  ): void {
+    this.publish(recipientIds, { type: 'conversation.archived', payload });
   }
 
   // =========================================================================

@@ -17,6 +17,7 @@ import { Throttle } from '@nestjs/throttler';
 import { ApiEndpoint } from '../../common/decorators/api-response.decorator';
 import { MessagingDocs } from '../../common/docs/messaging.docs';
 import type { AuthenticatedRequest } from '../../common/types/authenticated-request';
+import { ArchiveConversationDto } from './dto/archive-conversation.dto';
 import { BlockUserDto } from './dto/block-user.dto';
 import { ListConversationsDto } from './dto/list-conversations.dto';
 import { ListMessagesDto } from './dto/list-messages.dto';
@@ -24,6 +25,8 @@ import { MarkReadDto } from './dto/mark-read.dto';
 import { MuteConversationDto } from './dto/mute-conversation.dto';
 import { ReportMessageDto } from './dto/report-message.dto';
 import { SendMessageDto } from './dto/send-message.dto';
+import { ShareToDto } from './dto/share-to.dto';
+import { UpdateMessagingSettingsDto } from './dto/update-messaging-settings.dto';
 import { MessagingModerationService } from './messaging-moderation.service';
 import { MessagingSafetyService } from './messaging-safety.service';
 import { MessagingService } from './messaging.service';
@@ -43,6 +46,19 @@ import { MessagingService } from './messaging.service';
  *   DELETE /messaging/conversations/:id            delete for me (hides history up to now)
  *   DELETE /messaging/messages/:id                 sender soft-deletes own
  *   GET    /messaging/unread-count                 global badge count
+ *
+ * Message requests (migration 090):
+ *   GET    /messaging/conversations?folder=        inbox | requests | archived
+ *   POST   /messaging/conversations/:id/accept     accept a message request
+ *   POST   /messaging/conversations/:id/decline    delete a request (sender never told)
+ *   PATCH  /messaging/conversations/:id/archive    archive / unarchive
+ *   GET    /messaging/reach/:userId                direct, request, or why not
+ *   GET    /messaging/settings                     "Who can message you"
+ *   PATCH  /messaging/settings
+ *
+ * Sharing (migration 092):
+ *   POST   /messaging/messages {attachment}        send a public thing as a card
+ *   POST   /messaging/shares                       one thing to up to 10 people
  *
  * All routes are JWT-protected. Safety gating (block/suspension/
  * new-account) lands in Stage 3.
@@ -71,6 +87,23 @@ export class MessagingController {
       req.user.id,
       dto.recipientId,
       dto.body,
+      dto.attachment ?? null,
+    );
+  }
+
+  // POST /messaging/shares
+  // One public thing to up to 10 people. Each recipient is a send of its
+  // own (limits, requests and blocks apply per person), so a 10-person
+  // share counts ten against the per-minute send limit.
+  @Post('shares')
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  @ApiEndpoint(MessagingDocs.shareTo)
+  shareTo(@Request() req: AuthenticatedRequest, @Body() dto: ShareToDto) {
+    return this.messagingService.shareTo(
+      req.user.id,
+      dto.recipientIds,
+      { type: dto.attachment.type, id: dto.attachment.id },
+      dto.caption,
     );
   }
 
@@ -88,6 +121,7 @@ export class MessagingController {
       req.user.id,
       query.page ?? 1,
       query.limit ?? 20,
+      query.folder,
     );
   }
 
@@ -194,6 +228,67 @@ export class MessagingController {
     @Param('id', ParseUUIDPipe) id: string,
   ) {
     return this.messagingService.clearConversation(req.user.id, id);
+  }
+
+  // ── Message requests and archive ───────────────────────────────────
+
+  // POST /messaging/conversations/:id/accept
+  @Post('conversations/:id/accept')
+  @ApiEndpoint(MessagingDocs.acceptRequest)
+  acceptRequest(
+    @Request() req: AuthenticatedRequest,
+    @Param('id', ParseUUIDPipe) id: string,
+  ) {
+    return this.messagingService.acceptRequest(req.user.id, id);
+  }
+
+  // POST /messaging/conversations/:id/decline
+  @Post('conversations/:id/decline')
+  @ApiEndpoint(MessagingDocs.declineRequest)
+  declineRequest(
+    @Request() req: AuthenticatedRequest,
+    @Param('id', ParseUUIDPipe) id: string,
+  ) {
+    return this.messagingService.declineRequest(req.user.id, id);
+  }
+
+  // PATCH /messaging/conversations/:id/archive
+  @Patch('conversations/:id/archive')
+  @ApiEndpoint(MessagingDocs.archiveConversation)
+  archiveConversation(
+    @Request() req: AuthenticatedRequest,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: ArchiveConversationDto,
+  ) {
+    return this.messagingService.setArchived(req.user.id, id, dto.archived);
+  }
+
+  // GET /messaging/reach/:userId
+  @Get('reach/:userId')
+  @Throttle({ default: { limit: 120, ttl: 60_000 } })
+  @ApiEndpoint(MessagingDocs.reach)
+  reach(
+    @Request() req: AuthenticatedRequest,
+    @Param('userId', ParseUUIDPipe) userId: string,
+  ) {
+    return this.messagingService.reach(req.user.id, userId);
+  }
+
+  // GET /messaging/settings
+  @Get('settings')
+  @ApiEndpoint(MessagingDocs.getSettings)
+  getSettings(@Request() req: AuthenticatedRequest) {
+    return this.messagingService.getSettings(req.user.id);
+  }
+
+  // PATCH /messaging/settings
+  @Patch('settings')
+  @ApiEndpoint(MessagingDocs.updateSettings)
+  updateSettings(
+    @Request() req: AuthenticatedRequest,
+    @Body() dto: UpdateMessagingSettingsDto,
+  ) {
+    return this.messagingService.updateSettings(req.user.id, dto.whoCanMessage);
   }
 
   // DELETE /messaging/messages/:id

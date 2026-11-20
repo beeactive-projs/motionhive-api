@@ -2,6 +2,8 @@ import type { LoggerService } from '@nestjs/common';
 import {
   BadRequestException,
   ForbiddenException,
+  HttpException,
+  HttpStatus,
   Inject,
   Injectable,
   NotFoundException,
@@ -22,24 +24,48 @@ import {
   buildPaginatedResponse,
   PaginatedResponse,
 } from '../../common/dto/pagination.dto';
-import { User, USER_SAFE_ATTRIBUTES } from '../user/entities/user.entity';
+import {
+  MessagePolicy,
+  User,
+  USER_SAFE_ATTRIBUTES,
+} from '../user/entities/user.entity';
 import { Conversation, ConversationType } from './entities/conversation.entity';
 import {
   ConversationParticipant,
   ConversationParticipantRole,
 } from './entities/conversation-participant.entity';
 import { Message, MessageKind } from './entities/message.entity';
+import { MessageAttachment } from './entities/message-attachment.entity';
+import { ShareService } from '../share/share.service';
+import {
+  ShareCard,
+  ShareRef,
+  ShareTargetType,
+  shareKey,
+} from '../share/share.types';
 import {
   MessagingContentService,
   ThreatScanResult,
 } from './messaging-content.service';
 import { MessagingEventsService } from './messaging-events.service';
 import { MessagingRateLimitService } from './messaging-rate-limit.service';
-import { MessagingSafetyService } from './messaging-safety.service';
+import {
+  MessageDelivery,
+  MessagingSafetyService,
+  RequestContext,
+} from './messaging-safety.service';
 import { MessagingVelocityService } from './messaging-velocity.service';
 import { NotificationService } from '../notification/notification.service';
-import { messageReceived } from './notifications';
-import { DELETED_MESSAGE_BODY, directKeyFor } from './constants';
+import {
+  messageReceived,
+  messageRequestReceived,
+  SharedNotice,
+} from './notifications';
+import {
+  DAILY_REQUEST_LIMIT,
+  DELETED_MESSAGE_BODY,
+  directKeyFor,
+} from './constants';
 import { apiError } from '../../common/i18n';
 
 // ---------------------------------------------------------------------------
@@ -69,10 +95,71 @@ export interface ConversationListItem {
    * For DIRECT conversations only: the *other* participant's `lastReadAt`
    * (ISO string), so the FE can render a read receipt on the caller's own
    * messages without an extra round-trip. null for groups, or when the other
-   * side has never read the thread.
+   * side has never read the thread, or hasn't accepted the caller's
+   * message request (no read receipts until they do).
    */
   lastReadByOther: string | null;
+  /**
+   * The caller hasn't taken this chat in: it waits in their message
+   * requests (migration 090).
+   */
+  isRequest: boolean;
+  /** For a request: how the two might know each other. Null otherwise. */
+  requestContext: RequestContext | null;
+  /** The caller archived the chat. */
+  archived: boolean;
+  /**
+   * The type of the thing the last message shared, if any (migration 092):
+   * the row then reads "Session · <preview>" in the reader's language.
+   */
+  lastMessageAttachmentType: ShareTargetType | null;
+  /**
+   * The other person hasn't accepted the caller's message request yet;
+   * `remaining` is how many more messages the caller can send until they
+   * do. Null when nothing waits.
+   */
+  waiting: { remaining: number } | null;
 }
+
+/**
+ * Which part of the inbox to list. Omitted = every chat that isn't a
+ * declined request, as before requests existed, so app versions already
+ * in the stores keep seeing requests (as chats they can answer) and
+ * archived chats.
+ */
+export type ConversationFolder = 'inbox' | 'requests' | 'archived';
+
+/** What `GET /messaging/reach/:userId` answers before anyone types. */
+export type ReachStatus =
+  | 'DIRECT'
+  | 'REQUEST'
+  | 'CONNECTIONS_ONLY'
+  | 'YOU_BLOCKED'
+  | 'NEW_ACCOUNT'
+  | 'SUSPENDED';
+
+export interface ReachResult {
+  status: ReachStatus;
+  /** For REQUEST: how many messages fit before the request is accepted. */
+  requestLimit: number | null;
+}
+
+/** The parts of an inbox row that need their own queries. */
+interface ListItemExtras {
+  waiting: { remaining: number } | null;
+  requestContext: RequestContext | null;
+}
+
+const NO_EXTRAS: ListItemExtras = { waiting: null, requestContext: null };
+
+/** A direct chat between two people and both of their rows in it. */
+interface DirectState {
+  conversation: Conversation;
+  self: ConversationParticipant | null;
+  other: ConversationParticipant | null;
+}
+
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 export interface ParticipantSnapshot {
   id: string;
@@ -88,9 +175,34 @@ export interface MessageView {
   conversationId: string;
   senderId: string | null;
   kind: MessageKind;
+  /**
+   * The text to show. For a share with no caption it is the shared thing's
+   * name, so app versions that don't draw cards still show something.
+   */
   body: string;
+  /** What the sender wrote; empty for a share sent without a caption. */
+  caption: string;
+  /** Public things the message carries, each with its card (migration 092). */
+  attachments: MessageAttachmentView[];
   deletedAt: Date | null;
   createdAt: Date;
+}
+
+/** One shared thing on a message, and the card every reader sees for it. */
+export interface MessageAttachmentView {
+  type: ShareTargetType;
+  id: string;
+  card: ShareCard;
+}
+
+/** How a share to one person went (`POST /messaging/shares`). */
+export interface ShareResult {
+  recipientId: string;
+  /** WAITING: it went as a message request. */
+  status: 'SENT' | 'WAITING' | 'REFUSED';
+  conversationId: string | null;
+  /** For REFUSED: the error key (`messaging.connectionsOnly`, ...). */
+  reason: string | null;
 }
 
 export interface SendMessageResult {
@@ -128,10 +240,54 @@ function readFloor(
   return lastReadAt > clearedAt ? lastReadAt : clearedAt;
 }
 
+/**
+ * How a share with no caption is announced: "Ana shared a session: Yoga".
+ * The name only for what people write (sessions, groups, coaches); an
+ * exercise or a starter is translated content, and a push has no reader
+ * language to translate it into, so it is announced by its kind alone.
+ */
+function sharedNotice(card: ShareCard | null): SharedNotice | null {
+  if (!card || !card.name) {
+    return null;
+  }
+  if (card.type === 'PROGRAM') {
+    if (card.isSingleWorkout) {
+      return { type: 'ROUTINE', title: null };
+    }
+    return { type: 'PROGRAM', title: null };
+  }
+  if (card.type === 'EXERCISE') {
+    return { type: 'EXERCISE', title: null };
+  }
+  return { type: card.type, title: card.name };
+}
+
+/** The catalog key an error carries, for a per-person share result. */
+function errorKeyOf(err: unknown): string {
+  if (err instanceof HttpException) {
+    const response = err.getResponse();
+    if (
+      typeof response === 'object' &&
+      response !== null &&
+      'messageKey' in response &&
+      typeof response.messageKey === 'string'
+    ) {
+      return response.messageKey;
+    }
+  }
+  return 'common.badRequest';
+}
+
 /** The conversation fields an inbox row is built from. */
 type ConversationSummary = Pick<
   Conversation,
-  'id' | 'type' | 'name' | 'avatarUrl' | 'lastMessageAt' | 'lastMessagePreview'
+  | 'id'
+  | 'type'
+  | 'name'
+  | 'avatarUrl'
+  | 'lastMessageAt'
+  | 'lastMessagePreview'
+  | 'lastMessageAttachmentType'
 >;
 
 /**
@@ -154,7 +310,10 @@ export class MessagingService {
     private readonly participantModel: typeof ConversationParticipant,
     @InjectModel(Message)
     private readonly messageModel: typeof Message,
+    @InjectModel(MessageAttachment)
+    private readonly attachmentModel: typeof MessageAttachment,
     private readonly sequelize: Sequelize,
+    private readonly share: ShareService,
     private readonly safety: MessagingSafetyService,
     private readonly content: MessagingContentService,
     private readonly rateLimit: MessagingRateLimitService,
@@ -209,7 +368,8 @@ export class MessagingService {
   async sendMessage(
     senderId: string,
     recipientId: string,
-    rawBody: string,
+    rawBody: string | null | undefined,
+    attachment: ShareRef | null = null,
   ): Promise<SendMessageResult> {
     if (senderId === recipientId) {
       throw new BadRequestException(apiError('messaging.cannotMessageSelf'));
@@ -222,9 +382,28 @@ export class MessagingService {
     // again after we resolve/create the conversation.
     await this.rateLimit.assertSendAllowed(senderId);
 
-    const trimmed = rawBody.trim();
-    if (trimmed.length === 0) {
+    const trimmed = (rawBody ?? '').trim();
+    if (trimmed.length === 0 && !attachment) {
       throw new BadRequestException(apiError('messaging.emptyMessage'));
+    }
+
+    // A shared thing must be public now, and a session not yet over
+    // (migration 092). Its card goes back with the message; its name is
+    // the preview when there is no caption.
+    let sharedCard: ShareCard | null = null;
+    if (attachment) {
+      sharedCard = await this.share.shareableCard(attachment);
+      if (!sharedCard) {
+        throw new BadRequestException(apiError('messaging.notShareable'));
+      }
+    }
+    const attachmentViews: MessageAttachmentView[] = [];
+    if (attachment && sharedCard) {
+      attachmentViews.push({
+        type: attachment.type,
+        id: attachment.id,
+        card: sharedCard,
+      });
     }
 
     // Load both sides up front. Sender → for the after-commit
@@ -278,8 +457,21 @@ export class MessagingService {
         },
         trimmed,
         threatFlags,
+        { conversationId: null, waiting: null, attachments: attachmentViews },
       );
     }
+
+    // ── What already exists between the two ─────────────────────────
+    // The chat, if any, and both people's rows in it. Whether the
+    // recipient already took the chat in decides everything after: an
+    // accepted chat is a chat, anything else goes through the request
+    // rules (migration 090).
+    const existing = await this.findDirectState(senderId, recipientId);
+    let existingOther: ConversationParticipant | null = null;
+    if (existing) {
+      existingOther = existing.other;
+    }
+    const recipientAccepted = !!existingOther?.acceptedAt;
 
     // ── Safety gate ──────────────────────────────────────────────────
     // Asked BEFORE the transaction so we never write a row that would
@@ -288,10 +480,63 @@ export class MessagingService {
     // outcomes — see CanMessageResult.
     const verdict = await this.safety.canMessage(senderId, recipientId, {
       senderCreatedAt: sender?.createdAt ?? null,
+      recipientAccepted,
     });
 
     if (verdict.kind === 'forbidden') {
       throw new ForbiddenException(verdict.reason);
+    }
+
+    // ── Where it lands ───────────────────────────────────────────────
+    // Worked out before a block's silent drop applies, so a blocked
+    // sender meets the same refusals, limits and waiting state as anyone
+    // else, and can't tell a block from a request nobody answered.
+    let delivery: MessageDelivery = { kind: 'direct' };
+    if (!recipientAccepted) {
+      delivery = await this.safety.deliveryFor(senderId, recipientId);
+    }
+    if (delivery.kind === 'refused') {
+      throw new ForbiddenException(delivery.reason);
+    }
+
+    let sentWhileWaiting = 0;
+    let startsRequest = false;
+    if (delivery.kind === 'request') {
+      const requestAt = existingOther?.requestAt ?? null;
+      if (existing && requestAt) {
+        sentWhileWaiting = await this.countSentSince(
+          senderId,
+          existing.conversation.id,
+          requestAt,
+        );
+      } else {
+        startsRequest = true;
+      }
+      if (sentWhileWaiting >= delivery.limit) {
+        throw new ForbiddenException(
+          apiError('messaging.requestWaiting', {
+            name: recipient.firstName || null,
+          }),
+        );
+      }
+      if (startsRequest) {
+        const started = await this.safety.requestsStartedSince(
+          senderId,
+          new Date(Date.now() - DAY_MS),
+        );
+        if (started >= DAILY_REQUEST_LIMIT) {
+          throw new HttpException(
+            apiError('messaging.requestLimit'),
+            HttpStatus.TOO_MANY_REQUESTS,
+          );
+        }
+      }
+    }
+    let waiting: { remaining: number } | null = null;
+    if (delivery.kind === 'request') {
+      waiting = {
+        remaining: Math.max(0, delivery.limit - sentWhileWaiting - 1),
+      };
     }
 
     if (verdict.kind === 'silentDrop') {
@@ -303,6 +548,11 @@ export class MessagingService {
         recipient,
         trimmed,
         threatFlags,
+        {
+          conversationId: existing?.conversation.id ?? null,
+          waiting,
+          attachments: attachmentViews,
+        },
       );
     }
 
@@ -311,12 +561,18 @@ export class MessagingService {
     //   1. The per-conversation rate limit needs a conversation id and
     //      should run *outside* the message tx so a 429 doesn't leave
     //      a stale slot reservation when the tx rolls back.
-    //   2. The lookup is a plain read; only the first-send create path
+    //   2. The lookup already happened; only the first-send create path
     //      opens a transaction (see findOrCreateDirectConversation).
-    const conversation = await this.findOrCreateDirectConversation(
-      senderId,
-      recipientId,
-    );
+    let conversation: Conversation;
+    if (existing) {
+      conversation = existing.conversation;
+    } else {
+      conversation = await this.findOrCreateDirectConversation(
+        senderId,
+        recipientId,
+        delivery.kind === 'request',
+      );
+    }
 
     await this.rateLimit.assertConversationSendAllowed(
       senderId,
@@ -336,39 +592,99 @@ export class MessagingService {
     const previousMessageAt: Date | null = senderPrevious?.createdAt ?? null;
 
     const storedBody = this.setMessageBody(trimmed);
-    const preview = trimmed.length > 200 ? trimmed.slice(0, 200) : trimmed;
+    // A share with no caption previews as the thing's name: it is public.
+    let previewText = trimmed;
+    if (!previewText && sharedCard?.name) {
+      previewText = sharedCard.name;
+    }
+    const preview = previewText.slice(0, 200);
     const now = new Date();
     const metadata = threatFlags.anyFlag ? { threatFlags } : null;
 
-    // The write and the participant lookup are independent, so they
-    // share one round trip. `returning: true` makes the INSERT hand the
-    // full row back (DB defaults included), so the created message is
-    // used as-is instead of being re-fetched by id.
-    const [createdMessage, participants] = await Promise.all([
-      this.sequelize.transaction(async (tx) => {
-        const message = await this.messageModel.create(
+    // Who takes the chat in with this send: the sender always (writing
+    // answers a request, and brings an archived chat back); the recipient
+    // when it is delivered directly. A new chat was created with these
+    // already set.
+    const senderTakesItIn = !!(
+      existing?.self &&
+      (!existing.self.acceptedAt || existing.self.archivedAt)
+    );
+    const senderWasWaiting = !!(existing?.self && !existing.self.acceptedAt);
+    const recipientTakesItIn = !!(
+      existing?.other &&
+      delivery.kind === 'direct' &&
+      !existing.other.acceptedAt
+    );
+    // A declined request stays out of the recipient's sight: the message
+    // is kept (the sender sees it sent) but announced nowhere.
+    const recipientDeclined = !!(
+      delivery.kind === 'request' && existingOther?.declinedAt
+    );
+
+    const createdMessage = await this.sequelize.transaction(async (tx) => {
+      const message = await this.messageModel.create(
+        {
+          conversationId: conversation.id,
+          senderId,
+          kind: MessageKind.TEXT,
+          body: storedBody,
+          metadata,
+        },
+        { transaction: tx, returning: true },
+      );
+
+      await this.conversationModel.update(
+        {
+          lastMessageAt: now,
+          lastMessagePreview: preview,
+          lastMessageAttachmentType: attachment?.type ?? null,
+          updatedAt: now,
+        },
+        { where: { id: conversation.id }, transaction: tx },
+      );
+
+      if (attachment) {
+        await this.attachmentModel.create(
           {
-            conversationId: conversation.id,
-            senderId,
-            kind: MessageKind.TEXT,
-            body: storedBody,
-            metadata,
+            messageId: message.id,
+            targetType: attachment.type,
+            targetId: attachment.id,
+            position: 0,
           },
-          { transaction: tx, returning: true },
+          { transaction: tx },
         );
+      }
 
-        await this.conversationModel.update(
-          { lastMessageAt: now, lastMessagePreview: preview, updatedAt: now },
-          { where: { id: conversation.id }, transaction: tx },
+      if (senderTakesItIn && existing?.self) {
+        await this.participantModel.update(
+          {
+            acceptedAt: existing.self.acceptedAt ?? now,
+            declinedAt: null,
+            archivedAt: null,
+          },
+          { where: { id: existing.self.id }, transaction: tx },
         );
+      }
+      if (recipientTakesItIn && existing?.other) {
+        await this.participantModel.update(
+          { acceptedAt: now, declinedAt: null },
+          { where: { id: existing.other.id }, transaction: tx },
+        );
+      }
+      if (startsRequest && existing?.other) {
+        await this.participantModel.update(
+          { requestAt: now },
+          { where: { id: existing.other.id }, transaction: tx },
+        );
+      }
 
-        return message;
-      }),
-      this.participantModel.findAll({
-        where: { conversationId: conversation.id },
-        include: [{ model: User, attributes: USER_SAFE_ATTRIBUTES }],
-      }),
-    ]);
+      return message;
+    });
+
+    const participants = await this.participantModel.findAll({
+      where: { conversationId: conversation.id },
+      include: [{ model: User, attributes: USER_SAFE_ATTRIBUTES }],
+    });
 
     const self =
       participants.find((p) => p.userId === senderId && !p.leftAt) ?? null;
@@ -395,54 +711,99 @@ export class MessagingService {
         // Reflect the write we just committed without re-reading the row.
         lastMessageAt: now,
         lastMessagePreview: preview,
+        lastMessageAttachmentType: attachment?.type ?? null,
       },
       unread,
       other,
+      { waiting, requestContext: null },
     );
 
     // Velocity bookkeeping AFTER commit. Fire-and-forget — alarm
     // failures must never break message delivery.
     void this.velocity.recordSendAndMaybeAlarm(senderId);
 
+    // Both sides learn a chat was taken in: replying to a request opens
+    // the other person's composer, and a direct delivery moves a waiting
+    // request into the recipient's chats.
+    if (senderWasWaiting) {
+      this.emitter.emitConversationAccepted([senderId, recipientId], {
+        conversationId: conversation.id,
+        userId: senderId,
+        acceptedAt: now.toISOString(),
+      });
+    }
+    if (recipientTakesItIn) {
+      this.emitter.emitConversationAccepted([senderId, recipientId], {
+        conversationId: conversation.id,
+        userId: recipientId,
+        acceptedAt: now.toISOString(),
+      });
+    }
+
     // Realtime fan-out AFTER commit. Only the *other* participants
     // receive the live event — the sender already has the REST
     // response and rendering it twice would create double-bubbles in
     // their own thread. Group v2 will broaden this to all non-sender
     // active participants automatically.
-    this.emitter.emitMessageCreated([recipientId], {
-      conversationId: conversation.id,
-      message: {
-        id: createdMessage.id,
-        senderId: createdMessage.senderId,
-        body: this.getMessageBody(createdMessage.body),
-        kind: createdMessage.kind,
-        createdAt: createdMessage.createdAt.toISOString(),
-      },
-    });
+    const sharedRefs: ShareRef[] = [];
+    if (attachment) {
+      sharedRefs.push(attachment);
+    }
+    if (!recipientDeclined) {
+      this.emitter.emitMessageCreated([recipientId], {
+        conversationId: conversation.id,
+        message: {
+          id: createdMessage.id,
+          senderId: createdMessage.senderId,
+          body: previewText,
+          kind: createdMessage.kind,
+          createdAt: createdMessage.createdAt.toISOString(),
+          // Type and id only: the card comes in the reader's language when
+          // the app reads the message (GET /messaging/messages/:id).
+          attachments: sharedRefs,
+        },
+        isRequest: delivery.kind === 'request',
+      });
+    }
 
-    // notify-after-commit: in-app channel is always off (the Messages
-    // sidebar badge is the persistent in-app signal); email follows
-    // the "quiet-period" rule — sent only when the conversation has
-    // been silent for > EMAIL_QUIET_PERIOD_MS since the previous
-    // message. Sender display name is threaded through from the
-    // upfront lookup — no second query.
+    // notify-after-commit. A request is announced once, when it starts,
+    // and never by email; a chat follows the "quiet-period" email rule.
+    // A muted or archived chat keeps the phone quiet. Sender display name
+    // is threaded through from the upfront lookup — no second query.
     const senderName =
       [sender?.firstName, sender?.lastName].filter(Boolean).join(' ').trim() ||
       null;
-    const recipientMuted = !!(
-      other?.mutedUntil && other.mutedUntil.getTime() > now.getTime()
-    );
-    void this.dispatchMessageReceivedNotification(
-      recipientId,
-      conversation.id,
-      senderName,
-      trimmed,
-      previousMessageAt,
-      recipientMuted,
-    );
+    if (delivery.kind === 'request') {
+      if (startsRequest) {
+        void this.dispatchMessageRequestNotification(
+          recipientId,
+          conversation.id,
+          senderName,
+        );
+      }
+    } else {
+      const recipientMuted = !!(
+        other?.mutedUntil && other.mutedUntil.getTime() > now.getTime()
+      );
+      const recipientArchived = !!other?.archivedAt;
+      // A share with no caption is announced as a share.
+      let shared: SharedNotice | null = null;
+      if (!trimmed) {
+        shared = sharedNotice(sharedCard);
+      }
+      void this.dispatchMessageReceivedNotification(
+        recipientId,
+        conversation.id,
+        senderName,
+        trimmed,
+        previousMessageAt,
+        recipientMuted || recipientArchived,
+        shared,
+      );
+    }
 
     return {
-      message: this.toMessageView(createdMessage),
+      message: this.toMessageView(createdMessage, attachmentViews),
       conversation: listItem,
       delivered: true,
       threatFlags,
@@ -464,6 +825,7 @@ export class MessagingService {
     plaintext: string,
     previousMessageAt: Date | null,
     muted: boolean,
+    shared: SharedNotice | null = null,
   ): Promise<void> {
     try {
       const suppressEmail =
@@ -481,6 +843,7 @@ export class MessagingService {
           // matching the recommendation in the security discussion.
           hidePreviewInEmail: false,
           muted,
+          shared,
         }),
       );
     } catch (err) {
@@ -493,10 +856,33 @@ export class MessagingService {
   }
 
   /**
+   * Announce a new message request (in the app and by push, never by
+   * email). AFTER commit, fire-and-forget like the message notice.
+   */
+  private async dispatchMessageRequestNotification(
+    recipientId: string,
+    conversationId: string,
+    senderName: string | null,
+  ): Promise<void> {
+    try {
+      await this.notifications.notify(
+        messageRequestReceived({ recipientId, conversationId, senderName }),
+      );
+    } catch (err) {
+      this.logger.error?.(
+        `[messaging] request notify failed for ${recipientId} in ${conversationId}: ${(err as Error).message}`,
+        (err as Error).stack,
+        'MessagingService',
+      );
+    }
+  }
+
+  /**
    * Synthetic response returned when the recipient has blocked the
    * sender. The response is shaped exactly like a successful send so
    * the FE renders the message in the sender's own thread without
-   * revealing the block.
+   * revealing the block: the same chat when there is one, and the same
+   * waiting state a request would have.
    */
   private buildSilentDropResponse(
     senderId: string,
@@ -506,13 +892,25 @@ export class MessagingService {
     >,
     plaintext: string,
     threatFlags: ThreatScanResult,
+    opts: {
+      conversationId: string | null;
+      waiting: { remaining: number } | null;
+      attachments: MessageAttachmentView[];
+    } = { conversationId: null, waiting: null, attachments: [] },
   ): SendMessageResult {
+    // The same text a real send shows: the caption, or the shared name.
+    let shown = plaintext;
+    const sharedName = opts.attachments[0]?.card.name;
+    if (!shown && sharedName) {
+      shown = sharedName;
+    }
     const now = new Date();
     // Use real UUIDs so the FE cannot tell a silent-drop apart from a
     // successful send by inspecting the id shape. The synthetic ids
     // are never persisted and will 404 if the FE looks them up — which
-    // it shouldn't (the response shape is final).
-    const syntheticConversationId = randomUUID();
+    // it shouldn't (the response shape is final). An existing chat keeps
+    // its own id, so the message lands in the thread it was written in.
+    const syntheticConversationId = opts.conversationId ?? randomUUID();
     const syntheticMessageId = randomUUID();
     return {
       message: {
@@ -520,7 +918,9 @@ export class MessagingService {
         conversationId: syntheticConversationId,
         senderId,
         kind: MessageKind.TEXT,
-        body: plaintext,
+        body: shown,
+        caption: plaintext,
+        attachments: opts.attachments,
         deletedAt: null,
         createdAt: now,
       },
@@ -530,8 +930,8 @@ export class MessagingService {
         name: null,
         avatarUrl: null,
         lastMessageAt: now,
-        lastMessagePreview:
-          plaintext.length > 200 ? plaintext.slice(0, 200) : plaintext,
+        lastMessagePreview: shown.slice(0, 200),
+        lastMessageAttachmentType: opts.attachments[0]?.type ?? null,
         unreadCount: 0,
         muted: false,
         markedUnread: false,
@@ -543,6 +943,10 @@ export class MessagingService {
           handle: recipient.handle ?? null,
         },
         lastReadByOther: null,
+        isRequest: false,
+        requestContext: null,
+        archived: false,
+        waiting: opts.waiting,
       },
       delivered: false,
       threatFlags,
@@ -557,6 +961,7 @@ export class MessagingService {
     userId: string,
     page: number,
     limit: number,
+    folder?: ConversationFolder,
   ): Promise<PaginatedResponse<ConversationListItem>> {
     const offset = (page - 1) * limit;
     const me = this.sequelize.escape(userId);
@@ -565,6 +970,7 @@ export class MessagingService {
       where: {
         userId,
         leftAt: null,
+        ...this.folderWhere(folder),
         // A chat with someone this user blocked stays out of the inbox
         // while the block lasts, so it does not come back on the next
         // load after the app hid it.
@@ -611,6 +1017,28 @@ export class MessagingService {
     const items = await this.hydrateListItems(userId, rows);
 
     return buildPaginatedResponse(items, count, page, limit);
+  }
+
+  /**
+   * The participant-row filter for a part of the inbox (migration 090).
+   * Chats: taken in, not archived. Requests: waiting, not deleted.
+   * Archived: taken in and archived. None: everything but a deleted
+   * request, as the inbox was before requests existed.
+   */
+  private folderWhere(folder: ConversationFolder | undefined) {
+    if (folder === 'inbox') {
+      return { acceptedAt: { [Op.ne]: null }, archivedAt: null };
+    }
+    if (folder === 'requests') {
+      return { acceptedAt: null, declinedAt: null };
+    }
+    if (folder === 'archived') {
+      return {
+        acceptedAt: { [Op.ne]: null },
+        archivedAt: { [Op.ne]: null },
+      };
+    }
+    return { declinedAt: null };
   }
 
   async getConversation(
@@ -667,8 +1095,15 @@ export class MessagingService {
     });
 
     const hasMore = rows.length > limit;
-    const items = (hasMore ? rows.slice(0, limit) : rows).map((m) =>
-      this.toMessageView(m),
+    let page = rows;
+    if (hasMore) {
+      page = rows.slice(0, limit);
+    }
+    const attachments = await this.attachmentsByMessage(
+      page.filter((m) => !m.deletedAt).map((m) => m.id),
+    );
+    const items = page.map((m) =>
+      this.toMessageView(m, attachments.get(m.id) ?? []),
     );
     const nextBefore = hasMore ? items[items.length - 1].id : null;
 
@@ -704,21 +1139,48 @@ export class MessagingService {
     if (clearedAt && message.createdAt <= clearedAt) {
       throw new NotFoundException(apiError('messaging.messageNotFound'));
     }
-    return this.toMessageView(message);
+    const ids: string[] = [];
+    if (!message.deletedAt) {
+      ids.push(message.id);
+    }
+    const attachments = await this.attachmentsByMessage(ids);
+    return this.toMessageView(message, attachments.get(message.id) ?? []);
   }
 
   /**
-   * Total unread count for the user across all active conversations.
-   * Powers the global badge.
+   * Unread counts for the badges.
+   *   - `count`: unread across every chat but a declined request, as before
+   *     requests existed. App versions already in the stores read only this,
+   *     and they list requests and archived chats among their chats.
+   *   - `inbox`: unread in the chats themselves: taken in, not archived.
+   *     The tab badge of an app that knows requests.
+   *   - `requests`: how many message requests are waiting (each counts
+   *     once, read or not), for the requests row.
    */
-  async getUnreadCount(userId: string): Promise<{ count: number }> {
+  async getUnreadCount(
+    userId: string,
+  ): Promise<{ count: number; inbox: number; requests: number }> {
     const participants = await this.participantModel.findAll({
-      where: { userId, leftAt: null },
-      attributes: ['conversationId', 'lastReadAt', 'markedUnread', 'clearedAt'],
+      where: { userId, leftAt: null, declinedAt: null },
+      attributes: [
+        'conversationId',
+        'lastReadAt',
+        'markedUnread',
+        'clearedAt',
+        'acceptedAt',
+        'archivedAt',
+      ],
+      include: [
+        {
+          model: Conversation,
+          required: true,
+          attributes: ['id', 'lastMessageAt'],
+        },
+      ],
     });
 
     if (participants.length === 0) {
-      return { count: 0 };
+      return { count: 0, inbox: 0, requests: 0 };
     }
 
     // One grouped query rather than a count per thread. This badge is
@@ -730,19 +1192,33 @@ export class MessagingService {
       participants,
     );
 
-    let total = 0;
-    for (const count of byConversation.values()) {
-      total += count;
-    }
-    // A thread marked unread with nothing actually unread still asks to be
-    // come back to, so it counts as one.
+    let count = 0;
+    let inbox = 0;
+    let requests = 0;
     for (const p of participants) {
-      if (p.markedUnread && !byConversation.get(p.conversationId)) {
-        total += 1;
+      let unread = byConversation.get(p.conversationId) ?? 0;
+      // A thread marked unread with nothing actually unread still asks to
+      // be come back to, so it counts as one.
+      if (p.markedUnread && unread === 0) {
+        unread = 1;
+      }
+      count += unread;
+
+      if (!p.acceptedAt) {
+        // A request the reader deleted the chat of shows again only once
+        // something newer arrives, like the requests list.
+        const lastMessageAt = p.conversation?.lastMessageAt ?? null;
+        const visible =
+          !p.clearedAt || (!!lastMessageAt && lastMessageAt > p.clearedAt);
+        if (visible) {
+          requests += 1;
+        }
+      } else if (!p.archivedAt) {
+        inbox += unread;
       }
     }
 
-    return { count: total };
+    return { count, inbox, requests };
   }
 
   // =========================================================================
@@ -805,6 +1281,17 @@ export class MessagingService {
     // Tell the *other* participants the conversation was read (powers
     // future read-receipt indicators on the FE — v1 just relies on it
     // to clear unread badges live). notify-after-commit.
+    //
+    // Not while the reader hasn't taken the chat in: reading a message
+    // request tells its sender nothing, so they can't tell read from
+    // ignored from deleted.
+    const reader = await this.participantModel.findOne({
+      where: { conversationId, userId, leftAt: null },
+      attributes: ['id', 'acceptedAt'],
+    });
+    if (!reader?.acceptedAt) {
+      return { lastReadAt: upTo };
+    }
     const otherIds = await this.otherActiveParticipantIds(
       conversationId,
       userId,
@@ -934,6 +1421,237 @@ export class MessagingService {
     return { clearedAt };
   }
 
+  // =========================================================================
+  // Sharing (migration 092)
+  // =========================================================================
+
+  /**
+   * Send one public thing to several people at once (up to 10), each as an
+   * ordinary message with the same request rules, blocks and limits. One
+   * person refusing doesn't stop the others; each gets a result.
+   */
+  async shareTo(
+    senderId: string,
+    recipientIds: string[],
+    ref: ShareRef,
+    caption: string | null | undefined,
+  ): Promise<{ results: ShareResult[] }> {
+    if (!(await this.share.shareableCard(ref))) {
+      throw new BadRequestException(apiError('messaging.notShareable'));
+    }
+
+    const recipients = [...new Set(recipientIds)].filter(
+      (id) => id !== senderId,
+    );
+    const results: ShareResult[] = [];
+    // One after another: each send reads the chat it may have created.
+    for (const recipientId of recipients) {
+      try {
+        const sent = await this.sendMessage(
+          senderId,
+          recipientId,
+          caption,
+          ref,
+        );
+        let status: ShareResult['status'] = 'SENT';
+        if (sent.conversation.waiting) {
+          status = 'WAITING';
+        }
+        results.push({
+          recipientId,
+          status,
+          conversationId: sent.conversation.id,
+          reason: null,
+        });
+      } catch (err) {
+        results.push({
+          recipientId,
+          status: 'REFUSED',
+          conversationId: null,
+          reason: errorKeyOf(err),
+        });
+      }
+    }
+    return { results };
+  }
+
+  // =========================================================================
+  // Message requests and archive (migration 090)
+  // =========================================================================
+
+  /**
+   * Accept a message request: the chat moves to the caller's chats and the
+   * sender can write freely again. Accepting a chat already taken in
+   * changes nothing. Both sides hear of it, so the sender's composer opens.
+   */
+  async acceptRequest(
+    userId: string,
+    conversationId: string,
+  ): Promise<ConversationListItem> {
+    const row = await this.ownRow(userId, conversationId);
+
+    if (!row.acceptedAt) {
+      const acceptedAt = new Date();
+      await this.participantModel.update(
+        { acceptedAt, declinedAt: null },
+        { where: { id: row.id } },
+      );
+      const otherIds = await this.otherActiveParticipantIds(
+        conversationId,
+        userId,
+      );
+      this.emitter.emitConversationAccepted([userId, ...otherIds], {
+        conversationId,
+        userId,
+        acceptedAt: acceptedAt.toISOString(),
+      });
+    }
+
+    return this.getConversation(userId, conversationId);
+  }
+
+  /**
+   * Delete a message request. It leaves the caller's requests and its
+   * messages are gone for them; nothing tells the sender, who keeps seeing
+   * it as waiting. What the sender writes within their limit afterwards is
+   * kept but never shown or announced, unless the caller writes to them, or
+   * they become connected, which turns it into a chat.
+   */
+  async declineRequest(
+    userId: string,
+    conversationId: string,
+  ): Promise<{ declinedAt: Date }> {
+    const row = await this.ownRow(userId, conversationId);
+    if (row.acceptedAt) {
+      throw new BadRequestException(apiError('messaging.notARequest'));
+    }
+
+    const declinedAt = new Date();
+    await this.participantModel.update(
+      { declinedAt, clearedAt: declinedAt, markedUnread: false },
+      { where: { id: row.id } },
+    );
+
+    // The caller's own sessions only. Never the sender.
+    this.emitter.emitConversationDeclined([userId], {
+      conversationId,
+      userId,
+    });
+
+    return { declinedAt };
+  }
+
+  /**
+   * Archive or unarchive a chat for the caller. An archived chat leaves
+   * the list for the archived one, stays there when messages arrive, and
+   * keeps the phone quiet; writing in it brings it back. A request has to
+   * be accepted first.
+   */
+  async setArchived(
+    userId: string,
+    conversationId: string,
+    archived: boolean,
+  ): Promise<{ archived: boolean }> {
+    const row = await this.ownRow(userId, conversationId);
+    if (!row.acceptedAt) {
+      throw new BadRequestException(apiError('messaging.acceptRequestFirst'));
+    }
+
+    let archivedAt: Date | null = null;
+    if (archived) {
+      archivedAt = row.archivedAt ?? new Date();
+    }
+    await this.participantModel.update(
+      { archivedAt },
+      { where: { id: row.id } },
+    );
+
+    // Same fan-out as mute: the actor's other sessions/tabs only.
+    this.emitter.emitConversationArchived([userId], {
+      conversationId,
+      userId,
+      archived,
+    });
+
+    return { archived };
+  }
+
+  /**
+   * What happens if the caller writes to `targetId`, before they type:
+   * straight into the chat, a message request (and how many messages fit),
+   * or why not. A block by the target is never told: the answer is the one
+   * the caller would get without it, as the send itself behaves.
+   */
+  async reach(callerId: string, targetId: string): Promise<ReachResult> {
+    if (callerId === targetId) {
+      throw new BadRequestException(apiError('messaging.cannotMessageSelf'));
+    }
+
+    const existing = await this.findDirectState(callerId, targetId);
+    let recipientAccepted = false;
+    if (existing?.other) {
+      recipientAccepted = !!existing.other.acceptedAt;
+    }
+
+    const verdict = await this.safety.canMessage(callerId, targetId, {
+      recipientAccepted,
+    });
+    if (verdict.kind === 'forbidden') {
+      const key = verdict.reason.messageKey;
+      if (key === 'messaging.suspended') {
+        return { status: 'SUSPENDED', requestLimit: null };
+      }
+      if (key === 'messaging.youBlockedThem') {
+        return { status: 'YOU_BLOCKED', requestLimit: null };
+      }
+      return { status: 'NEW_ACCOUNT', requestLimit: null };
+    }
+
+    if (recipientAccepted) {
+      return { status: 'DIRECT', requestLimit: null };
+    }
+    const delivery = await this.safety.deliveryFor(callerId, targetId);
+    if (delivery.kind === 'refused') {
+      return { status: 'CONNECTIONS_ONLY', requestLimit: null };
+    }
+    if (delivery.kind === 'request') {
+      return { status: 'REQUEST', requestLimit: delivery.limit };
+    }
+    return { status: 'DIRECT', requestLimit: null };
+  }
+
+  /** The caller's "Who can message you". */
+  async getSettings(userId: string): Promise<{ whoCanMessage: MessagePolicy }> {
+    const whoCanMessage = await this.safety.messagePolicyOf(userId);
+    return { whoCanMessage };
+  }
+
+  /** Change the caller's "Who can message you". */
+  async updateSettings(
+    userId: string,
+    whoCanMessage: MessagePolicy,
+  ): Promise<{ whoCanMessage: MessagePolicy }> {
+    await User.update(
+      { messagePolicy: whoCanMessage },
+      { where: { id: userId } },
+    );
+    return { whoCanMessage };
+  }
+
+  /** The caller's own active row in a chat; 404 when they aren't in it. */
+  private async ownRow(
+    userId: string,
+    conversationId: string,
+  ): Promise<ConversationParticipant> {
+    const row = await this.participantModel.findOne({
+      where: { conversationId, userId, leftAt: null },
+    });
+    if (!row) {
+      throw new NotFoundException(apiError('messaging.conversationNotFound'));
+    }
+    return row;
+  }
+
   /**
    * Sender soft-deletes their own message. Replaces the body with a
    * tombstone so plaintext is gone, but the row stays for thread
@@ -1004,6 +1722,18 @@ export class MessagingService {
         transaction: tx,
       });
 
+      // What they shared goes with their words.
+      await this.attachmentModel.destroy({
+        where: {
+          messageId: {
+            [Op.in]: literal(
+              `(SELECT id FROM message WHERE sender_id = ${this.sequelize.escape(userId)})`,
+            ),
+          },
+        },
+        transaction: tx,
+      });
+
       const [count] = await this.messageModel.update(
         {
           deletedAt: fn('COALESCE', col('deleted_at'), now),
@@ -1033,12 +1763,40 @@ export class MessagingService {
     const latest = await this.messageModel.findOne({
       where: { conversationId, deletedAt: null },
       order: [['createdAt', 'DESC']],
-      attributes: ['body'],
+      attributes: ['id', 'body'],
       transaction,
     });
-    const text = latest ? this.getMessageBody(latest.body) : null;
+    let text: string | null = null;
+    if (latest) {
+      text = this.getMessageBody(latest.body);
+    }
+    // A share keeps its type on the row, and its name when it had no caption.
+    let attachmentType: ShareTargetType | null = null;
+    if (latest) {
+      const attachment = await this.attachmentModel.findOne({
+        where: { messageId: latest.id },
+        order: [['position', 'ASC']],
+        attributes: ['targetType', 'targetId'],
+        transaction,
+      });
+      if (attachment) {
+        attachmentType = attachment.targetType;
+        if (!text) {
+          const ref = { type: attachment.targetType, id: attachment.targetId };
+          const card = (await this.share.cardsFor([ref])).get(shareKey(ref));
+          text = card?.name ?? null;
+        }
+      }
+    }
+    let preview: string | null = null;
+    if (text) {
+      preview = text.slice(0, 200);
+    }
     await this.conversationModel.update(
-      { lastMessagePreview: text ? text.slice(0, 200) : null },
+      {
+        lastMessagePreview: preview,
+        lastMessageAttachmentType: attachmentType,
+      },
       { where: { id: conversationId }, transaction },
     );
   }
@@ -1081,9 +1839,28 @@ export class MessagingService {
   private async findOrCreateDirectConversation(
     aId: string,
     bId: string,
+    asRequest: boolean,
   ): Promise<Conversation> {
     const directKey = directKeyFor(aId, bId);
     const [sortedA, sortedB] = [aId, bId].sort();
+    // The sender (aId) takes the chat in by writing; the recipient does too
+    // unless it starts as a message request, which starts now.
+    const now = new Date();
+    const rowFor = (conversationId: string, userId: string) => {
+      let acceptedAt: Date | null = now;
+      let requestAt: Date | null = null;
+      if (asRequest && userId === bId) {
+        acceptedAt = null;
+        requestAt = now;
+      }
+      return {
+        conversationId,
+        userId,
+        role: ConversationParticipantRole.MEMBER,
+        acceptedAt,
+        requestAt,
+      };
+    };
 
     // Fast path: lookup by the deterministic key.
     const existing = await this.conversationModel.findOne({
@@ -1103,18 +1880,7 @@ export class MessagingService {
         );
 
         await this.participantModel.bulkCreate(
-          [
-            {
-              conversationId: conversation.id,
-              userId: sortedA,
-              role: ConversationParticipantRole.MEMBER,
-            },
-            {
-              conversationId: conversation.id,
-              userId: sortedB,
-              role: ConversationParticipantRole.MEMBER,
-            },
-          ],
+          [rowFor(conversation.id, sortedA), rowFor(conversation.id, sortedB)],
           { transaction: tx },
         );
 
@@ -1132,6 +1898,49 @@ export class MessagingService {
       }
       throw err;
     }
+  }
+
+  /**
+   * The direct chat between `selfId` and `otherId`, with both people's
+   * active rows, in one query; null when they have never written.
+   */
+  private async findDirectState(
+    selfId: string,
+    otherId: string,
+  ): Promise<DirectState | null> {
+    const rows = await this.participantModel.findAll({
+      where: { userId: { [Op.in]: [selfId, otherId] }, leftAt: null },
+      include: [
+        {
+          model: Conversation,
+          required: true,
+          where: {
+            type: ConversationType.DIRECT,
+            directKey: directKeyFor(selfId, otherId),
+          },
+        },
+      ],
+    });
+    const first = rows[0];
+    if (!first?.conversation) {
+      return null;
+    }
+    return {
+      conversation: first.conversation,
+      self: rows.find((r) => r.userId === selfId) ?? null,
+      other: rows.find((r) => r.userId === otherId) ?? null,
+    };
+  }
+
+  /** Messages `senderId` sent in a chat since `since`, deleted ones too. */
+  private countSentSince(
+    senderId: string,
+    conversationId: string,
+    since: Date,
+  ): Promise<number> {
+    return this.messageModel.count({
+      where: { conversationId, senderId, createdAt: { [Op.gte]: since } },
+    });
   }
 
   /** When the user deleted this chat for themselves, if they have. */
@@ -1213,6 +2022,11 @@ export class MessagingService {
       this.countUnreadByConversation(userId, participants),
       this.otherParticipantByConversation(userId, directIds),
     ]);
+    const extrasByConversation = await this.listItemExtras(
+      userId,
+      participants,
+      otherByConversation,
+    );
 
     return participants.map((p) =>
       this.toListItem(
@@ -1220,8 +2034,101 @@ export class MessagingService {
         p.conversation,
         unreadByConversation.get(p.conversationId) ?? 0,
         otherByConversation.get(p.conversationId) ?? null,
+        extrasByConversation.get(p.conversationId) ?? NO_EXTRAS,
       ),
     );
+  }
+
+  /**
+   * What message requests add to inbox rows: how many more messages the
+   * caller can send to someone who hasn't accepted yet, and how the caller
+   * might know the people whose requests are waiting for them. Three
+   * queries at most, and none for an inbox without requests.
+   */
+  private async listItemExtras(
+    userId: string,
+    participants: ConversationParticipant[],
+    otherByConversation: Map<string, ConversationParticipant>,
+  ): Promise<Map<string, ListItemExtras>> {
+    const extras = new Map<string, ListItemExtras>();
+    const waitingRows: Array<{
+      conversationId: string;
+      otherId: string;
+      since: Date;
+    }> = [];
+    const requestRows: Array<{ conversationId: string; otherId: string }> = [];
+    for (const p of participants) {
+      const other = otherByConversation.get(p.conversationId);
+      if (!other) {
+        continue;
+      }
+      if (!p.acceptedAt) {
+        requestRows.push({
+          conversationId: p.conversationId,
+          otherId: other.userId,
+        });
+      } else if (!other.acceptedAt && other.requestAt) {
+        waitingRows.push({
+          conversationId: p.conversationId,
+          otherId: other.userId,
+          since: other.requestAt,
+        });
+      }
+    }
+    if (waitingRows.length === 0 && requestRows.length === 0) {
+      return extras;
+    }
+
+    const [sentByConversation, limits, contexts] = await Promise.all([
+      this.countSentSinceByConversation(userId, waitingRows),
+      this.safety.requestLimitsFor(waitingRows.map((r) => r.otherId)),
+      this.safety.requestContextsFor(
+        userId,
+        requestRows.map((r) => r.otherId),
+      ),
+    ]);
+
+    for (const row of waitingRows) {
+      const limit = limits.get(row.otherId) ?? 0;
+      const sent = sentByConversation.get(row.conversationId) ?? 0;
+      extras.set(row.conversationId, {
+        waiting: { remaining: Math.max(0, limit - sent) },
+        requestContext: null,
+      });
+    }
+    for (const row of requestRows) {
+      extras.set(row.conversationId, {
+        waiting: null,
+        requestContext: contexts.get(row.otherId) ?? null,
+      });
+    }
+    return extras;
+  }
+
+  /**
+   * Messages `senderId` sent in each chat since its own moment, in one
+   * grouped query (the batch form of `countSentSince`).
+   */
+  private async countSentSinceByConversation(
+    senderId: string,
+    rows: Array<{ conversationId: string; since: Date }>,
+  ): Promise<Map<string, number>> {
+    if (rows.length === 0) {
+      return new Map();
+    }
+    const counts = (await this.messageModel.findAll({
+      attributes: ['conversationId', [fn('COUNT', col('Message.id')), 'count']],
+      where: {
+        senderId,
+        [Op.or]: rows.map((r) => ({
+          conversationId: r.conversationId,
+          createdAt: { [Op.gte]: r.since },
+        })),
+      },
+      group: ['Message.conversation_id'],
+      raw: true,
+    })) as unknown as Array<{ conversationId: string; count: string | number }>;
+    return new Map(counts.map((r) => [r.conversationId, Number(r.count)]));
   }
 
   /**
@@ -1302,6 +2209,7 @@ export class MessagingService {
     conversation: ConversationSummary,
     unreadCount: number,
     other: ConversationParticipant | null,
+    extras: ListItemExtras,
   ): ConversationListItem {
     const otherUser: ParticipantSnapshot | null = other?.user
       ? {
@@ -1312,9 +2220,12 @@ export class MessagingService {
           handle: other.user.handle ?? null,
         }
       : null;
-    const lastReadByOther = other?.lastReadAt
-      ? other.lastReadAt.toISOString()
-      : null;
+    // No read receipt until the other person took the chat in: reading a
+    // request tells its sender nothing.
+    let lastReadByOther: string | null = null;
+    if (other?.acceptedAt && other.lastReadAt) {
+      lastReadByOther = other.lastReadAt.toISOString();
+    }
 
     const mutedUntil = participant.mutedUntil;
     const muted = !!(mutedUntil && mutedUntil.getTime() > Date.now());
@@ -1327,35 +2238,111 @@ export class MessagingService {
       (!conversation.lastMessageAt || conversation.lastMessageAt <= clearedAt)
     );
 
+    let lastMessageAt = conversation.lastMessageAt;
+    let lastMessagePreview = conversation.lastMessagePreview;
+    let lastMessageAttachmentType =
+      conversation.lastMessageAttachmentType ?? null;
+    if (lastIsCleared) {
+      lastMessageAt = null;
+      lastMessagePreview = null;
+      lastMessageAttachmentType = null;
+    }
+
     return {
       id: conversation.id,
       type: conversation.type,
       name: conversation.name,
       avatarUrl: conversation.avatarUrl,
-      lastMessageAt: lastIsCleared ? null : conversation.lastMessageAt,
-      lastMessagePreview: lastIsCleared
-        ? null
-        : conversation.lastMessagePreview,
+      lastMessageAt,
+      lastMessagePreview,
+      lastMessageAttachmentType,
       unreadCount,
       muted,
       markedUnread: !!participant.markedUnread,
       otherUser,
       lastReadByOther,
+      isRequest: !participant.acceptedAt,
+      requestContext: extras.requestContext,
+      archived: !!participant.archivedAt,
+      waiting: extras.waiting,
     };
   }
 
-  private toMessageView(message: Message): MessageView {
+  /**
+   * One message as a reader receives it. A deleted message keeps no caption
+   * and no cards. A share with no caption shows the shared thing's name as
+   * its `body`, for app versions that only read `body`.
+   */
+  private toMessageView(
+    message: Message,
+    attachments: MessageAttachmentView[] = [],
+  ): MessageView {
     const isDeleted = !!message.deletedAt;
+    if (isDeleted) {
+      return {
+        id: message.id,
+        conversationId: message.conversationId,
+        senderId: message.senderId,
+        kind: message.kind,
+        body: DELETED_BODY_TOMBSTONE,
+        caption: DELETED_BODY_TOMBSTONE,
+        attachments: [],
+        deletedAt: message.deletedAt,
+        createdAt: message.createdAt,
+      };
+    }
+    const caption = this.getMessageBody(message.body);
+    let body = caption;
+    const sharedName = attachments[0]?.card.name;
+    if (!body && sharedName) {
+      body = sharedName;
+    }
     return {
       id: message.id,
       conversationId: message.conversationId,
       senderId: message.senderId,
       kind: message.kind,
-      body: isDeleted
-        ? DELETED_BODY_TOMBSTONE
-        : this.getMessageBody(message.body),
+      body,
+      caption,
+      attachments,
       deletedAt: message.deletedAt,
       createdAt: message.createdAt,
     };
+  }
+
+  /**
+   * The shared things on these messages with their cards: one query for
+   * the attachment rows, then one per type for the cards. None asked, none
+   * read.
+   */
+  private async attachmentsByMessage(
+    messageIds: string[],
+  ): Promise<Map<string, MessageAttachmentView[]>> {
+    const byMessage = new Map<string, MessageAttachmentView[]>();
+    if (messageIds.length === 0) {
+      return byMessage;
+    }
+    const rows = await this.attachmentModel.findAll({
+      where: { messageId: { [Op.in]: messageIds } },
+      attributes: ['messageId', 'targetType', 'targetId', 'position'],
+      order: [['position', 'ASC']],
+    });
+    if (rows.length === 0) {
+      return byMessage;
+    }
+    const cards = await this.share.cardsFor(
+      rows.map((r) => ({ type: r.targetType, id: r.targetId })),
+    );
+    for (const row of rows) {
+      const ref = { type: row.targetType, id: row.targetId };
+      const card = cards.get(shareKey(ref));
+      if (!card) {
+        continue;
+      }
+      const list = byMessage.get(row.messageId) ?? [];
+      list.push({ ...ref, card });
+      byMessage.set(row.messageId, list);
+    }
+    return byMessage;
   }
 }

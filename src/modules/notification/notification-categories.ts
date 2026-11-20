@@ -147,6 +147,7 @@ export const TYPE_TO_CATEGORY: Record<NotificationType, NotificationCategory> =
 
     // Messaging
     [NotificationType.MESSAGE_RECEIVED]: NotificationCategory.Messaging,
+    [NotificationType.MESSAGE_REQUEST_RECEIVED]: NotificationCategory.Messaging,
 
     // Workouts (exercises + programs)
     [NotificationType.EXERCISE_FORKED]: NotificationCategory.Workouts,

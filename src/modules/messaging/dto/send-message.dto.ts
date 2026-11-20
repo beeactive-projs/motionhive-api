@@ -1,5 +1,13 @@
-import { ApiProperty } from '@nestjs/swagger';
-import { IsString, IsUUID, MaxLength, MinLength } from 'class-validator';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { Type } from 'class-transformer';
+import {
+  IsOptional,
+  IsString,
+  IsUUID,
+  MaxLength,
+  ValidateNested,
+} from 'class-validator';
+import { ShareRefDto } from './share-ref.dto';
 
 /**
  * Send a direct message to another user.
@@ -10,7 +18,9 @@ import { IsString, IsUUID, MaxLength, MinLength } from 'class-validator';
  *
  * Body cap enforced both here (@MaxLength 4000) and at the DB level
  * (CHECK constraint in migration 038) so a missing pipe in dev can't
- * sneak a too-long row past the database.
+ * sneak a too-long row past the database. The body may be empty only when
+ * the message shares something (`attachment`, migration 092); the service
+ * refuses an empty message otherwise (`messaging.emptyMessage`).
  */
 export class SendMessageDto {
   @ApiProperty({
@@ -20,14 +30,23 @@ export class SendMessageDto {
   @IsUUID('4')
   recipientId!: string;
 
-  @ApiProperty({
-    example: 'Running 5 minutes late — see you at the studio.',
-    minLength: 1,
+  @ApiPropertyOptional({
+    example: 'Running 5 minutes late. See you at the studio.',
     maxLength: 4000,
-    description: 'Plain-text message body (1–4000 chars)',
+    description:
+      'Plain-text message body (up to 4000 chars). Optional when sharing.',
   })
+  @IsOptional()
   @IsString()
-  @MinLength(1)
   @MaxLength(4000)
-  body!: string;
+  body?: string;
+
+  @ApiPropertyOptional({
+    type: ShareRefDto,
+    description: 'A public thing to send as a card',
+  })
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => ShareRefDto)
+  attachment?: ShareRefDto;
 }

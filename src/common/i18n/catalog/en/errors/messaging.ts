@@ -6,7 +6,17 @@ export const messaging = {
   emptyMessage: 'Your message is empty. Write something before sending it.',
   suspended: 'Your messaging has been restricted. Contact support.',
   newAccountLimited:
-    'New accounts can only message users they already have an active relationship with.',
+    'New accounts can only message people they train with, or people who wrote to them first.',
+  connectionsOnly:
+    'This person only takes messages from people they train with.',
+  requestWaiting:
+    'Your message request is waiting. You can write more once {name, select, null {they accept} other {{name} accepts}}.',
+  requestLimit:
+    "You've started a lot of new conversations today. Try again tomorrow.",
+  notARequest: 'This chat is not a message request.',
+  acceptRequestFirst: 'Accept this message request first.',
+  notShareable:
+    "This can't be sent. Only things anyone can see can be shared, and a session only until it ends.",
   tooManyMessages:
     'You can send up to {max, plural, one {# message} other {# messages}} a minute. Wait a moment and try again.',
   tooManyMessagesInConversation:

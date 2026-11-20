@@ -1,4 +1,5 @@
 import type { NotifyParams } from '../notification/notification.service';
+import type { NotificationMessage } from '../notification/notification-message';
 import { NotificationType } from '../notification/notification.service';
 import type { ChannelPreferences } from '../notification/entities/notification-preference.entity';
 
@@ -58,6 +59,45 @@ export interface MessageReceivedArgs {
    * the unread count still moves.
    */
   muted: boolean;
+  /**
+   * A share sent without a caption (migration 092): announced as "Ana
+   * shared a session: Yoga" instead of a preview.
+   */
+  shared?: SharedNotice | null;
+}
+
+/** What a share without a caption is announced as. */
+export interface SharedNotice {
+  /** SESSION, GROUP, COACH, EXERCISE, ROUTINE or PROGRAM. */
+  type: string;
+  /** The name, for what people write; null for translated content. */
+  title: string | null;
+}
+
+function messageFor(args: MessageReceivedArgs): NotificationMessage {
+  if (args.hidePreviewInEmail) {
+    return {
+      key: 'messaging.receivedPrivate',
+      params: { name: args.senderName },
+    };
+  }
+  if (args.shared) {
+    return {
+      key: 'messaging.shared',
+      params: {
+        name: args.senderName,
+        type: args.shared.type,
+        title: args.shared.title,
+      },
+    };
+  }
+  return {
+    key: 'messaging.received',
+    params: {
+      name: args.senderName,
+      preview: truncatePreview(args.preview),
+    },
+  };
 }
 
 export function messageReceived(args: MessageReceivedArgs): NotifyParams {
@@ -91,15 +131,7 @@ export function messageReceived(args: MessageReceivedArgs): NotifyParams {
   const params: NotifyParams = {
     userId: args.recipientId,
     type: NotificationType.MESSAGE_RECEIVED,
-    message: args.hidePreviewInEmail
-      ? { key: 'messaging.receivedPrivate', params: { name: args.senderName } }
-      : {
-          key: 'messaging.received',
-          params: {
-            name: args.senderName,
-            preview: truncatePreview(args.preview),
-          },
-        },
+    message: messageFor(args),
     data: {
       screen: 'messages',
       queryParams: { conversationId: args.conversationId },
@@ -109,4 +141,40 @@ export function messageReceived(args: MessageReceivedArgs): NotifyParams {
   };
 
   return params;
+}
+
+export interface MessageRequestReceivedArgs {
+  recipientId: string;
+  conversationId: string;
+  /** Display name of the sender (firstName + lastName). null → "Someone". */
+  senderName: string | null;
+}
+
+/**
+ * Someone the reader isn't connected with wrote, so the chat waits in their
+ * message requests (migration 090). Sent once, when the request starts; the
+ * sender's further messages before it is accepted announce nothing.
+ *
+ * In the app and by push (the type's default), never by email, and with no
+ * preview: a stranger's words don't land on a lock screen or in an inbox
+ * before the reader chose to read them. Opens the conversation, which an app
+ * that knows requests shows as one, and an older app as a chat.
+ */
+export function messageRequestReceived(
+  args: MessageRequestReceivedArgs,
+): NotifyParams {
+  return {
+    userId: args.recipientId,
+    type: NotificationType.MESSAGE_REQUEST_RECEIVED,
+    message: {
+      key: 'messaging.requestReceived',
+      params: { name: args.senderName },
+    },
+    data: {
+      screen: 'messages',
+      queryParams: { conversationId: args.conversationId },
+    },
+    collapseKey: `conversation.${args.conversationId}`,
+    channelOverride: { email: false },
+  };
 }

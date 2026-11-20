@@ -407,12 +407,18 @@ export class UserService {
       ],
     }));
 
+    // A name or handle finds only people who let themselves be found by
+    // name (migration 091); the whole email address finds anyone.
+    const nameMatch = { [Op.and]: [...tokenMatches, { findByName: true }] };
+    let match: Record<symbol, unknown> = nameMatch;
+    if (exactEmail) {
+      match = { [Op.or]: [{ email: exactEmail }, nameMatch] };
+    }
+
     const where: Record<string, unknown> = {
       isActive: true,
       [Op.and]: [
-        exactEmail
-          ? { [Op.or]: [{ email: exactEmail }, { [Op.and]: tokenMatches }] }
-          : { [Op.and]: tokenMatches },
+        match,
         // Hard block: users with staff roles (admin/super/support) never
         // appear in pickers, regardless of any other role they carry.
         literal(

@@ -33,6 +33,8 @@ describe('MessagingSafetyService — Stage 3', () => {
   let instructorClientModel: ModelMock;
   let clientRequestModel: { update: jest.Mock };
   let userFindByPkSpy: jest.SpyInstance;
+  // Raw queries: the connection check, coach limits, request counts.
+  let query: jest.Mock;
 
   beforeEach(async () => {
     blockModel = { findOne: jest.fn(), findAll: jest.fn(), create: jest.fn() };
@@ -47,6 +49,8 @@ describe('MessagingSafetyService — Stage 3', () => {
       create: jest.fn(),
     };
     clientRequestModel = { update: jest.fn().mockResolvedValue([0]) };
+    // Default: not connected, nobody a coach, no requests started.
+    query = jest.fn().mockResolvedValue([]);
     instructorClientModel = {
       findOne: jest.fn(),
       findAll: jest.fn(),
@@ -88,6 +92,7 @@ describe('MessagingSafetyService — Stage 3', () => {
           useValue: {
             transaction: (cb: (tx: unknown) => unknown) =>
               Promise.resolve(cb({ id: 'tx' })),
+            query: (...args: unknown[]) => query(...args),
           },
         },
         { provide: WINSTON_MODULE_NEST_PROVIDER, useValue: makeSilentLogger() },
@@ -278,7 +283,7 @@ describe('MessagingSafetyService — Stage 3', () => {
     }
 
     function defaultNoActiveLink() {
-      instructorClientModel.findOne.mockResolvedValue(null);
+      query.mockResolvedValue([]);
     }
 
     it('rejects self-send', async () => {
@@ -337,13 +342,25 @@ describe('MessagingSafetyService — Stage 3', () => {
       expect(v.kind).toBe('forbidden');
     });
 
-    it('new-account sender WITH ACTIVE link → allowed (either direction)', async () => {
+    it('new-account sender who may write directly (coaching, a booking, a group they run) → allowed', async () => {
       defaultNoSuspension();
       defaultNoBlock();
       mockSenderAge(1);
-      instructorClientModel.findOne.mockResolvedValue({ id: 'rel-1' });
+      query.mockResolvedValue([{ connected: 1 }]);
       const v = await service.canMessage(sender, recipient);
       expect(v.kind).toBe('allowed');
+    });
+
+    it('new-account sender may answer someone who wrote first, with no connection', async () => {
+      defaultNoSuspension();
+      defaultNoBlock();
+      mockSenderAge(1);
+      defaultNoActiveLink();
+      const v = await service.canMessage(sender, recipient, {
+        recipientAccepted: true,
+      });
+      expect(v.kind).toBe('allowed');
+      expect(query).not.toHaveBeenCalled();
     });
 
     it('old sender → allowed even with no ACTIVE link', async () => {
@@ -353,8 +370,8 @@ describe('MessagingSafetyService — Stage 3', () => {
       defaultNoActiveLink();
       const v = await service.canMessage(sender, recipient);
       expect(v.kind).toBe('allowed');
-      // Sanity: the instructor-client lookup is short-circuited.
-      expect(instructorClientModel.findOne).not.toHaveBeenCalled();
+      // Sanity: the connection lookup is short-circuited.
+      expect(query).not.toHaveBeenCalled();
     });
 
     it('missing sender row → forbidden (fail-safe)', async () => {
@@ -418,6 +435,122 @@ describe('MessagingSafetyService — Stage 3', () => {
       });
       const v = await service.canMessage(sender, recipient);
       expect(v.kind).toBe('allowed');
+    });
+  });
+
+  // ─────────────────────────── message requests (migration 090) ───────
+
+  describe('deliveryFor', () => {
+    const sender = 'sender-id';
+    const recipient = 'recipient-id';
+
+    function policy(messagePolicy: string) {
+      userFindByPkSpy.mockResolvedValue({ id: recipient, messagePolicy });
+    }
+
+    it('connected people go straight in, whatever the setting', async () => {
+      policy('CONNECTIONS');
+      query.mockResolvedValueOnce([{ connected: 1 }]);
+      expect(await service.deliveryFor(sender, recipient)).toEqual({
+        kind: 'direct',
+      });
+    });
+
+    it('EVERYONE lets anyone straight in', async () => {
+      policy('EVERYONE');
+      expect(await service.deliveryFor(sender, recipient)).toEqual({
+        kind: 'direct',
+      });
+    });
+
+    it('CONNECTIONS refuses anyone else, plainly', async () => {
+      policy('CONNECTIONS');
+      expect(await service.deliveryFor(sender, recipient)).toEqual({
+        kind: 'refused',
+        reason: expect.objectContaining({
+          messageKey: 'messaging.connectionsOnly',
+        }),
+      });
+    });
+
+    it('REQUESTS (the default) makes it a request with the limit of 3', async () => {
+      policy('REQUESTS');
+      expect(await service.deliveryFor(sender, recipient)).toEqual({
+        kind: 'request',
+        limit: 3,
+      });
+    });
+
+    it('a coach taking clients gets up to 10 before accepting', async () => {
+      policy('REQUESTS');
+      query
+        .mockResolvedValueOnce([]) // not connected
+        .mockResolvedValueOnce([{ userId: recipient }]); // taking clients
+      expect(await service.deliveryFor(sender, recipient)).toEqual({
+        kind: 'request',
+        limit: 10,
+      });
+    });
+
+    it('a missing account is treated as the default, never as an error', async () => {
+      userFindByPkSpy.mockResolvedValue(null);
+      expect((await service.deliveryFor(sender, recipient)).kind).toBe(
+        'request',
+      );
+    });
+  });
+
+  describe('mayWriteDirectly', () => {
+    it('asks one query, with the people and the booking window as replacements', async () => {
+      query.mockResolvedValue([{ connected: 1 }]);
+
+      expect(await service.mayWriteDirectly('a', 'b')).toBe(true);
+
+      expect(query).toHaveBeenCalledTimes(1);
+      const [sql, options] = query.mock.calls[0] as [
+        string,
+        { replacements: Record<string, unknown> },
+      ];
+      expect(options.replacements).toEqual({
+        sender: 'a',
+        recipient: 'b',
+        bookingDays: 14,
+      });
+      // A pending coaching request counts only when it came FROM the
+      // recipient: the person who asked gets nothing from it.
+      expect(sql).toContain('cr.from_user_id = :recipient');
+      expect(sql).toContain('cr.to_user_id = :sender');
+    });
+
+    it('is false for yourself without asking', async () => {
+      expect(await service.mayWriteDirectly('a', 'a')).toBe(false);
+      expect(query).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('requestContextsFor', () => {
+    it('fills a group in common and the coach flag, and asks nothing for nobody', async () => {
+      expect(await service.requestContextsFor('me', [])).toEqual(new Map());
+      expect(query).not.toHaveBeenCalled();
+
+      query
+        .mockResolvedValueOnce([
+          { userId: 'x', name: 'Morning Runners', count: '2' },
+        ])
+        .mockResolvedValueOnce([{ userId: 'x' }]);
+
+      const contexts = await service.requestContextsFor('me', ['x', 'y']);
+
+      expect(contexts.get('x')).toEqual({
+        sharedGroupName: 'Morning Runners',
+        sharedGroupCount: 2,
+        isCoach: true,
+      });
+      expect(contexts.get('y')).toEqual({
+        sharedGroupName: null,
+        sharedGroupCount: 0,
+        isCoach: false,
+      });
     });
   });
 });

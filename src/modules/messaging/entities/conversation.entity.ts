@@ -1,3 +1,4 @@
+import type { ShareTargetType } from '../../share/share.types';
 import {
   Table,
   Column,
@@ -73,6 +74,16 @@ export class Conversation extends Model {
     allowNull: true,
   })
   declare lastMessagePreview: string | null;
+
+  /**
+   * The type of the thing the last message shared, if it shared one
+   * (migration 092), so the chat list can say "Session · ..." per reader.
+   */
+  @Column({
+    type: DataType.STRING(24),
+    allowNull: true,
+  })
+  declare lastMessageAttachmentType: ShareTargetType | null;
 
   /**
    * sha256(sorted(participantA:participantB)) for DIRECT conversations.

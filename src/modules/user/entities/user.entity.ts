@@ -24,6 +24,21 @@ import { ExerciseLevel } from '../../exercise/entities/exercise.enums';
 export type ProfilePrivacyLevel = 'PUBLIC' | 'COACHES_ONLY' | 'ONLY_ME';
 
 /**
+ * Who may start a chat with this person (migration 090, "Who can message
+ * you").
+ * - EVERYONE    — anyone's first message lands straight in their chats.
+ * - REQUESTS    — people they are connected with go straight in; anyone
+ *                 else's first message arrives as a message request.
+ * - CONNECTIONS — only people they are connected with can start a chat.
+ */
+export const MessagePolicy = {
+  Everyone: 'EVERYONE',
+  Requests: 'REQUESTS',
+  Connections: 'CONNECTIONS',
+} as const;
+export type MessagePolicy = (typeof MessagePolicy)[keyof typeof MessagePolicy];
+
+/**
  * Fields whose visibility the user can control. Keys are optional —
  * missing keys fall back to per-field defaults applied at the service
  * layer (`resolveFieldPrivacy`), so a freshly-created account with
@@ -235,6 +250,28 @@ export class User extends Model {
     defaultValue: {},
   })
   declare privacySettings: UserPrivacySettings;
+
+  /**
+   * "Who can message you" (migration 090). Read and changed through
+   * `/messaging/settings`.
+   */
+  @Column({
+    type: DataType.STRING(16),
+    allowNull: false,
+    defaultValue: MessagePolicy.Requests,
+  })
+  declare messagePolicy: MessagePolicy;
+
+  /**
+   * "Let people find me by name" (migration 091). While off, people search
+   * matches this person only by their whole email address. On by default.
+   */
+  @Column({
+    type: DataType.BOOLEAN,
+    allowNull: false,
+    defaultValue: true,
+  })
+  declare findByName: boolean;
 
   /**
    * The workout logger settings the person changed (migration 079). See

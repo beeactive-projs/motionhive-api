@@ -196,6 +196,8 @@ describe('Messaging HTTP integration', () => {
         TEST_USER_ID,
         TEST_RECIPIENT_ID,
         'hi',
+        // No shared thing on this message.
+        null,
       );
     });
 

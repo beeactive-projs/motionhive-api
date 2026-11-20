@@ -9,7 +9,16 @@ export const messaging: Catalog['errors']['messaging'] = {
   suspended:
     'Trimiterea de mesaje ți-a fost restricționată. Contactează echipa de suport.',
   newAccountLimited:
-    'Un cont nou poate trimite mesaje doar antrenorilor sau clienților cu care are deja o relație activă.',
+    'Un cont nou poate scrie doar persoanelor cu care se antrenează sau celor care i-au scris primii.',
+  connectionsOnly:
+    'Această persoană primește mesaje doar de la cei cu care se antrenează.',
+  requestWaiting:
+    'Solicitarea ta de mesaj așteaptă. Poți scrie din nou după ce {name, select, null {e acceptată} other {{name} o acceptă}}.',
+  requestLimit: 'Ai început multe conversații noi azi. Încearcă din nou mâine.',
+  notARequest: 'Această conversație nu este o solicitare de mesaj.',
+  acceptRequestFirst: 'Acceptă mai întâi solicitarea de mesaj.',
+  notShareable:
+    'Nu se poate trimite. Se pot trimite doar lucruri pe care le vede oricine, iar o sesiune doar până se încheie.',
   tooManyMessages:
     'Poți trimite cel mult {max, plural, one {# mesaj} few {# mesaje} other {# de mesaje}} pe minut. Așteaptă puțin și încearcă din nou.',
   tooManyMessagesInConversation:

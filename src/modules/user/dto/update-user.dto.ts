@@ -99,4 +99,12 @@ export class UpdateUserDto {
   @IsString()
   @MaxLength(100)
   city?: string;
+
+  @ApiPropertyOptional({
+    description:
+      'Let people find you by name or handle in people search. Off, only your whole email address finds you.',
+  })
+  @IsOptional()
+  @IsBoolean()
+  findByName?: boolean;
 }

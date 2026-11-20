@@ -201,6 +201,25 @@ describe('UserService.searchUsers', () => {
     expect(either[0]).toEqual({ email: 'elena@example.com' });
   });
 
+  it('finds by name only people who let themselves be found by name', async () => {
+    const { service, match } = setup();
+
+    await service.searchUsers({ q: 'Elena Dumitru' });
+
+    const clauses = match()[Op.and] as Clause[];
+    expect(clauses).toContainEqual({ findByName: true });
+  });
+
+  it('a whole email address finds anyone, whatever their find-by-name choice', async () => {
+    const { service, match } = setup();
+
+    await service.searchUsers({ q: 'elena@example.com' });
+
+    const [byEmail, byName] = match()[Op.or] as Clause[];
+    expect(byEmail).toEqual({ email: 'elena@example.com' });
+    expect(byName[Op.and]).toContainEqual({ findByName: true });
+  });
+
   it('reads "@handle" as the handle and matches wildcards literally', async () => {
     const { service, match } = setup();
 

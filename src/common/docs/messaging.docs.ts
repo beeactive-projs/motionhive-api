@@ -39,6 +39,8 @@ export const MessagingDocs = {
     summary: 'List my conversations',
     description:
       'Paginated inbox sorted by `last_message_at DESC`. Each item carries the other-user snapshot (DM only), unread count, mute state, and the preview of the most recent message. ' +
+      '`folder` picks a part of the inbox: `inbox` (chats taken in, not archived), `requests` (message requests waiting for you, each with a `requestContext`), `archived`. Omitted, it lists everything but deleted requests, as before requests existed (app versions already in the stores). ' +
+      'Items carry `isRequest`, `archived`, and `waiting: { remaining }` when the other person has not accepted your request yet; `lastReadByOther` stays null until they do. ' +
       'Rate-limited to 120 req/min/user.',
     auth: true,
     responses: [
@@ -51,7 +53,7 @@ export const MessagingDocs = {
   getUnreadCount: {
     summary: 'Total unread message count',
     description:
-      'Aggregate count of unread messages across all active conversations. Powers the global app badge. Rate-limited to 240 req/min/user.',
+      'Aggregate count of unread messages across all active conversations. Powers the global app badge. `count` is the total as before requests existed (requests and archived chats included); `inbox` counts unread in chats taken in and not archived; `requests` is how many message requests are waiting. Rate-limited to 240 req/min/user.',
     auth: true,
     responses: [
       ApiStandardResponses.OK,
@@ -160,6 +162,90 @@ export const MessagingDocs = {
       ApiStandardResponses.OK,
       ApiStandardResponses.Unauthorized,
       ApiStandardResponses.NotFound,
+    ],
+  } as ApiEndpointOptions,
+
+  shareTo: {
+    summary: 'Send a public thing to several people',
+    description:
+      'One session, group, coach, exercise or starter program to up to 10 people, each as its own message with the optional caption (requests, blocks and limits apply per person). Returns `results`, one per person: SENT, WAITING (sent as a message request) or REFUSED with the error key in `reason`. 400 `messaging.notShareable` when the thing is not public, or a session that is over. A single message can carry one too: `attachment` on POST /messaging/messages.',
+    auth: true,
+    responses: [
+      ApiStandardResponses.Created,
+      ApiStandardResponses.BadRequest,
+      ApiStandardResponses.Unauthorized,
+      ApiStandardResponses.TooManyRequests,
+    ],
+  } as ApiEndpointOptions,
+
+  acceptRequest: {
+    summary: 'Accept a message request',
+    description:
+      'Moves the chat from your message requests to your chats; the sender can write freely again. Replying to a request accepts it too. Accepting a chat already taken in changes nothing. Emits `conversation.accepted` to both sides. Returns the conversation.',
+    auth: true,
+    responses: [
+      ApiStandardResponses.OK,
+      ApiStandardResponses.Unauthorized,
+      ApiStandardResponses.NotFound,
+    ],
+  } as ApiEndpointOptions,
+
+  declineRequest: {
+    summary: 'Delete a message request',
+    description:
+      "Removes the request from your requests and hides its messages for you. The sender is never told and keeps seeing it as waiting; what they write within their limit afterwards is kept but never shown or announced. 400 `messaging.notARequest` when the chat isn't a request.",
+    auth: true,
+    responses: [
+      ApiStandardResponses.OK,
+      ApiStandardResponses.BadRequest,
+      ApiStandardResponses.Unauthorized,
+      ApiStandardResponses.NotFound,
+    ],
+  } as ApiEndpointOptions,
+
+  archiveConversation: {
+    summary: 'Archive or unarchive a chat',
+    description:
+      'An archived chat leaves your chats for the archived list, stays there when messages arrive, and sends no push or email; sending a message in it brings it back. 400 `messaging.acceptRequestFirst` on a message request. Emits `conversation.archived` to your other sessions.',
+    auth: true,
+    responses: [
+      ApiStandardResponses.OK,
+      ApiStandardResponses.BadRequest,
+      ApiStandardResponses.Unauthorized,
+      ApiStandardResponses.NotFound,
+    ],
+  } as ApiEndpointOptions,
+
+  reach: {
+    summary: 'What happens if I write to this person',
+    description:
+      '`status`: DIRECT (straight into their chats), REQUEST (a message request; `requestLimit` messages fit before they accept), CONNECTIONS_ONLY (their setting), YOU_BLOCKED, NEW_ACCOUNT, SUSPENDED. A block by them is never revealed: the answer is the one you would get without it.',
+    auth: true,
+    responses: [
+      ApiStandardResponses.OK,
+      ApiStandardResponses.BadRequest,
+      ApiStandardResponses.Unauthorized,
+      ApiStandardResponses.TooManyRequests,
+    ],
+  } as ApiEndpointOptions,
+
+  getSettings: {
+    summary: 'My messaging settings',
+    description:
+      '`whoCanMessage`: EVERYONE, REQUESTS (the default) or CONNECTIONS.',
+    auth: true,
+    responses: [ApiStandardResponses.OK, ApiStandardResponses.Unauthorized],
+  } as ApiEndpointOptions,
+
+  updateSettings: {
+    summary: 'Change who can message me',
+    description:
+      'EVERYONE: anyone lands in your chats. REQUESTS: people you are connected with (coaching, a booking in the last 14 days, a group one of you runs) go straight in, anyone else arrives as a message request. CONNECTIONS: only they can start a chat.',
+    auth: true,
+    responses: [
+      ApiStandardResponses.OK,
+      ApiStandardResponses.BadRequest,
+      ApiStandardResponses.Unauthorized,
     ],
   } as ApiEndpointOptions,
 

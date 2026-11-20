@@ -30,6 +30,8 @@ import { NotificationService } from '../notification/notification.service';
 import { Conversation } from './entities/conversation.entity';
 import { ConversationParticipant } from './entities/conversation-participant.entity';
 import { Message, MessageKind } from './entities/message.entity';
+import { MessageAttachment } from './entities/message-attachment.entity';
+import { ShareService } from '../share/share.service';
 import { makeSilentLogger } from '../../../test/helpers/sequelize-mocks';
 
 describe('Messaging IDOR — non-participant access', () => {
@@ -92,6 +94,14 @@ describe('Messaging IDOR — non-participant access', () => {
         { provide: getModelToken(Conversation), useValue: conv },
         { provide: getModelToken(ConversationParticipant), useValue: part },
         { provide: getModelToken(Message), useValue: msg },
+        {
+          provide: getModelToken(MessageAttachment),
+          useValue: { findAll: jest.fn().mockResolvedValue([]) },
+        },
+        {
+          provide: ShareService,
+          useValue: { cardsFor: jest.fn().mockResolvedValue(new Map()) },
+        },
         {
           provide: (await import('sequelize-typescript')).Sequelize,
           useValue: sequelize,
