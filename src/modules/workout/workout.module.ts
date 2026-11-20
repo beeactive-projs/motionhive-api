@@ -26,6 +26,8 @@ import { PostComment } from '../post/entities/post-comment.entity';
 import { PostReaction } from '../post/entities/post-reaction.entity';
 import { WorkoutPhotoService } from './workout-photo.service';
 import { MediaStorageService } from '../../common/services/media-storage.service';
+import { AssignmentCopyController } from './assignment-copy.controller';
+import { AssignmentCopyService } from './assignment-copy.service';
 import { CoachAccessService } from './coach-access.service';
 import { ProgramAssignmentController } from './program-assignment.controller';
 import { ProgramAssignmentService } from './program-assignment.service';
@@ -76,12 +78,15 @@ import { WorkoutReportService } from './workout-report.service';
   controllers: [
     ProgramController,
     ProgramAssignmentController,
+    // A coach editing one client's copy of a plan.
+    AssignmentCopyController,
     WorkoutLogController,
     InstructorWorkoutLogController,
   ],
   providers: [
     ProgramService,
     ProgramAssignmentService,
+    AssignmentCopyService,
     WorkoutLogService,
     WorkoutPhotoService,
     WorkoutReportService,

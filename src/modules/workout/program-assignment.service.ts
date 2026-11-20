@@ -8,7 +8,7 @@ import {
 import type { LoggerService } from '@nestjs/common';
 import { InjectModel } from '@nestjs/sequelize';
 import { WINSTON_MODULE_NEST_PROVIDER } from 'nest-winston';
-import { Op, Transaction } from 'sequelize';
+import { Op, Transaction, literal } from 'sequelize';
 import { Sequelize } from 'sequelize-typescript';
 
 import {
@@ -18,6 +18,7 @@ import {
   type Locale,
 } from '../../common/i18n';
 import { foldedContains } from '../../common/utils/search.utils';
+import { stripHtml } from '../../common/utils/text.utils';
 
 import {
   InstructorClient,
@@ -49,11 +50,20 @@ import {
 import { AssignProgramDto } from './dto/assign-program.dto';
 import { ListAssignmentsQueryDto } from './dto/list-assignments.query.dto';
 import { ScheduleRoutineDto } from './dto/schedule-routine.dto';
-import { UpdateAssignmentDto } from './dto/update-assignment.dto';
 import {
+  STATUS_MESSAGE_MAX,
+  UpdateAssignmentDto,
+} from './dto/update-assignment.dto';
+import {
+  PlanChangeForClient,
   clientCompletedPlanForInstructor,
+  planCancelledForClient,
+  planFinishedByCoachForClient,
+  planPausedForClient,
+  planResumedForClient,
   programAssignedForClient,
 } from './notifications';
+import { pauseStartDate, resumeShiftWeeks } from './assignment-pause';
 import { plannedSetRest } from './planned-rest';
 import { completionPercent } from './assignment-progress';
 
@@ -78,6 +88,26 @@ const PLAN_COMPLETION_ATTRIBUTES = [
   'clientId',
   'programNameSnapshot',
 ];
+
+/**
+ * How long a plan the coach ended (cancelled, or marked finished) stays on
+ * the client's Workouts tab, so they see what changed. A paused plan stays
+ * there for as long as it is paused.
+ */
+export const STOPPED_PLAN_DAYS = 14;
+
+/** A status change the client is told about, once the update commits. */
+interface StatusChange {
+  previous: ProgramAssignmentStatus;
+  next: ProgramAssignmentStatus;
+  /** Whole weeks the open days moved on a resume; 0 otherwise. */
+  weeksMoved: number;
+}
+
+/** The calendar date now in UTC, the space the nightly sweep compares in. */
+function utcToday(): string {
+  return new Date().toISOString().slice(0, 10);
+}
 
 /**
  * ProgramAssignmentService — the copy-on-assign headliner (locked
@@ -474,20 +504,251 @@ export class ProgramAssignmentService {
   // Mutations
   // ────────────────────────────────────────────────────────────────────
 
+  /**
+   * The coach's PATCH: a status change, the note, or both.
+   *
+   * A status change records when, by whom and the coach's message, and the
+   * client is told once it commits. Resuming a paused plan moves the days
+   * left open since the pause began forward by whole weeks
+   * (`assignment-pause.ts`), in the same transaction as the status, so the
+   * client never sees them as missed. Marking it finished keeps the percent
+   * actually done; cancelling keeps every finished workout.
+   *
+   * @Arguments id, dto (status?, notes?, message?), instructorId, today?
+   */
   async update(
     id: string,
     dto: UpdateAssignmentDto,
     instructorId: string,
+    today: string = utcToday(),
   ): Promise<ProgramAssignment> {
-    const assignment = await this._loadOwnedByInstructor(id, instructorId);
-    if (dto.status) {
-      this._assertStatusTransition(assignment.status, dto.status);
+    const owned = await this._loadOwnedByInstructor(id, instructorId);
+    let message: string | null = stripHtml(dto.message, STATUS_MESSAGE_MAX);
+    if (!message) {
+      message = null;
     }
-    await assignment.update({
-      ...(dto.status !== undefined && { status: dto.status }),
-      ...(dto.notes !== undefined && { notes: dto.notes?.trim() || null }),
+
+    let res: ProgramAssignment = owned;
+    // Widened on purpose: it is set inside the callback, where the
+    // compiler cannot see it.
+    let change = null as StatusChange | null;
+    await this.sequelize.transaction(async (tx) => {
+      // Read again under a lock: two taps on Resume must not move the
+      // days twice.
+      const assignment = await this.assignmentModel.findByPk(owned.id, {
+        transaction: tx,
+        lock: tx.LOCK.UPDATE,
+      });
+      if (!assignment) {
+        throw new NotFoundException(apiError('workout.assignmentNotFound'));
+      }
+
+      const previous = assignment.status;
+      const next = dto.status;
+      const changes: Partial<ProgramAssignment> = {};
+      if (next !== undefined && next !== previous) {
+        this._assertStatusTransition(previous, next);
+        let weeksMoved = 0;
+        if (this._isResume(previous, next)) {
+          weeksMoved = await this._moveDaysLeftOpenSincePause(
+            assignment,
+            today,
+            tx,
+          );
+        }
+        if (next === ProgramAssignmentStatus.Completed) {
+          changes.completionPercent = await this._percentDone(
+            assignment.id,
+            tx,
+          );
+        }
+        changes.status = next;
+        changes.statusChangedAt = new Date();
+        changes.statusChangedBy = instructorId;
+        changes.statusMessage = message;
+        change = { previous, next, weeksMoved };
+      }
+      if (dto.notes !== undefined) {
+        changes.notes = dto.notes.trim() || null;
+      }
+      await assignment.update(changes, { transaction: tx });
+      res = assignment;
     });
-    return assignment;
+
+    // notify-after-commit
+    if (change) {
+      await this._notifyClientOfStatusChange(res, change);
+    }
+    return res;
+  }
+
+  /** Leaving a pause for a running plan, which moves the days left open. */
+  private _isResume(
+    previous: ProgramAssignmentStatus,
+    next: ProgramAssignmentStatus,
+  ): boolean {
+    if (previous !== ProgramAssignmentStatus.Paused) {
+      return false;
+    }
+    return (
+      next === ProgramAssignmentStatus.Active ||
+      next === ProgramAssignmentStatus.Pending
+    );
+  }
+
+  /**
+   * On resume: every day not started and scheduled on or after the day the
+   * pause began moves forward by the fewest whole weeks that put none of
+   * them in the past, and the plan's end follows its last day. Days due
+   * before the pause stay where they are (the nightly sweep skips them as
+   * before). Returns the weeks moved.
+   */
+  private async _moveDaysLeftOpenSincePause(
+    assignment: ProgramAssignment,
+    today: string,
+    tx: Transaction,
+  ): Promise<number> {
+    const pausedOn = pauseStartDate(
+      assignment.statusChangedAt,
+      assignment.updatedAt,
+    );
+    if (!pausedOn) {
+      return 0;
+    }
+    const where = {
+      programAssignmentId: assignment.id,
+      status: null,
+      scheduledDate: { [Op.gte]: pausedOn },
+    };
+    const earliest = await this.assignedWorkoutModel.findOne({
+      where,
+      attributes: ['id', 'scheduledDate'],
+      order: [['scheduledDate', 'ASC']],
+      transaction: tx,
+    });
+    if (!earliest?.scheduledDate) {
+      return 0;
+    }
+    const weeks = resumeShiftWeeks(earliest.scheduledDate, today);
+    if (weeks === 0) {
+      return 0;
+    }
+
+    // DATE + integer is a DATE in Postgres; the number is ours, not input.
+    const days = weeks * 7;
+    await this.assignedWorkoutModel.update(
+      { scheduledDate: literal(`scheduled_date + ${days}`) },
+      { where, transaction: tx },
+    );
+
+    const last = await this.assignedWorkoutModel.findOne({
+      where: {
+        programAssignmentId: assignment.id,
+        scheduledDate: { [Op.ne]: null },
+      },
+      attributes: ['id', 'scheduledDate'],
+      order: [['scheduledDate', 'DESC']],
+      transaction: tx,
+    });
+    if (last?.scheduledDate) {
+      await assignment.update(
+        { endDate: last.scheduledDate },
+        { transaction: tx },
+      );
+    }
+    return weeks;
+  }
+
+  /** The plan's "% done" as it stands: completed days of all its days. */
+  private async _percentDone(
+    assignmentId: string,
+    tx: Transaction,
+  ): Promise<number> {
+    const [total, done] = await Promise.all([
+      this.assignedWorkoutModel.count({
+        where: { programAssignmentId: assignmentId },
+        transaction: tx,
+      }),
+      this.assignedWorkoutModel.count({
+        where: {
+          programAssignmentId: assignmentId,
+          status: WorkoutLogStatus.Completed,
+        },
+        transaction: tx,
+      }),
+    ]);
+    return completionPercent(done, total);
+  }
+
+  /**
+   * Tell the client their coach paused, resumed, finished or cancelled
+   * their plan, with the coach's message. Best-effort: the change has
+   * committed, and a lost notice is not worth failing it over. A plan
+   * leaving PENDING for ACTIVE is not news.
+   */
+  private async _notifyClientOfStatusChange(
+    assignment: ProgramAssignment,
+    change: StatusChange,
+  ): Promise<void> {
+    if (!assignment.instructorId || !assignment.clientId) {
+      return;
+    }
+    if (assignment.instructorId === assignment.clientId) {
+      return;
+    }
+    try {
+      const coach = await this.userModel.findByPk(assignment.instructorId, {
+        attributes: ['firstName', 'lastName'],
+      });
+      // No name yet reads as "Your coach", in the reader's language.
+      let coachName: string | null = null;
+      if (coach) {
+        const name = [coach.firstName, coach.lastName]
+          .filter(Boolean)
+          .join(' ')
+          .trim();
+        if (name) {
+          coachName = name;
+        }
+      }
+      const base: PlanChangeForClient = {
+        clientId: assignment.clientId,
+        assignmentId: assignment.id,
+        programName: assignment.programNameSnapshot,
+        coachName,
+        message: assignment.statusMessage,
+      };
+
+      if (change.next === ProgramAssignmentStatus.Paused) {
+        await this.notificationService.notify(planPausedForClient(base));
+      } else if (this._isResume(change.previous, change.next)) {
+        await this.notificationService.notify(
+          planResumedForClient({ ...base, weeksMoved: change.weeksMoved }),
+        );
+      } else if (change.next === ProgramAssignmentStatus.Completed) {
+        await this.notificationService.notify(
+          planFinishedByCoachForClient({
+            ...base,
+            percentDone: assignment.completionPercent,
+          }),
+        );
+      } else if (change.next === ProgramAssignmentStatus.Cancelled) {
+        const workoutsDone = await this.assignedWorkoutModel.count({
+          where: {
+            programAssignmentId: assignment.id,
+            status: WorkoutLogStatus.Completed,
+          },
+        });
+        await this.notificationService.notify(
+          planCancelledForClient({ ...base, workoutsDone }),
+        );
+      }
+    } catch (err) {
+      this.logger.warn(
+        `Plan status notification failed for ${assignment.id}: ${(err as Error).message}`,
+        'ProgramAssignmentService',
+      );
+    }
   }
 
   async softDelete(id: string, instructorId: string): Promise<void> {
@@ -745,9 +1006,10 @@ export class ProgramAssignmentService {
       ],
       order: [['startDate', 'DESC']],
     });
+    const stoppedPlans = await this._stoppedPlansFor(clientId);
 
     if (!activePlans.length) {
-      return { today: null, week: [], activePlans: [] };
+      return { today: null, week: [], activePlans: [], stoppedPlans };
     }
 
     const planIds = activePlans.map((p) => p.id);
@@ -822,7 +1084,83 @@ export class ProgramAssignmentService {
         assignmentKind: p.assignmentKind,
         instructor: p.instructor ?? null,
       })),
+      stoppedPlans,
     };
+  }
+
+  /**
+   * The coach's plans that are not running, for the client's Workouts tab:
+   * every paused one, and the ones the coach cancelled or marked finished
+   * in the last `STOPPED_PLAN_DAYS`, so a change is seen where the plan
+   * used to be. A plan that finished on its own is not here: the client
+   * finished it. Each carries when it changed, the coach's message, and
+   * how many of its workouts were done.
+   */
+  private async _stoppedPlansFor(clientId: string) {
+    const since = new Date(Date.now() - STOPPED_PLAN_DAYS * 86_400_000);
+    const rows = await this.assignmentModel.findAll({
+      where: {
+        clientId,
+        deletedAt: null,
+        assignmentKind: ProgramAssignmentKind.Coach,
+        [Op.or]: [
+          { status: ProgramAssignmentStatus.Paused },
+          {
+            status: {
+              [Op.in]: [
+                ProgramAssignmentStatus.Cancelled,
+                ProgramAssignmentStatus.Completed,
+              ],
+            },
+            statusChangedAt: { [Op.gte]: since },
+            statusChangedBy: { [Op.ne]: null },
+          },
+        ],
+      },
+      include: [
+        {
+          model: User,
+          as: 'instructor',
+          attributes: ['id', 'firstName', 'lastName', 'avatarUrl', 'handle'],
+        },
+      ],
+      order: [['startDate', 'DESC']],
+    });
+    // Ended by their coach, not by anyone else who could write the row.
+    let found: ProgramAssignment[] = [];
+    if (rows) {
+      found = rows;
+    }
+    const plans = found.filter((p) => {
+      if (p.status === ProgramAssignmentStatus.Paused) {
+        return true;
+      }
+      return p.statusChangedBy === p.instructorId;
+    });
+
+    const out = [];
+    for (const p of plans) {
+      const workoutsDone = await this.assignedWorkoutModel.count({
+        where: {
+          programAssignmentId: p.id,
+          status: WorkoutLogStatus.Completed,
+        },
+      });
+      out.push({
+        id: p.id,
+        programNameSnapshot: p.programNameSnapshot,
+        status: p.status,
+        completionPercent: p.completionPercent,
+        startDate: p.startDate,
+        endDate: p.endDate,
+        assignmentKind: p.assignmentKind,
+        instructor: p.instructor ?? null,
+        statusChangedAt: p.statusChangedAt ?? null,
+        statusMessage: p.statusMessage ?? null,
+        workoutsDone,
+      });
+    }
+    return out;
   }
 
   /** Monday-to-Sunday bounds around a `YYYY-MM-DD`, as ISO dates. */
@@ -881,7 +1219,9 @@ export class ProgramAssignmentService {
 
   /**
    * Skip never-started assigned workouts whose scheduled date is in the
-   * past, for ACTIVE assignments only. Driven by the daily
+   * past, for ACTIVE assignments only. A paused plan is left alone: its
+   * days wait, and resuming it moves them forward (`update`), so a pause
+   * never turns into missed days. Driven by the daily
    * `workouts.auto_skip_past_workouts` cron — the system equivalent of
    * `skipAssignedWorkoutAsClient`, reusing the same progress recompute.
    *
@@ -1069,6 +1409,11 @@ export class ProgramAssignmentService {
       {
         status: ProgramAssignmentStatus.Completed,
         completionPercent: completionPercent(completed, total),
+        // Finished by the work, not by anyone: no author, no message, so
+        // a coach's earlier change is never read as this one.
+        statusChangedAt: new Date(),
+        statusChangedBy: null,
+        statusMessage: null,
       },
       {
         where: {

@@ -1566,13 +1566,21 @@ export class WorkoutLogService {
       await log.destroy({ transaction: tx });
       if (programAssignmentId) {
         // The day it filled is open again, so the plan is not finished.
+        // Only a plan that finished on its own reopens: one the coach
+        // marked finished (it has an author) stays their call.
         if (assignedWorkoutId) {
           await this.assignmentModel.update(
-            { status: ProgramAssignmentStatus.Active },
+            {
+              status: ProgramAssignmentStatus.Active,
+              statusChangedAt: new Date(),
+              statusChangedBy: null,
+              statusMessage: null,
+            },
             {
               where: {
                 id: programAssignmentId,
                 status: ProgramAssignmentStatus.Completed,
+                statusChangedBy: null,
               },
               transaction: tx,
             },

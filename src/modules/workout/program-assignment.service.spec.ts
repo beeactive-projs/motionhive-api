@@ -929,9 +929,17 @@ describe('ProgramAssignmentService (smoke — not exhaustive)', () => {
     it('returns empty rather than querying workouts when nothing is active', async () => {
       assignmentModel.findAll.mockResolvedValueOnce([]);
 
+      // Nothing paused or lately ended either.
+      assignmentModel.findAll.mockResolvedValueOnce([]);
+
       const res = await service.getTrainingDay('me', '2026-08-06');
 
-      expect(res).toEqual({ today: null, week: [], activePlans: [] });
+      expect(res).toEqual({
+        today: null,
+        week: [],
+        activePlans: [],
+        stoppedPlans: [],
+      });
       expect(assignedWorkoutModel.findAll).not.toHaveBeenCalled();
     });
 
@@ -1017,7 +1025,8 @@ describe('ProgramAssignmentService (smoke — not exhaustive)', () => {
 
   describe('update — status transition gate', () => {
     it('blocks transitions out of COMPLETED', async () => {
-      assignmentModel.findByPk.mockResolvedValueOnce({
+      // Read for ownership, then again under the transaction's lock.
+      assignmentModel.findByPk.mockResolvedValue({
         id: 'a-1',
         instructorId: me,
         clientId: 'client-1',
@@ -1032,7 +1041,7 @@ describe('ProgramAssignmentService (smoke — not exhaustive)', () => {
 
     it('allows ACTIVE → PAUSED', async () => {
       const update = jest.fn().mockResolvedValue(undefined);
-      assignmentModel.findByPk.mockResolvedValueOnce({
+      assignmentModel.findByPk.mockResolvedValue({
         id: 'a-1',
         instructorId: me,
         clientId: 'client-1',
@@ -1047,6 +1056,7 @@ describe('ProgramAssignmentService (smoke — not exhaustive)', () => {
       );
       expect(update).toHaveBeenCalledWith(
         expect.objectContaining({ status: ProgramAssignmentStatus.Paused }),
+        expect.objectContaining({ transaction: fakeTx }),
       );
     });
   });

@@ -16,6 +16,9 @@ import { day } from '../../common/i18n';
  *   - PROGRAM_ASSIGNED → in-app + email
  *   - CLIENT_COMPLETED_WORKOUT → in-app only
  *   - CLIENT_COMPLETED_PLAN → in-app + email
+ *   - PLAN_PAUSED, PLAN_RESUMED → in-app + push
+ *   - PLAN_FINISHED_BY_COACH, PLAN_CANCELLED → in-app + email + push
+ *   - PLAN_ADJUSTED → in-app + push
  */
 
 /**
@@ -49,6 +52,150 @@ export function programAssignedForClient(input: {
       screen: 'user/plans',
       entityId: input.assignmentId,
     },
+  };
+}
+
+/** What every notice about a coach changing a client's plan carries. */
+export interface PlanChangeForClient {
+  clientId: string;
+  assignmentId: string;
+  programName: string;
+  /** Null when the coach has no name yet: the message says "Your coach". */
+  coachName: string | null;
+  /** The coach's own words, quoted as written; null when they wrote none. */
+  message: string | null;
+}
+
+/**
+ * Every plan-change notice opens the plan itself: its page in the mobile
+ * Workouts tab and the web plan detail, where the status card explains it.
+ */
+function planScreen(assignmentId: string) {
+  return { screen: 'user/plans', entityId: assignmentId };
+}
+
+/**
+ * The coach paused the client's plan. Its days wait: none is skipped while
+ * it is paused, and resuming moves them forward.
+ */
+export function planPausedForClient(input: PlanChangeForClient): NotifyParams {
+  return {
+    userId: input.clientId,
+    type: NotificationType.PLAN_PAUSED,
+    message: {
+      key: 'workout.planPaused',
+      params: {
+        coach: input.coachName,
+        program: input.programName,
+        note: input.message || null,
+      },
+    },
+    data: planScreen(input.assignmentId),
+  };
+}
+
+/**
+ * The coach resumed the plan. Says how far the open days moved (whole
+ * weeks, the same weekdays), zero when none had to.
+ */
+export function planResumedForClient(
+  input: PlanChangeForClient & { weeksMoved: number },
+): NotifyParams {
+  return {
+    userId: input.clientId,
+    type: NotificationType.PLAN_RESUMED,
+    message: {
+      key: 'workout.planResumed',
+      params: {
+        coach: input.coachName,
+        program: input.programName,
+        weeks: input.weeksMoved,
+        note: input.message || null,
+      },
+    },
+    data: planScreen(input.assignmentId),
+  };
+}
+
+/**
+ * The coach marked the plan as finished before its last day. It stays in
+ * the client's history as finished, at the percent actually done.
+ */
+export function planFinishedByCoachForClient(
+  input: PlanChangeForClient & { percentDone: number },
+): NotifyParams {
+  return {
+    userId: input.clientId,
+    type: NotificationType.PLAN_FINISHED_BY_COACH,
+    message: {
+      key: 'workout.planFinishedByCoach',
+      params: {
+        coach: input.coachName,
+        program: input.programName,
+        percent: input.percentDone,
+        note: input.message || null,
+      },
+    },
+    data: planScreen(input.assignmentId),
+  };
+}
+
+/**
+ * The coach cancelled the plan: its days still to come leave the client's
+ * calendar, and the workouts already finished stay in their history.
+ */
+export function planCancelledForClient(
+  input: PlanChangeForClient & { workoutsDone: number },
+): NotifyParams {
+  return {
+    userId: input.clientId,
+    type: NotificationType.PLAN_CANCELLED,
+    message: {
+      key: 'workout.planCancelled',
+      params: {
+        coach: input.coachName,
+        program: input.programName,
+        done: input.workoutsDone,
+        note: input.message || null,
+      },
+    },
+    data: planScreen(input.assignmentId),
+  };
+}
+
+/**
+ * The coach changed the client's copy of their plan: one notice per
+ * editing session (sent on Done), naming the first day that changed and
+ * how many others did. The program the coach wrote stays as it was; only
+ * this client's days changed.
+ */
+export function planAdjustedForClient(input: {
+  clientId: string;
+  assignmentId: string;
+  programName: string;
+  /** Null when the coach has no name yet: the message says "Your coach". */
+  coachName: string | null;
+  /** The first day that changed, as the client's plan names it. */
+  dayName: string;
+  /** Its week of the plan, counted from 1. */
+  week: number;
+  /** How many other days changed in the same session. */
+  otherDays: number;
+}): NotifyParams {
+  return {
+    userId: input.clientId,
+    type: NotificationType.PLAN_ADJUSTED,
+    message: {
+      key: 'workout.planAdjusted',
+      params: {
+        coach: input.coachName,
+        program: input.programName,
+        day: input.dayName,
+        week: input.week,
+        others: input.otherDays,
+      },
+    },
+    data: planScreen(input.assignmentId),
   };
 }
 

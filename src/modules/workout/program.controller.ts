@@ -9,6 +9,7 @@ import {
   ParseUUIDPipe,
   Patch,
   Post,
+  Put,
   Query,
   Request,
   UseGuards,
@@ -23,7 +24,9 @@ import { Roles } from '../../common/decorators/roles.decorator';
 import { RolesGuard } from '../../common/guards/roles.guard';
 import type { AuthenticatedRequest } from '../../common/types/authenticated-request';
 
+import { AddPrescribedExercisesDto } from './dto/add-prescribed-exercises.dto';
 import { CreatePrescribedExerciseDto } from './dto/create-prescribed-exercise.dto';
+import { SetPrescribedSetsDto } from './dto/set-prescribed-sets.dto';
 import { CreatePrescribedSetDto } from './dto/create-prescribed-set.dto';
 import { CreateProgramDto } from './dto/create-program.dto';
 import { CreateProgramWorkoutDto } from './dto/create-program-workout.dto';
@@ -80,7 +83,7 @@ export class ProgramController {
     @Request() req: AuthenticatedRequest,
     @Param('id', ParseUUIDPipe) id: string,
   ) {
-    return this.programService.findById(id, req.user.id);
+    return this.programService.findDetail(id, req.user.id);
   }
 
   @Post()
@@ -233,6 +236,30 @@ export class ProgramController {
     return this.programService.deleteWeek(id, weekIndex, req.user.id);
   }
 
+  /** An empty week right after this one; the later weeks move down one. */
+  @Post(':id/weeks/:weekIndex/insert-after')
+  @Throttle({ default: { limit: 60, ttl: 3_600_000 } })
+  @ApiEndpoint({ ...ProgramDocs.insertWeekAfter })
+  async insertWeekAfter(
+    @Request() req: AuthenticatedRequest,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Param('weekIndex', ParseIntPipe) weekIndex: number,
+  ) {
+    return this.programService.insertWeekAfter(id, weekIndex, req.user.id);
+  }
+
+  /** Every day of one week goes, so it becomes a week of rest. */
+  @Delete(':id/weeks/:weekIndex/workouts')
+  @Throttle({ default: { limit: 60, ttl: 3_600_000 } })
+  @ApiEndpoint({ ...ProgramDocs.clearWeek })
+  async clearWeek(
+    @Request() req: AuthenticatedRequest,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Param('weekIndex', ParseIntPipe) weekIndex: number,
+  ) {
+    return this.programService.clearWeek(id, weekIndex, req.user.id);
+  }
+
   @Patch(':id/workouts/:workoutId')
   @ApiEndpoint({
     ...ProgramDocs.updateWorkout,
@@ -272,6 +299,22 @@ export class ProgramController {
     @Body() dto: CreatePrescribedExerciseDto,
   ) {
     return this.programService.addExercise(id, workoutId, dto, req.user.id);
+  }
+
+  /** Several movements the picker handed back, added in one transaction. */
+  @Post(':id/workouts/:workoutId/exercises/bulk')
+  @Throttle({ default: { limit: 200, ttl: 3_600_000 } })
+  @ApiEndpoint({
+    ...ProgramDocs.addExercises,
+    body: AddPrescribedExercisesDto,
+  })
+  async addExercises(
+    @Request() req: AuthenticatedRequest,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Param('workoutId', ParseUUIDPipe) workoutId: string,
+    @Body() dto: AddPrescribedExercisesDto,
+  ) {
+    return this.programService.addExercises(id, workoutId, dto, req.user.id);
   }
 
   /** Link or unlink several exercises of a day as supersets, in one transaction. */
@@ -367,6 +410,25 @@ export class ProgramController {
     @Body() dto: CreatePrescribedSetDto,
   ) {
     return this.programService.addSet(
+      id,
+      workoutId,
+      exerciseId,
+      dto,
+      req.user.id,
+    );
+  }
+
+  /** Every set of one exercise, matched by id and updated in place. */
+  @Put(':id/workouts/:workoutId/exercises/:exerciseId/sets')
+  @ApiEndpoint({ ...ProgramDocs.setSets, body: SetPrescribedSetsDto })
+  async setSets(
+    @Request() req: AuthenticatedRequest,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Param('workoutId', ParseUUIDPipe) workoutId: string,
+    @Param('exerciseId', ParseUUIDPipe) exerciseId: string,
+    @Body() dto: SetPrescribedSetsDto,
+  ) {
+    return this.programService.setSets(
       id,
       workoutId,
       exerciseId,

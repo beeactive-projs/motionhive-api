@@ -57,6 +57,12 @@ import { UpdatePrescribedExerciseDto } from './dto/update-prescribed-exercise.dt
 import { UpdatePrescribedSetDto } from './dto/update-prescribed-set.dto';
 import { UpdateProgramDto } from './dto/update-program.dto';
 import { UpdateProgramWorkoutDto } from './dto/update-program-workout.dto';
+import { AddPrescribedExercisesDto } from './dto/add-prescribed-exercises.dto';
+import {
+  PrescribedSetItemDto,
+  SetPrescribedSetsDto,
+} from './dto/set-prescribed-sets.dto';
+import { hasUsableProgramName } from './program-publish';
 import {
   DEFAULT_LOCALE,
   apiError,
@@ -77,6 +83,23 @@ const WEEK_PARK_OFFSET = 10_000;
 
 /** Turning `duration_days` back into whole weeks. */
 const DAYS_PER_WEEK = 7;
+
+/** The longest program: `durationDays` is capped at 728 (CreateProgramDto). */
+const MAX_PROGRAM_WEEKS = 104;
+
+/** An assignment someone still follows: under way, paused, or not started. */
+const LIVE_ASSIGNMENT_STATUSES = [
+  ProgramAssignmentStatus.Pending,
+  ProgramAssignmentStatus.Active,
+  ProgramAssignmentStatus.Paused,
+];
+
+/** `GET /programs/:id`: the program's tree with the counts a list row has. */
+export type ProgramDetail = Record<string, unknown> & {
+  exerciseCount: number;
+  daysPerWeek: number;
+  clientCount: number;
+};
 
 /**
  * ProgramService — nested CRUD across the program-authoring tree
@@ -180,12 +203,20 @@ export class ProgramService {
     });
 
     // The list never carries the tree (too heavy), but the row still has
-    // to say how many exercises a program holds. One grouped count for
+    // to say how many exercises a program holds, how many days a week it
+    // trains and how many clients follow it. One grouped count each for
     // the whole page beats N+1 or shipping every set.
-    const counts = await this._exerciseCountsFor(rows.map((r) => r.id));
+    const ids = rows.map((r) => r.id);
+    const [exerciseCounts, daysPerWeek, clientCounts] = await Promise.all([
+      this._exerciseCountsFor(ids),
+      this._daysPerWeekFor(ids),
+      this._clientCountsFor(ids, ownerId),
+    ]);
     const items = rows.map((r) => ({
       ...r.toJSON(),
-      exerciseCount: counts.get(r.id) ?? 0,
+      exerciseCount: exerciseCounts.get(r.id) ?? 0,
+      daysPerWeek: daysPerWeek.get(r.id) ?? 0,
+      clientCount: clientCounts.get(r.id) ?? 0,
     }));
 
     return buildPaginatedResponse(items, count, page, limit);
@@ -239,11 +270,110 @@ export class ProgramService {
       raw: true,
     });
 
-    return new Map(
-      (rows as unknown as Array<{ programId: string; total: string }>).map(
-        (r) => [r.programId, Number(r.total)],
-      ),
-    );
+    return this._countMap(rows);
+  }
+
+  /**
+   * programId -> how many days a week it trains: the distinct weekdays its
+   * workouts sit on, the number the assign sheet asks the coach to pick
+   * ("Trains 3 days a week").
+   */
+  private async _daysPerWeekFor(
+    programIds: string[],
+  ): Promise<Map<string, number>> {
+    if (!programIds.length) {
+      return new Map();
+    }
+
+    const rows = await this.workoutModel.findAll({
+      attributes: [
+        [Sequelize.col('program_id'), 'programId'],
+        [
+          Sequelize.fn(
+            'COUNT',
+            Sequelize.fn('DISTINCT', Sequelize.col('day_index')),
+          ),
+          'total',
+        ],
+      ],
+      where: { programId: { [Op.in]: programIds } },
+      group: [Sequelize.col('program_id')],
+      raw: true,
+    });
+
+    return this._countMap(rows);
+  }
+
+  /**
+   * programId -> the distinct clients following it under this coach: an
+   * assignment that is under way, paused, or not started yet. Scoped to
+   * the coach, so a MotionHive starter counts only their own clients, and
+   * a person's own schedules (no coach) are never counted as clients.
+   */
+  private async _clientCountsFor(
+    programIds: string[],
+    instructorId: string,
+  ): Promise<Map<string, number>> {
+    if (!programIds.length) {
+      return new Map();
+    }
+
+    const rows = await this.assignmentModel.findAll({
+      attributes: [
+        [Sequelize.col('master_program_id'), 'programId'],
+        [
+          Sequelize.fn(
+            'COUNT',
+            Sequelize.fn('DISTINCT', Sequelize.col('client_id')),
+          ),
+          'total',
+        ],
+      ],
+      where: {
+        masterProgramId: { [Op.in]: programIds },
+        instructorId,
+        status: { [Op.in]: LIVE_ASSIGNMENT_STATUSES },
+      },
+      group: [Sequelize.col('master_program_id')],
+      raw: true,
+    });
+
+    return this._countMap(rows);
+  }
+
+  /** A grouped `raw` count (`programId`, `total`) as a map. */
+  private _countMap(rows: unknown): Map<string, number> {
+    const counts = new Map<string, number>();
+    for (const row of rows as Array<{ programId: string; total: string }>) {
+      counts.set(row.programId, Number(row.total));
+    }
+    return counts;
+  }
+
+  /**
+   * The detail read the API answers with: the full tree plus the same
+   * counts a list row carries, so the builder can say how many clients
+   * already follow the program without a second request.
+   */
+  async findDetail(id: string, ownerId: string): Promise<ProgramDetail> {
+    const program = await this.findById(id, ownerId);
+    const clientCounts = await this._clientCountsFor([program.id], ownerId);
+
+    const workouts = program.workouts ?? [];
+    const days = new Set<number>();
+    let exerciseCount = 0;
+    for (const workout of workouts) {
+      days.add(workout.dayIndex);
+      exerciseCount += (workout.exercises ?? []).length;
+    }
+
+    const plain: Record<string, unknown> = program.toJSON();
+    return {
+      ...plain,
+      exerciseCount,
+      daysPerWeek: days.size,
+      clientCount: clientCounts.get(program.id) ?? 0,
+    };
   }
 
   /**
@@ -280,6 +410,8 @@ export class ProgramService {
                     'kind',
                     'level',
                     'thumbnailUrl',
+                    // The day editor asks for reps each side on one-sided work.
+                    'isUnilateral',
                     'translations',
                   ],
                 },
@@ -438,16 +570,7 @@ export class ProgramService {
     });
   }
 
-  /**
-   * Copy every workout of one week into another, with its exercises and
-   * sets, in ONE transaction.
-   *
-   * The client used to do this itself with one request per row, which is
-   * both slow and not atomic — a throttle or a dropped connection halfway
-   * left the target week half-copied. Whatever is already in the target
-   * week is removed first, so repeating a copy is idempotent rather than
-   * additive.
-   */
+  /** New positions for the exercises of one day, in one transaction. */
   async reorderExercises(
     programId: string,
     workoutId: string,
@@ -533,13 +656,34 @@ export class ProgramService {
     });
   }
 
+  /**
+   * Copy every workout of one week into one or more other weeks, with its
+   * exercises and sets, in ONE transaction.
+   *
+   * The client used to do this itself with one request per row, and then
+   * one request per target week, which is both slow and not atomic: a
+   * throttle or a dropped connection halfway left the targets half-copied.
+   * Whatever is already in a target week is removed first, so repeating a
+   * copy is idempotent rather than additive.
+   * @Arguments programId, dto (fromWeekIndex, toWeekIndexes? / toWeekIndex?), ownerId
+   */
   async copyWeek(
     programId: string,
     dto: CopyProgramWeekDto,
     ownerId: string,
   ): Promise<ProgramWorkout[]> {
     await this._loadProgram(programId, ownerId);
-    if (dto.fromWeekIndex === dto.toWeekIndex) {
+
+    let requested: number[] = [];
+    if (dto.toWeekIndexes) {
+      requested = dto.toWeekIndexes;
+    } else if (dto.toWeekIndex !== undefined) {
+      requested = [dto.toWeekIndex];
+    }
+    const targets = [...new Set(requested)].filter(
+      (week) => week !== dto.fromWeekIndex,
+    );
+    if (!targets.length) {
       throw new BadRequestException(apiError('workout.copyWeekSameWeek'));
     }
 
@@ -561,22 +705,28 @@ export class ProgramService {
 
     return this.sequelize.transaction(async (tx) => {
       // CASCADE on the FK takes the nested exercises and sets with them.
+      let targetWhere: number | number[] = targets;
+      if (targets.length === 1) {
+        targetWhere = targets[0];
+      }
       await this.workoutModel.destroy({
-        where: { programId, weekIndex: dto.toWeekIndex },
+        where: { programId, weekIndex: targetWhere },
         transaction: tx,
       });
 
       const copied: ProgramWorkout[] = [];
-      for (const w of source) {
-        copied.push(
-          await this._cloneWorkoutInto(
-            w,
-            programId,
-            dto.toWeekIndex,
-            w.dayIndex,
-            tx,
-          ),
-        );
+      for (const weekIndex of targets) {
+        for (const w of source) {
+          copied.push(
+            await this._cloneWorkoutInto(
+              w,
+              programId,
+              weekIndex,
+              w.dayIndex,
+              tx,
+            ),
+          );
+        }
       }
       await this._resequence(programId, tx);
       return copied;
@@ -673,7 +823,10 @@ export class ProgramService {
    * block are written, and those are empty by definition, so nothing a
    * coach built is ever replaced and running it twice changes nothing.
    */
-  async repeatWeeks(programId: string, ownerId: string): Promise<Program> {
+  async repeatWeeks(
+    programId: string,
+    ownerId: string,
+  ): Promise<ProgramDetail> {
     const program = await this._loadProgram(programId, ownerId);
     if (program.isSingleWorkout) {
       throw new BadRequestException(apiError('workout.routineNoWeeksToRepeat'));
@@ -721,7 +874,7 @@ export class ProgramService {
       });
     }
 
-    return this.findById(programId, ownerId);
+    return this.findDetail(programId, ownerId);
   }
 
   /**
@@ -730,12 +883,17 @@ export class ProgramService {
    * Its days are deleted, every later week moves up one, and a declared
    * length loses a week with it — a program that kept its length would
    * simply grow an empty week at the end, which is not what "delete" means.
+   *
+   * Allowed while clients follow the program (owner decision, 2026-11-20):
+   * each client trains their own `assigned_*` copy, which keeps its days.
+   * Only the copies' links back to the deleted days go (ON DELETE SET NULL).
+   * @Arguments programId, weekIndex, ownerId
    */
   async deleteWeek(
     programId: string,
     weekIndex: number,
     ownerId: string,
-  ): Promise<Program> {
+  ): Promise<ProgramDetail> {
     const program = await this._loadProgram(programId, ownerId);
     if (program.isSingleWorkout) {
       throw new BadRequestException(apiError('workout.routineNoWeeksToDelete'));
@@ -745,31 +903,13 @@ export class ProgramService {
       where: { programId },
       attributes: ['id', 'weekIndex'],
     });
-    const declared = program.durationDays
-      ? Math.ceil(program.durationDays / DAYS_PER_WEEK)
-      : 0;
-    const used = workouts.reduce((max, w) => Math.max(max, w.weekIndex + 1), 0);
-    const totalWeeks = Math.max(declared, used);
+    const totalWeeks = this._totalWeeks(program, workouts);
 
     if (weekIndex < 0 || weekIndex >= totalWeeks) {
       throw new NotFoundException(apiError('workout.weekNotFound'));
     }
     if (totalWeeks <= 1) {
       throw new BadRequestException(apiError('workout.programNeedsOneWeek'));
-    }
-
-    const doomed = workouts.filter((w) => w.weekIndex === weekIndex).length;
-    if (doomed > 0) {
-      const live = await this._countLiveAssignments(programId);
-      if (live > 0) {
-        throw new ConflictException(
-          apiError('workout.cannotDeleteLiveWeek', {
-            clients: live,
-            week: weekIndex + 1,
-            days: doomed,
-          }),
-        );
-      }
     }
 
     const laterWeeks = [
@@ -807,7 +947,120 @@ export class ProgramService {
       await this._resequence(programId, tx);
     });
 
-    return this.findById(programId, ownerId);
+    return this.findDetail(programId, ownerId);
+  }
+
+  /**
+   * Add an empty week right after `weekIndex`: every later week moves down
+   * one, and the program grows by a week, in one transaction. Clients
+   * already on it keep their own copy.
+   * @Arguments programId, weekIndex, ownerId
+   */
+  async insertWeekAfter(
+    programId: string,
+    weekIndex: number,
+    ownerId: string,
+  ): Promise<ProgramDetail> {
+    const program = await this._loadProgram(programId, ownerId);
+    if (program.isSingleWorkout) {
+      throw new BadRequestException(apiError('workout.routineNoWeeksToAdd'));
+    }
+
+    const workouts = await this.workoutModel.findAll({
+      where: { programId },
+      attributes: ['id', 'weekIndex'],
+    });
+    const totalWeeks = this._totalWeeks(program, workouts);
+    if (weekIndex < 0 || weekIndex >= totalWeeks) {
+      throw new NotFoundException(apiError('workout.weekNotFound'));
+    }
+
+    // Whole weeks, one more than the program spans now (its declared length
+    // or the weeks its days reach, whichever is longer).
+    const durationDays = (totalWeeks + 1) * DAYS_PER_WEEK;
+    if (durationDays > MAX_PROGRAM_WEEKS * DAYS_PER_WEEK) {
+      throw new BadRequestException(
+        apiError('workout.programTooLong', { weeks: MAX_PROGRAM_WEEKS }),
+      );
+    }
+
+    // Latest first, one week at a time: each moves into the slot after it,
+    // which the week before it has just left, so the unique (week, day)
+    // index never sees two rows in the same place.
+    const laterWeeks = [
+      ...new Set(
+        workouts.filter((w) => w.weekIndex > weekIndex).map((w) => w.weekIndex),
+      ),
+    ].sort((a, b) => b - a);
+
+    await this.sequelize.transaction(async (tx) => {
+      for (const week of laterWeeks) {
+        await this.workoutModel.update(
+          { weekIndex: week + 1 },
+          { where: { programId, weekIndex: week }, transaction: tx },
+        );
+      }
+      await program.update({ durationDays }, { transaction: tx });
+      await this._resequence(programId, tx);
+    });
+
+    return this.findDetail(programId, ownerId);
+  }
+
+  /**
+   * Clear one week: every day of it goes, so it becomes a week of rest. The
+   * weeks keep their places and the program its length. One transaction,
+   * never one delete per day.
+   * @Arguments programId, weekIndex, ownerId
+   */
+  async clearWeek(
+    programId: string,
+    weekIndex: number,
+    ownerId: string,
+  ): Promise<ProgramDetail> {
+    const program = await this._loadProgram(programId, ownerId);
+    if (program.isSingleWorkout) {
+      throw new BadRequestException(apiError('workout.routineNoWeeksToClear'));
+    }
+
+    const workouts = await this.workoutModel.findAll({
+      where: { programId },
+      attributes: ['id', 'weekIndex'],
+    });
+    const totalWeeks = this._totalWeeks(program, workouts);
+    if (weekIndex < 0 || weekIndex >= totalWeeks) {
+      throw new NotFoundException(apiError('workout.weekNotFound'));
+    }
+
+    const hasDays = workouts.some((w) => w.weekIndex === weekIndex);
+    if (hasDays) {
+      await this.sequelize.transaction(async (tx) => {
+        // Exercises and sets cascade from program_workout.
+        await this.workoutModel.destroy({
+          where: { programId, weekIndex },
+          transaction: tx,
+        });
+        await this._resequence(programId, tx);
+      });
+    }
+
+    return this.findDetail(programId, ownerId);
+  }
+
+  /** The weeks a program has: its declared length, or the weeks its days reach. */
+  private _totalWeeks(
+    program: Program,
+    workouts: Pick<ProgramWorkout, 'weekIndex'>[],
+  ): number {
+    let declared = 0;
+    if (program.durationDays) {
+      declared = Math.ceil(program.durationDays / DAYS_PER_WEEK);
+    }
+    let used = 0;
+    for (const workout of workouts) {
+      used = Math.max(used, workout.weekIndex + 1);
+    }
+    return Math.max(declared, used);
   }
 
   /**
@@ -829,21 +1082,6 @@ export class ProgramService {
         await row.update({ sequenceNumber: index }, { transaction: tx });
       }
     }
-  }
-
-  private _countLiveAssignments(programId: string): Promise<number> {
-    return this.assignmentModel.count({
-      where: {
-        masterProgramId: programId,
-        status: {
-          [Op.in]: [
-            ProgramAssignmentStatus.Pending,
-            ProgramAssignmentStatus.Active,
-            ProgramAssignmentStatus.Paused,
-          ],
-        },
-      },
-    });
   }
 
   /**
@@ -917,6 +1155,19 @@ export class ProgramService {
   ): Promise<Program> {
     if (dto.exercises?.length && !dto.isSingleWorkout) {
       throw new BadRequestException(apiError('workout.exercisesOnlyOnRoutine'));
+    }
+
+    // Born published only when it is ready: a routine sent whole with its
+    // exercises can be; a multi-week program has no days yet, so it starts
+    // as a draft.
+    if (dto.status === ProgramStatus.Published) {
+      const isRoutine = dto.isSingleWorkout === true;
+      let exerciseCount = 0;
+      if (isRoutine && dto.exercises) {
+        exerciseCount = dto.exercises.length;
+      }
+      this._refuseUnnamed(isRoutine, dto.name);
+      this._refuseEmpty(isRoutine, exerciseCount > 0);
     }
 
     const attrs = {
@@ -1037,10 +1288,9 @@ export class ProgramService {
   /**
    * Drop the weeks a shortened program no longer has room for.
    *
-   * Refused outright while anyone is mid-program: their `assigned_*` rows
-   * are their own copies and survive, but the master they were cut from
-   * would no longer contain the weeks they are still training, so the
-   * coach's view of the plan and the client's would disagree.
+   * Allowed while clients follow the program (owner decision, 2026-11-20):
+   * their `assigned_*` rows are their own copies and keep every week they
+   * were given. The program the coach edits is what new assignments get.
    */
   private async _shrinkToDuration(
     program: Program,
@@ -1054,20 +1304,106 @@ export class ProgramService {
     });
     if (doomed === 0) return;
 
-    const live = await this._countLiveAssignments(program.id);
-    if (live > 0) {
-      throw new ConflictException(
-        apiError('workout.cannotShortenLiveProgram', {
-          clients: live,
-          weeks,
-          days: doomed,
-        }),
-      );
-    }
-
     // Exercises and sets cascade from program_workout.
     await this.workoutModel.destroy({
       where: { programId: program.id, weekIndex: { [Op.gte]: weeks } },
+    });
+  }
+
+  /**
+   * Publishing is what makes a program assignable, so it is refused until
+   * the program has a name someone gave it and at least one day with an
+   * exercise in it: a day row with nothing in it is a rest day to a client.
+   * Judged on the program as this request leaves it (a new name, a routine's
+   * new exercise list, a shorter length). Only the move to PUBLISHED is
+   * checked: a program published before this rule stays editable.
+   */
+  private async _assertPublishable(
+    program: Program,
+    dto: UpdateProgramDto,
+  ): Promise<void> {
+    if (dto.status !== ProgramStatus.Published) {
+      return;
+    }
+    if (program.status === ProgramStatus.Published) {
+      return;
+    }
+
+    let name = program.name;
+    if (dto.name !== undefined) {
+      name = dto.name;
+    }
+    this._refuseUnnamed(program.isSingleWorkout, name);
+
+    let hasExercises: boolean;
+    if (dto.exercises) {
+      hasExercises = dto.exercises.length > 0;
+    } else {
+      let weeks: number | null = null;
+      if (!program.isSingleWorkout && dto.durationDays) {
+        weeks = Math.ceil(dto.durationDays / DAYS_PER_WEEK);
+      }
+      hasExercises = (await this._countExercisesWithin(program.id, weeks)) > 0;
+    }
+    this._refuseEmpty(program.isSingleWorkout, hasExercises);
+  }
+
+  /** 400 when a program about to be published has no name someone gave it. */
+  private _refuseUnnamed(
+    isRoutine: boolean,
+    name: string | null | undefined,
+  ): void {
+    if (hasUsableProgramName(name)) {
+      return;
+    }
+    throw new BadRequestException(
+      apiError('workout.cannotPublishWithoutName', {
+        kind: this._publishKind(isRoutine),
+      }),
+    );
+  }
+
+  /** 400 when a program about to be published has no day with an exercise. */
+  private _refuseEmpty(isRoutine: boolean, hasExercises: boolean): void {
+    if (hasExercises) {
+      return;
+    }
+    throw new BadRequestException(
+      apiError('workout.cannotPublishWithoutExercises', {
+        kind: this._publishKind(isRoutine),
+      }),
+    );
+  }
+
+  /** What the refusals call it: a routine or a program. */
+  private _publishKind(isRoutine: boolean): string {
+    if (isRoutine) {
+      return 'routine';
+    }
+    return 'program';
+  }
+
+  /** Prescribed exercises in a program, in its first `weeks` weeks when given. */
+  private _countExercisesWithin(
+    programId: string,
+    weeks: number | null,
+  ): Promise<number> {
+    const workoutWhere: {
+      programId: string;
+      weekIndex?: { [Op.lt]: number };
+    } = { programId };
+    if (weeks !== null) {
+      workoutWhere.weekIndex = { [Op.lt]: weeks };
+    }
+    return this.prescribedExerciseModel.count({
+      include: [
+        {
+          model: ProgramWorkout,
+          as: 'workout',
+          attributes: [],
+          where: workoutWhere,
+        },
+      ],
     });
   }
 
@@ -1081,6 +1417,10 @@ export class ProgramService {
     if (dto.exercises && !program.isSingleWorkout) {
       throw new BadRequestException(apiError('workout.exercisesOnlyOnRoutine'));
     }
+
+    // Checked before anything is written, so a refused publish changes
+    // nothing else the same request carried.
+    await this._assertPublishable(program, dto);
 
     // Shortening a program is a real edit, not a relabel: the weeks that
     // no longer fit have to go, or `duration_days` would claim a length the
@@ -1461,6 +1801,62 @@ export class ProgramService {
     });
   }
 
+  /**
+   * Add several movements to a day at once, each with its empty sets, in
+   * one transaction and in the order sent, after what the day already
+   * holds. Every movement is checked first, so nothing is added when one of
+   * them is not readable.
+   * @Arguments programId, workoutId, dto (exercises), ownerId
+   */
+  async addExercises(
+    programId: string,
+    workoutId: string,
+    dto: AddPrescribedExercisesDto,
+    ownerId: string,
+  ): Promise<PrescribedExercise[]> {
+    await this._loadWorkout(programId, workoutId, ownerId);
+    const ids = [...new Set(dto.exercises.map((item) => item.exerciseId))];
+    await this._assertExercisesUsable(ids, ownerId);
+
+    const firstIndex = await this._nextExerciseOrderIndex(workoutId);
+
+    return this.sequelize.transaction(async (tx) => {
+      const created: PrescribedExercise[] = [];
+      for (const [index, item] of dto.exercises.entries()) {
+        let notes: string | null = null;
+        if (item.notes && item.notes.trim()) {
+          notes = item.notes.trim();
+        }
+        const row = await this.prescribedExerciseModel.create(
+          {
+            programWorkoutId: workoutId,
+            exerciseId: item.exerciseId,
+            orderIndex: firstIndex + index,
+            notes,
+          },
+          { transaction: tx },
+        );
+        if (item.defaultSets) {
+          let rest: number | null = null;
+          if (item.restAfterSeconds !== undefined) {
+            rest = item.restAfterSeconds;
+          }
+          await this.prescribedSetModel.bulkCreate(
+            Array.from({ length: item.defaultSets }, (_, i) => ({
+              prescribedExerciseId: row.id,
+              orderIndex: i,
+              setType: ExerciseSetType.Normal,
+              restAfterSeconds: rest,
+            })),
+            { transaction: tx },
+          );
+        }
+        created.push(row);
+      }
+      return created;
+    });
+  }
+
   async updateExercise(
     programId: string,
     workoutId: string,
@@ -1750,6 +2146,114 @@ export class ProgramService {
     await set.destroy();
   }
 
+  /**
+   * Set every set of one exercise in one transaction, as the day editor
+   * holds them: a set sent with its id is updated in place, one without is
+   * added, and a set left out is removed. The list's order is the sets'
+   * order, and a field left out is cleared.
+   *
+   * In place on purpose: an assigned copy (`assigned_set.master_set_id`)
+   * and the logged sets point back at these rows by id, so rewriting the
+   * list would cut every link for a change of one number.
+   * @Arguments programId, workoutId, exerciseId, dto (sets), ownerId
+   */
+  async setSets(
+    programId: string,
+    workoutId: string,
+    exerciseId: string,
+    dto: SetPrescribedSetsDto,
+    ownerId: string,
+  ): Promise<PrescribedSet[]> {
+    await this._loadPrescribedExercise(
+      programId,
+      workoutId,
+      exerciseId,
+      ownerId,
+    );
+    for (const item of dto.sets) {
+      this._assertSetCoherent(item);
+    }
+
+    const sentIds = new Set<string>();
+    for (const item of dto.sets) {
+      if (!item.id) {
+        continue;
+      }
+      if (sentIds.has(item.id)) {
+        throw new BadRequestException(apiError('workout.setListDuplicate'));
+      }
+      sentIds.add(item.id);
+    }
+
+    return this.sequelize.transaction(async (tx) => {
+      const existing = await this.prescribedSetModel.findAll({
+        where: { prescribedExerciseId: exerciseId },
+        transaction: tx,
+      });
+      const byId = new Map(existing.map((set) => [set.id, set]));
+      for (const id of sentIds) {
+        if (!byId.has(id)) {
+          throw new NotFoundException(apiError('workout.setNotFound'));
+        }
+      }
+
+      const removed = existing
+        .filter((set) => !sentIds.has(set.id))
+        .map((set) => set.id);
+      if (removed.length) {
+        await this.prescribedSetModel.destroy({
+          where: { id: removed },
+          transaction: tx,
+        });
+      }
+
+      for (const [index, item] of dto.sets.entries()) {
+        const values = this._setValues(item, index);
+        let row: PrescribedSet | undefined;
+        if (item.id) {
+          row = byId.get(item.id);
+        }
+        if (row) {
+          await row.update(values, { transaction: tx });
+        } else {
+          await this.prescribedSetModel.create(
+            { prescribedExerciseId: exerciseId, ...values },
+            { transaction: tx },
+          );
+        }
+      }
+
+      return this.prescribedSetModel.findAll({
+        where: { prescribedExerciseId: exerciseId },
+        order: [['orderIndex', 'ASC']],
+        transaction: tx,
+      });
+    });
+  }
+
+  /** A set's whole target, as `setSets` writes it: what is not sent is cleared. */
+  private _setValues(item: PrescribedSetItemDto, orderIndex: number) {
+    let notes: string | null = null;
+    if (item.notes && item.notes.trim()) {
+      notes = item.notes.trim();
+    }
+    return {
+      orderIndex,
+      setType: item.setType ?? ExerciseSetType.Normal,
+      targetRepsMin: item.targetRepsMin ?? null,
+      targetRepsMax: item.targetRepsMax ?? null,
+      targetWeightKg: item.targetWeightKg ?? null,
+      targetWeightPercent1rm: item.targetWeightPercent1rm ?? null,
+      targetDurationSeconds: item.targetDurationSeconds ?? null,
+      targetDistanceMeters: item.targetDistanceMeters ?? null,
+      targetRpe: item.targetRpe ?? null,
+      targetRir: item.targetRir ?? null,
+      restAfterSeconds: item.restAfterSeconds ?? null,
+      tempo: item.tempo ?? null,
+      notes,
+    };
+  }
+
   // ────────────────────────────────────────────────────────────────────
   // Internals
   // ────────────────────────────────────────────────────────────────────
@@ -1838,6 +2342,31 @@ export class ProgramService {
       exercise.ownerId === ownerId;
     if (!readable) {
       throw new NotFoundException(apiError('exercise.notFound'));
+    }
+  }
+
+  /** `_assertExerciseUsable` for several movements, in one read. */
+  private async _assertExercisesUsable(
+    exerciseIds: string[],
+    ownerId: string,
+  ): Promise<void> {
+    const exercises = await this.exerciseModel.findAll({
+      where: { id: exerciseIds },
+      attributes: ['id', 'source', 'visibility', 'ownerId'],
+    });
+    const byId = new Map(exercises.map((exercise) => [exercise.id, exercise]));
+    for (const id of exerciseIds) {
+      const exercise = byId.get(id);
+      if (!exercise) {
+        throw new NotFoundException(apiError('exercise.notFound'));
+      }
+      const readable =
+        exercise.source === ExerciseSource.System ||
+        exercise.visibility === ExerciseVisibility.Public ||
+        exercise.ownerId === ownerId;
+      if (!readable) {
+        throw new NotFoundException(apiError('exercise.notFound'));
+      }
     }
   }
 

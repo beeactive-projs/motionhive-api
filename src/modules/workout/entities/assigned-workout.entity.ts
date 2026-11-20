@@ -79,6 +79,13 @@ export class AssignedWorkout extends Model {
   })
   declare status: WorkoutLogStatus | null;
 
+  /**
+   * When the coach last changed this day of the client's copy: its
+   * exercises, their sets or its date (migration 089). Null when never.
+   */
+  @Column({ type: DataType.DATE, allowNull: true })
+  declare coachChangedAt: Date | null;
+
   @CreatedAt declare createdAt: Date;
   @UpdatedAt declare updatedAt: Date;
 

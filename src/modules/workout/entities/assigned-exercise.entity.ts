@@ -20,9 +20,11 @@ import { PrescribedExercise } from './prescribed-exercise.entity';
  * copy-on-assign). Per-client swaps and notes live here without
  * touching the master program.
  *
- * `is_modified_from_master` is a UI hint — set to true whenever the
- * client (or instructor mid-flight) changes anything that diverges
- * from the original prescription.
+ * `is_modified_from_master` is set when the coach changes, replaces or
+ * adds this exercise in the client's copy (`AssignmentCopyService`), and
+ * cleared by "Back to the program's values". An added exercise has no
+ * `master_exercise_id`; a replaced one has a different `exercise_id` from
+ * the program row it links to.
  */
 @Table({
   tableName: 'assigned_exercise',

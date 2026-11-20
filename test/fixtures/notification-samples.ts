@@ -57,6 +57,13 @@ const MSG = {
   hidePreviewInEmail: false,
   muted: false,
 };
+const PLAN_CHANGE: workout.PlanChangeForClient = {
+  clientId: U,
+  assignmentId: 'a-1',
+  programName: 'Forță 8 săptămâni',
+  coachName: 'Dan Ionescu',
+  message: 'Luăm o pauză cât ești în vacanță. Reluăm pe 1 decembrie.',
+};
 
 export const NOTIFICATION_SAMPLES: NotificationSample[] = [
   // ── client ──
@@ -193,6 +200,41 @@ export const NOTIFICATION_SAMPLES: NotificationSample[] = [
     audience: 'client',
     variant: 'typical',
     build: () => session.bookingPromotedForUser(U, S),
+  },
+  {
+    audience: 'client',
+    variant: 'one booking',
+    build: () => session.groupBookingsEndedForUser(U, G, 1),
+  },
+  {
+    audience: 'client',
+    variant: 'several bookings',
+    build: () => session.groupBookingsEndedForUser(U, G, 3),
+  },
+  {
+    audience: 'client',
+    variant: 'twenty bookings',
+    build: () => session.groupBookingsEndedForUser(U, G, 20),
+  },
+  {
+    audience: 'client',
+    variant: 'one booking',
+    build: () => session.groupDeletedBookingsEndedForUser(U, G, 1),
+  },
+  {
+    audience: 'client',
+    variant: 'several bookings',
+    build: () => session.groupDeletedBookingsEndedForUser(U, G, 4),
+  },
+  {
+    audience: 'client',
+    variant: 'no group name',
+    build: () =>
+      session.groupDeletedBookingsEndedForUser(
+        U,
+        { id: 'group-1', name: null },
+        21,
+      ),
   },
   {
     audience: 'client',
@@ -873,6 +915,161 @@ export const NOTIFICATION_SAMPLES: NotificationSample[] = [
         ownerId: U,
         workoutLogId: 'l-1',
         workoutName: 'Ziua 1: Picioare',
+      }),
+  },
+  {
+    audience: 'client',
+    variant: 'with a message',
+    build: () => workout.planPausedForClient({ ...PLAN_CHANGE }),
+  },
+  {
+    audience: 'client',
+    variant: 'no message, coach with no name yet',
+    build: () =>
+      workout.planPausedForClient({
+        ...PLAN_CHANGE,
+        coachName: null,
+        message: null,
+      }),
+  },
+  {
+    audience: 'client',
+    variant: 'nothing moved',
+    build: () =>
+      workout.planResumedForClient({
+        ...PLAN_CHANGE,
+        message: null,
+        weeksMoved: 0,
+      }),
+  },
+  {
+    audience: 'client',
+    variant: 'moved 1 week',
+    build: () =>
+      workout.planResumedForClient({ ...PLAN_CHANGE, weeksMoved: 1 }),
+  },
+  {
+    audience: 'client',
+    variant: 'moved 3 weeks',
+    build: () =>
+      workout.planResumedForClient({ ...PLAN_CHANGE, weeksMoved: 3 }),
+  },
+  {
+    audience: 'client',
+    variant: 'moved 20 weeks',
+    build: () =>
+      workout.planResumedForClient({
+        ...PLAN_CHANGE,
+        message: null,
+        weeksMoved: 20,
+      }),
+  },
+  {
+    audience: 'client',
+    variant: 'typical',
+    build: () =>
+      workout.planFinishedByCoachForClient({
+        ...PLAN_CHANGE,
+        percentDone: 42,
+      }),
+  },
+  {
+    audience: 'client',
+    variant: 'no message, coach with no name yet',
+    build: () =>
+      workout.planFinishedByCoachForClient({
+        ...PLAN_CHANGE,
+        coachName: null,
+        message: null,
+        percentDone: 0,
+      }),
+  },
+  {
+    audience: 'client',
+    variant: 'nothing done',
+    build: () =>
+      workout.planCancelledForClient({
+        ...PLAN_CHANGE,
+        message: null,
+        workoutsDone: 0,
+      }),
+  },
+  {
+    audience: 'client',
+    variant: '1 workout done',
+    build: () =>
+      workout.planCancelledForClient({ ...PLAN_CHANGE, workoutsDone: 1 }),
+  },
+  {
+    audience: 'client',
+    variant: '7 workouts done',
+    build: () =>
+      workout.planCancelledForClient({ ...PLAN_CHANGE, workoutsDone: 7 }),
+  },
+  {
+    audience: 'client',
+    variant: '24 workouts done, coach with no name yet',
+    build: () =>
+      workout.planCancelledForClient({
+        ...PLAN_CHANGE,
+        coachName: null,
+        workoutsDone: 24,
+      }),
+  },
+  {
+    audience: 'client',
+    variant: 'one day changed',
+    build: () =>
+      workout.planAdjustedForClient({
+        clientId: U,
+        assignmentId: 'a-1',
+        programName: 'Forță 8 săptămâni',
+        coachName: 'Dan Ionescu',
+        dayName: 'Push A',
+        week: 3,
+        otherDays: 0,
+      }),
+  },
+  {
+    audience: 'client',
+    variant: 'two days changed',
+    build: () =>
+      workout.planAdjustedForClient({
+        clientId: U,
+        assignmentId: 'a-1',
+        programName: 'Forță 8 săptămâni',
+        coachName: 'Dan Ionescu',
+        dayName: 'Ziua 1: Picioare',
+        week: 1,
+        otherDays: 1,
+      }),
+  },
+  {
+    audience: 'client',
+    variant: 'several days changed',
+    build: () =>
+      workout.planAdjustedForClient({
+        clientId: U,
+        assignmentId: 'a-1',
+        programName: 'Forță 8 săptămâni',
+        coachName: 'Dan Ionescu',
+        dayName: 'Push A',
+        week: 4,
+        otherDays: 3,
+      }),
+  },
+  {
+    audience: 'client',
+    variant: '20 more days, coach with no name yet',
+    build: () =>
+      workout.planAdjustedForClient({
+        clientId: U,
+        assignmentId: 'a-1',
+        programName: 'Forță 8 săptămâni',
+        coachName: null,
+        dayName: 'Push A',
+        week: 2,
+        otherDays: 20,
       }),
   },
 

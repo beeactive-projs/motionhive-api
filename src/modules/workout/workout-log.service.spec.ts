@@ -3337,9 +3337,10 @@ describe('WorkoutLogService (smoke — not exhaustive)', () => {
       // Sets, exercises, reports and its records go with it by cascade.
       expect(log.destroy).toHaveBeenCalledWith({ transaction: fakeTx });
       expect(assignmentModel.update).toHaveBeenCalledWith(
-        { status: 'ACTIVE' },
+        expect.objectContaining({ status: 'ACTIVE', statusChangedBy: null }),
         {
-          where: { id: 'pa-1', status: 'COMPLETED' },
+          // A plan the coach marked finished is theirs, so it stays shut.
+          where: { id: 'pa-1', status: 'COMPLETED', statusChangedBy: null },
           transaction: fakeTx,
         },
       );

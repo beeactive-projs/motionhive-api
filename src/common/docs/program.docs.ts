@@ -17,6 +17,13 @@ const programExample = {
   deletedAt: null,
 };
 
+/** The counts `GET /programs` rows and `GET /programs/:id` carry. */
+const programCountsExample = {
+  exerciseCount: 12,
+  daysPerWeek: 3,
+  clientCount: 2,
+};
+
 const workoutExample = {
   id: 'b2c3d4e5-1111-2222-3333-4444bcde5555',
   programId: programExample.id,
@@ -70,14 +77,19 @@ export const ProgramDocs = {
       'started from), `only` lists ARCHIVED alone (to restore one, with ' +
       'PATCH `status: DRAFT`); omitted keeps every status. Ordered by ' +
       '`updatedAt DESC` so recently-edited programs surface first. Each ' +
-      'row carries `defaultRestSeconds` (rest between sets, or null).',
+      'row carries `defaultRestSeconds` (rest between sets, or null) and ' +
+      'three counts instead of the tree: `exerciseCount` (prescribed ' +
+      'exercises across its days), `daysPerWeek` (distinct weekdays its ' +
+      'days sit on, the number the assign sheet asks for) and ' +
+      '`clientCount` (distinct clients of the caller with a PENDING, ' +
+      'ACTIVE or PAUSED assignment of it; own schedules never count).',
     auth: true,
     responses: [
       {
         status: 200,
         description: 'Programs returned',
         example: {
-          items: [programExample],
+          items: [{ ...programExample, ...programCountsExample }],
           total: 1,
           page: 1,
           pageSize: 20,
@@ -90,14 +102,20 @@ export const ProgramDocs = {
   get: {
     summary: 'Get one program (full tree)',
     description:
-      'Returns the program with all nested workouts, exercises, and sets. ' +
-      '404 on cross-instructor access — hides existence.',
+      'Returns the program with all nested workouts, exercises, and sets, ' +
+      'plus the counts a list row carries (`exerciseCount`, `daysPerWeek`, ' +
+      '`clientCount`), so the builder can say how many clients already ' +
+      'follow it. 404 on cross-instructor access — hides existence.',
     auth: true,
     responses: [
       {
         status: 200,
         description: 'Program returned',
-        example: { ...programExample, workouts: [workoutExample] },
+        example: {
+          ...programExample,
+          ...programCountsExample,
+          workouts: [workoutExample],
+        },
       },
       ApiStandardResponses.NotFound,
       ApiStandardResponses.Unauthorized,
@@ -108,7 +126,11 @@ export const ProgramDocs = {
     summary: 'Create a new program',
     description:
       'INSTRUCTOR only. Authors a new program shell. Status defaults to ' +
-      'DRAFT; flip to PUBLISHED before assigning to clients.',
+      'DRAFT; flip to PUBLISHED before assigning to clients. Created as ' +
+      'PUBLISHED only with a name that is not the untitled default and, ' +
+      'for a routine, at least one exercise (a multi-week program has no ' +
+      'days yet): 400 `workout.cannotPublishWithoutName` / ' +
+      '`workout.cannotPublishWithoutExercises` otherwise.',
     auth: true,
     responses: [
       { status: 201, description: 'Program created', example: programExample },
@@ -126,7 +148,15 @@ export const ProgramDocs = {
       '(ARCHIVED archives a routine or program, DRAFT restores it). Does ' +
       'NOT propagate to existing assignments (copy-on-assign tree is ' +
       'independent per locked decision §10). A routine `exercises` tree ' +
-      'with a superset group of one exercise is saved unlinked.',
+      'with a superset group of one exercise is saved unlinked. Moving to ' +
+      '`status: PUBLISHED` needs a name that is not the untitled default ' +
+      '("Untitled program" / "Program fără titlu") and at least one day ' +
+      'with an exercise, judged on the program as the request leaves it: ' +
+      '400 `workout.cannotPublishWithoutName` / ' +
+      '`workout.cannotPublishWithoutExercises` otherwise, with nothing ' +
+      'else in the request saved. A program already published is not ' +
+      're-checked. A shorter `durationDays` removes the days past the new ' +
+      'end, also while clients follow the program: they keep their copy.',
     auth: true,
     responses: [
       { status: 200, description: 'Program updated', example: programExample },
@@ -184,15 +214,31 @@ export const ProgramDocs = {
     roles: ['INSTRUCTOR'],
   },
   copyWeek: {
-    summary: 'Copy one week of a program onto another (atomic)',
+    summary: 'Copy one week of a program onto other weeks (atomic)',
     description:
-      'INSTRUCTOR only. Copies every workout in `fromWeekIndex` — with its ' +
-      'exercises and prescribed sets — into `toWeekIndex` in ONE ' +
-      'transaction. Anything already in the target week is removed first, ' +
-      'so repeating a copy replaces rather than duplicates. Exists so a ' +
-      'client never has to walk the tree with one request per row, which ' +
-      'was both slow and not atomic.',
-  },
+      'Owner only. Copies every workout in `fromWeekIndex` — with its ' +
+      'exercises and prescribed sets — into every week of `toWeekIndexes` ' +
+      '(or the single `toWeekIndex` older apps send; one of the two is ' +
+      'required, the list wins) in ONE transaction. Anything already in a ' +
+      'target week is removed first, so repeating a copy replaces rather ' +
+      'than duplicates. A week listed twice is copied once and the source ' +
+      'week is left out: 400 `workout.copyWeekSameWeek` when no other week ' +
+      'is left, 400 `workout.weekEmpty` when the source week has no days. ' +
+      'Exists so a client never walks the tree, or the target weeks, with ' +
+      'one request each, which was both slow and not atomic. Clients ' +
+      'following the program keep their own copy.',
+    auth: true,
+    responses: [
+      {
+        status: 201,
+        description: 'Week copied; the new workouts, target by target',
+        example: [workoutExample],
+      },
+      ApiStandardResponses.BadRequest,
+      ApiStandardResponses.NotFound,
+      ApiStandardResponses.Unauthorized,
+    ],
+  } as ApiEndpointOptions,
   copyDay: {
     summary:
       "Copy one day's training into the same day of other weeks (atomic)",
@@ -217,12 +263,89 @@ export const ProgramDocs = {
   deleteWeek: {
     summary: 'Delete one week and move the later weeks up (atomic)',
     description:
-      'INSTRUCTOR only. Removes every workout in `weekIndex` (0-based), ' +
-      'shifts each later week up by one, and shortens a declared length by ' +
-      'one week, in ONE transaction. Returns the program with its full ' +
-      'tree. 409 while clients are assigned and the week holds work; 400 ' +
-      'for the only remaining week.',
-  },
+      'Owner only. Removes every workout in `weekIndex` (0-based), shifts ' +
+      'each later week up by one, and shortens a declared length by one ' +
+      'week, in ONE transaction. Returns the program with its full tree ' +
+      'and counts (as `GET /programs/:id`). Allowed while clients follow ' +
+      'the program: each keeps their own assigned copy unchanged. 400 ' +
+      '`workout.programNeedsOneWeek` for the only remaining week, 400 ' +
+      '`workout.routineNoWeeksToDelete` on a routine, 404 ' +
+      '`workout.weekNotFound` past the last week. A MotionHive starter is ' +
+      "nobody's to change: 404 `workout.programNotFound`.",
+    auth: true,
+    responses: [
+      {
+        status: 200,
+        description: 'Week deleted; the program as it is now',
+        example: {
+          ...programExample,
+          ...programCountsExample,
+          workouts: [workoutExample],
+        },
+      },
+      ApiStandardResponses.BadRequest,
+      ApiStandardResponses.NotFound,
+      ApiStandardResponses.Unauthorized,
+    ],
+  } as ApiEndpointOptions,
+
+  insertWeekAfter: {
+    summary: 'Add an empty week after one week (atomic)',
+    description:
+      'Owner only. Moves every week after `weekIndex` (0-based) down by ' +
+      'one, leaving an empty week right after it, and grows the program by ' +
+      'one week (`durationDays` becomes its whole weeks plus one, times 7), ' +
+      'in ONE transaction. No body. Returns ' +
+      'the program with its full tree and counts. Clients following it ' +
+      'keep their own copy. 400 `workout.programTooLong` past 104 weeks, ' +
+      '400 `workout.routineNoWeeksToAdd` on a routine, 404 ' +
+      '`workout.weekNotFound` past the last week, 404 ' +
+      '`workout.programNotFound` for a starter or a program not yours.',
+    auth: true,
+    responses: [
+      {
+        status: 201,
+        description: 'Week added; the program as it is now',
+        example: {
+          ...programExample,
+          ...programCountsExample,
+          durationDays: 63,
+          workouts: [workoutExample],
+        },
+      },
+      ApiStandardResponses.BadRequest,
+      ApiStandardResponses.NotFound,
+      ApiStandardResponses.Unauthorized,
+    ],
+  } as ApiEndpointOptions,
+
+  clearWeek: {
+    summary: 'Clear one week, so it becomes rest (atomic)',
+    description:
+      'Owner only. Removes every workout of `weekIndex` (0-based) with its ' +
+      'exercises and sets, in ONE transaction, so the week is all rest ' +
+      'days. The weeks keep their places and the program its length. No ' +
+      'body. Returns the program with its full tree and counts; an empty ' +
+      'week changes nothing. Clients following it keep their own copy. ' +
+      '400 `workout.routineNoWeeksToClear` on a routine, 404 ' +
+      '`workout.weekNotFound` past the last week, 404 ' +
+      '`workout.programNotFound` for a starter or a program not yours.',
+    auth: true,
+    responses: [
+      {
+        status: 200,
+        description: 'Week cleared; the program as it is now',
+        example: {
+          ...programExample,
+          ...programCountsExample,
+          workouts: [],
+        },
+      },
+      ApiStandardResponses.BadRequest,
+      ApiStandardResponses.NotFound,
+      ApiStandardResponses.Unauthorized,
+    ],
+  } as ApiEndpointOptions,
   reorderWorkouts: {
     summary: 'Reposition workouts on the program calendar (atomic)',
     description:
@@ -289,6 +412,53 @@ export const ProgramDocs = {
       { status: 201, description: 'Exercise slot added' },
       ApiStandardResponses.BadRequest,
       ApiStandardResponses.NotFound,
+    ],
+  } as ApiEndpointOptions,
+
+  addExercises: {
+    summary: 'Add several exercises to a workout at once (atomic)',
+    description:
+      'Owner only. Body `{ exercises: [{ exerciseId, defaultSets?, ' +
+      'restAfterSeconds?, notes? }] }`, 1 to 30 items. Appends them after ' +
+      'the exercises the day already holds, in the order sent, each with ' +
+      '`defaultSets` empty sets resting `restAfterSeconds`, in ONE ' +
+      'transaction. Every `exerciseId` must be readable by the caller ' +
+      '(SYSTEM, their own, or PUBLIC by another): one that is not answers ' +
+      '404 `exercise.notFound` and nothing is added. Returns the new ' +
+      'exercise rows in order. Exists so the picker never adds its ' +
+      'choices with one request each.',
+    auth: true,
+    responses: [
+      { status: 201, description: 'Exercises added' },
+      ApiStandardResponses.BadRequest,
+      ApiStandardResponses.NotFound,
+      ApiStandardResponses.Unauthorized,
+    ],
+  } as ApiEndpointOptions,
+
+  setSets: {
+    summary: 'Set every set of one exercise, in place (atomic)',
+    description:
+      'Owner only. Body `{ sets: [{ id?, setType?, targetRepsMin?, ' +
+      'targetRepsMax?, targetWeightKg?, targetWeightPercent1rm?, ' +
+      'targetDurationSeconds?, targetDistanceMeters?, targetRpe?, ' +
+      'targetRir?, restAfterSeconds?, tempo?, notes? }] }`, 1 to 30 sets, ' +
+      'each its whole target (a field left out or null is cleared) and its ' +
+      'place in the list its order. A set sent with its `id` is updated in ' +
+      'place, one without is added, and a set of the exercise left out is ' +
+      'removed, all in ONE transaction. Rows are kept rather than ' +
+      'rewritten because assigned copies and logged sets link back to them ' +
+      'by id. Returns the sets in order. 400 `workout.setListDuplicate` ' +
+      'for an id sent twice, `workout.repRangeInvalid` / ' +
+      '`workout.weightModeConflict` for an incoherent set; 404 ' +
+      '`workout.setNotFound` for an id that is not a set of this exercise ' +
+      '(nothing changes).',
+    auth: true,
+    responses: [
+      { status: 200, description: 'Sets saved', example: [setExample] },
+      ApiStandardResponses.BadRequest,
+      ApiStandardResponses.NotFound,
+      ApiStandardResponses.Unauthorized,
     ],
   } as ApiEndpointOptions,
 

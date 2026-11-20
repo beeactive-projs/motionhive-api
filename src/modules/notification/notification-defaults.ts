@@ -185,6 +185,16 @@ export const NOTIFICATION_DEFAULTS: Record<
   [NotificationType.WORKOUT_TAKEN_DOWN]: IN_APP_AND_EMAIL,
   // Said once, in the app, the morning after: nothing goes out at night.
   [NotificationType.WORKOUT_AUTO_SAVED]: IN_APP_ONLY,
+  // The coach changed the client's plan. Pause and resume change what to
+  // train this week, so they reach the phone; finishing or cancelling a plan
+  // ends it, which also earns an email the client can keep.
+  [NotificationType.PLAN_PAUSED]: IN_APP_AND_PUSH,
+  [NotificationType.PLAN_RESUMED]: IN_APP_AND_PUSH,
+  [NotificationType.PLAN_FINISHED_BY_COACH]: ON_EVERYTHING_BUT_SMS,
+  [NotificationType.PLAN_CANCELLED]: ON_EVERYTHING_BUT_SMS,
+  // The coach changed what a coming day asks for, so it reaches the phone;
+  // once per editing session, never per tap.
+  [NotificationType.PLAN_ADJUSTED]: IN_APP_AND_PUSH,
 };
 
 /**

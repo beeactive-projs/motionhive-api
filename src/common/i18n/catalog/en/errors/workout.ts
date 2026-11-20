@@ -32,11 +32,17 @@ export const workout = {
     'Give the program a length first, so there are weeks to fill.',
   nothingToRepeat: 'There is nothing to repeat yet.',
   routineNoWeeksToDelete: 'A routine has no weeks to delete.',
+  routineNoWeeksToAdd: 'A routine has no weeks to add to.',
+  routineNoWeeksToClear: 'A routine has no weeks to clear.',
   programNeedsOneWeek: 'A program needs at least one week.',
-  cannotDeleteLiveWeek:
-    '{clients, plural, one {# client is} other {# clients are}} on this program, so week {week} cannot be deleted. That would drop {days, plural, one {# day} other {# days}} they are still training. Finish or cancel their assignments first.',
-  cannotShortenLiveProgram:
-    '{clients, plural, one {# client is} other {# clients are}} on this program, so it cannot be shortened to {weeks, plural, one {# week} other {# weeks}}. That would drop {days, plural, one {# day} other {# days}} they are still training. Finish or cancel their assignments first.',
+  programTooLong:
+    'A program runs for at most {weeks, plural, one {# week} other {# weeks}}.',
+  setListDuplicate:
+    'The same set appears twice in the list. Refresh and try again.',
+  cannotPublishWithoutName:
+    '{kind, select, routine {Give the routine a name before you publish it.} other {Give the program a name before you publish it.}}',
+  cannotPublishWithoutExercises:
+    '{kind, select, routine {Add at least one exercise to the routine before you publish it.} other {Add exercises to at least one day before you publish the program.}}',
   repRangeInvalid: 'The minimum reps cannot be higher than the maximum.',
   weightModeConflict:
     'Pick either a weight in kg or a percentage of 1RM, not both.',
@@ -57,6 +63,21 @@ export const workout = {
     'This program trains on {count, plural, one {# day} other {# days}} a week. Pick exactly that many.',
   assignmentClosed:
     'This assignment is {status, select, COMPLETED {completed} CANCELLED {cancelled} other {closed}}, so its status can no longer change.',
+
+  // ─── A client's copy of a plan ───────────────────────────────────
+  copyPlanClosed:
+    'This plan is no longer running, so its days can no longer change.',
+  copyDayDone: "This day is done, so it can't change.",
+  copyDaySkipped: "This day was skipped, so it can't change.",
+  copyDayStarted: "This day has been started, so it can't change.",
+  copyDayPast: "This day's date has passed, so it can't change.",
+  copyDatePast: "A day can't move to a date that has passed.",
+  copyDateOutsidePlan:
+    'Pick a date inside the plan, between its first and last day.',
+  copyDateTaken:
+    'Another day of this plan is already on that date. Pick a free one.',
+  copyCannotRevert:
+    'This exercise has no program values to go back to: it was added for this client, or its row in the program was removed.',
 
   // ─── Workout logging ─────────────────────────────────────────────
   startOneSource:

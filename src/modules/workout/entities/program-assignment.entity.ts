@@ -125,9 +125,38 @@ export class ProgramAssignment extends Model {
   @Column({ type: DataType.SMALLINT, allowNull: false, defaultValue: 0 })
   declare completionPercent: number;
 
-  /** Coach-visible notes; not shown to the client. */
+  /**
+   * The coach's note for the client, written when assigning. The client
+   * reads it on the plan (web and mobile), so it is not a private note.
+   */
   @Column({ type: DataType.TEXT, allowNull: true })
   declare notes: string | null;
+
+  /**
+   * When the status last changed (migration 088). While PAUSED it is when
+   * the pause began, which resuming reads to move the days left open since.
+   * Null when the status never changed since assigning.
+   */
+  @Column({ type: DataType.DATE, allowNull: true })
+  declare statusChangedAt: Date | null;
+
+  /** Who changed it: the coach, or null when the plan finished on its own. */
+  @Column({ type: DataType.CHAR(36), allowNull: true })
+  declare statusChangedBy: string | null;
+
+  /**
+   * What the coach told the client with that change, as written (never
+   * translated). Replaced on every change, null when they wrote nothing.
+   */
+  @Column({ type: DataType.TEXT, allowNull: true })
+  declare statusMessage: string | null;
+
+  /**
+   * When the client was last told about the coach's changes to their copy
+   * (migration 089). Done tells them about the days changed after it.
+   */
+  @Column({ type: DataType.DATE, allowNull: true })
+  declare coachChangesNotifiedAt: Date | null;
 
   @CreatedAt declare createdAt: Date;
   @UpdatedAt declare updatedAt: Date;

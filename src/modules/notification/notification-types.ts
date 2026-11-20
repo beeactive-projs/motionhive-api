@@ -72,4 +72,11 @@ export enum NotificationType {
   CLIENT_COMPLETED_PLAN = 'CLIENT_COMPLETED_PLAN',
   WORKOUT_TAKEN_DOWN = 'WORKOUT_TAKEN_DOWN',
   WORKOUT_AUTO_SAVED = 'WORKOUT_AUTO_SAVED',
+  /** Client: their coach paused, resumed, finished or cancelled their plan. */
+  PLAN_PAUSED = 'PLAN_PAUSED',
+  PLAN_RESUMED = 'PLAN_RESUMED',
+  PLAN_FINISHED_BY_COACH = 'PLAN_FINISHED_BY_COACH',
+  PLAN_CANCELLED = 'PLAN_CANCELLED',
+  /** Client: their coach changed days of their copy of a plan (once per Done). */
+  PLAN_ADJUSTED = 'PLAN_ADJUSTED',
 }

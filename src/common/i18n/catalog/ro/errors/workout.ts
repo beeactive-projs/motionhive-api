@@ -35,11 +35,17 @@ export const workout: Catalog['errors']['workout'] = {
     'Setează mai întâi durata programului, ca să existe săptămâni de completat.',
   nothingToRepeat: 'Încă nu ai nimic de repetat.',
   routineNoWeeksToDelete: 'O rutină nu are săptămâni de șters.',
+  routineNoWeeksToAdd: 'O rutină nu are săptămâni la care să adaugi.',
+  routineNoWeeksToClear: 'O rutină nu are săptămâni de golit.',
   programNeedsOneWeek: 'Un program are nevoie de cel puțin o săptămână.',
-  cannotDeleteLiveWeek:
-    '{clients, plural, one {Un client urmează} few {# clienți urmează} other {# de clienți urmează}} acest program, așa că nu poți șterge săptămâna {week}. S-ar pierde {days, plural, one {o zi de antrenament} few {# zile de antrenament} other {# de zile de antrenament}} din {clients, plural, one {planul pe care îl urmează acum. Încheie sau anulează mai întâi programul atribuit.} other {planurile pe care le urmează acum. Încheie sau anulează mai întâi programele atribuite.}}',
-  cannotShortenLiveProgram:
-    '{clients, plural, one {Un client urmează} few {# clienți urmează} other {# de clienți urmează}} acest program, așa că nu îl poți scurta la {weeks, plural, one {o săptămână} few {# săptămâni} other {# de săptămâni}}. S-ar pierde {days, plural, one {o zi de antrenament} few {# zile de antrenament} other {# de zile de antrenament}} din {clients, plural, one {planul pe care îl urmează acum. Încheie sau anulează mai întâi programul atribuit.} other {planurile pe care le urmează acum. Încheie sau anulează mai întâi programele atribuite.}}',
+  programTooLong:
+    'Un program durează cel mult {weeks, plural, one {o săptămână} few {# săptămâni} other {# de săptămâni}}.',
+  setListDuplicate:
+    'Aceeași serie apare de două ori în listă. Reîncarcă pagina și încearcă din nou.',
+  cannotPublishWithoutName:
+    '{kind, select, routine {Dă-i rutinei un nume înainte să o publici.} other {Dă-i programului un nume înainte să îl publici.}}',
+  cannotPublishWithoutExercises:
+    '{kind, select, routine {Adaugă cel puțin un exercițiu în rutină înainte să o publici.} other {Adaugă exerciții în cel puțin o zi înainte să publici programul.}}',
   repRangeInvalid:
     'Numărul minim de repetări nu poate fi mai mare decât cel maxim.',
   weightModeConflict:
@@ -61,6 +67,20 @@ export const workout: Catalog['errors']['workout'] = {
     'Programul are {count, plural, one {o zi de antrenament} few {# zile de antrenament} other {# de zile de antrenament}} pe săptămână. Alege exact {count, plural, one {o zi} few {# zile} other {# de zile}}.',
   assignmentClosed:
     'Programul atribuit e {status, select, COMPLETED {încheiat} CANCELLED {anulat} other {închis}}, așa că starea lui nu se mai poate schimba.',
+
+  // ─── A client's copy of a plan ───────────────────────────────────
+  copyPlanClosed:
+    'Planul nu mai e în desfășurare, așa că zilele lui nu se mai pot schimba.',
+  copyDayDone: 'Ziua aceasta e făcută, așa că nu se mai poate schimba.',
+  copyDaySkipped: 'Ziua aceasta a fost sărită, așa că nu se mai poate schimba.',
+  copyDayStarted:
+    'Ziua aceasta a fost începută, așa că nu se mai poate schimba.',
+  copyDayPast: 'Data zilei a trecut, așa că nu se mai poate schimba.',
+  copyDatePast: 'O zi nu se poate muta pe o dată care a trecut.',
+  copyDateOutsidePlan: 'Alege o dată din plan, între prima și ultima lui zi.',
+  copyDateTaken: 'Altă zi a planului e deja la data aceea. Alege una liberă.',
+  copyCannotRevert:
+    'Exercițiul acesta nu are valori din program la care să revină: a fost adăugat pentru acest client sau rândul lui din program a fost șters.',
 
   // ─── Workout logging ─────────────────────────────────────────────
   startOneSource:

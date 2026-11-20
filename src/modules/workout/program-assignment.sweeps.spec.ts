@@ -139,7 +139,12 @@ describe('ProgramAssignmentService — system sweeps', () => {
       expect(result).toEqual({ completed: 1 });
       // Finished, and "% done" stays what was trained.
       expect(assignmentModel.update).toHaveBeenCalledWith(
-        { status: 'COMPLETED', completionPercent: 67 },
+        expect.objectContaining({
+          status: 'COMPLETED',
+          completionPercent: 67,
+          // Finished by the work: no author.
+          statusChangedBy: null,
+        }),
         expect.objectContaining({
           where: { id: 'a1', status: { [Op.in]: ['ACTIVE', 'PENDING'] } },
         }),
@@ -206,7 +211,12 @@ describe('ProgramAssignmentService — system sweeps', () => {
 
       await expect(service.completeIfFinished('a1')).resolves.toBe(true);
       expect(assignmentModel.update).toHaveBeenCalledWith(
-        { status: 'COMPLETED', completionPercent: 100 },
+        expect.objectContaining({
+          status: 'COMPLETED',
+          completionPercent: 100,
+          // Finished by the work: no author.
+          statusChangedBy: null,
+        }),
         expect.anything(),
       );
     });
