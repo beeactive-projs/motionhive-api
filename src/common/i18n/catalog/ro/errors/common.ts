@@ -12,6 +12,8 @@ export const common: Catalog['errors']['common'] = {
   invalidInput:
     'Unele câmpuri nu sunt completate corect. Verifică-le și încearcă din nou.',
   coachesOnly: 'Doar antrenorii pot face asta.',
+  notWhileImpersonating:
+    'Echipa de suport nu poate face asta când e conectată ca altcineva. Persoana trebuie să o facă singură.',
   noFile: 'Nu ai ales niciun fișier.',
   imageOnly: 'Poți încărca doar imagini.',
   fileTooLarge: 'Fișierul are mai mult de {maxMb} MB.',

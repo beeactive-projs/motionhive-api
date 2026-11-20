@@ -29,6 +29,16 @@ export const session: Catalog['notifications']['session'] = {
     title: 'Ai prins loc!',
     body: 'S-a eliberat un loc, așa că ai rezervarea confirmată la „{title}” de {when}.',
   },
+  groupBookingsEnded: {
+    title:
+      '{count, plural, one {Rezervare anulată} few {Rezervări anulate} other {Rezervări anulate}}',
+    body: '{count, plural, one {Nu mai faci parte din {group, select, null {grup} other {„{group}”}}, așa că rezervarea ta la sesiunea doar pentru membri a fost anulată.} few {Nu mai faci parte din {group, select, null {grup} other {„{group}”}}, așa că cele # rezervări ale tale la sesiunile doar pentru membri au fost anulate.} other {Nu mai faci parte din {group, select, null {grup} other {„{group}”}}, așa că cele # de rezervări ale tale la sesiunile doar pentru membri au fost anulate.}}',
+  },
+  groupDeletedBookingsEnded: {
+    title:
+      '{count, plural, one {Rezervare anulată} few {Rezervări anulate} other {Rezervări anulate}}',
+    body: '{count, plural, one {{group, select, null {Un grup din care făceai parte} other {Grupul „{group}”}} a fost șters, așa că rezervarea ta la sesiunea grupului a fost anulată.} few {{group, select, null {Un grup din care făceai parte} other {Grupul „{group}”}} a fost șters, așa că cele # rezervări ale tale la sesiunile grupului au fost anulate.} other {{group, select, null {Un grup din care făceai parte} other {Grupul „{group}”}} a fost șters, așa că cele # de rezervări ale tale la sesiunile grupului au fost anulate.}}',
+  },
   cancelled: {
     title: 'Sesiune anulată',
     body: '„{title}” de {when} a fost anulată.{reason, select, null {} other { Motiv: {reason}.}}{note, select, null {} other { „{note}”}}',

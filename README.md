@@ -3,7 +3,7 @@
 A comprehensive REST API for managing fitness training sessions, trainers, and clients. Built with [NestJS](https://nestjs.com), [Sequelize](https://sequelize.org), and [MySQL](https://www.mysql.com).
 
 **Production URL:** https://beeactive-api-production.up.railway.app  
-**Swagger Docs:** https://beeactive-api-production.up.railway.app/api/docs
+**Swagger Docs:** `/api/docs` on a local run only; deployed APIs never serve it
 
 ---
 

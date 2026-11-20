@@ -23,7 +23,7 @@ Fitness platform REST API built with NestJS. Manages instructors, clients, group
 - **Email**: Resend
 - **Images**: Cloudflare R2 (S3 API, `@aws-sdk/client-s3`) + Cloudflare image transformations; uploads re-encoded with `sharp` (see Key Patterns, Pictures)
 - **Payments**: Stripe Connect Express (`stripe` 22.x)
-- **Docs**: Swagger/OpenAPI at `/api/docs`
+- **Docs**: Swagger/OpenAPI at `/api/docs` on a **local run only**: never in production and never on a Railway deploy (dev included; `RAILWAY_PROJECT_ID` etc. are checked, since NODE_ENV falls back to development). Owner's call 2026-11-20: no switch to turn it on there (`config/http-exposure.ts`)
 - **Logging**: Winston
 - **Validation**: Joi (env) + class-validator (DTOs)
 - **Security**: Helmet, Throttler rate limiting, CORS
@@ -94,7 +94,7 @@ src/
 - **Global guard**: `UserThrottlerGuard` (APP_GUARD) — 300 req/60s **per route**, keyed by the verified JWT subject when there is one, by IP otherwise
 - **Global pipe**: ValidationPipe (whitelist + transform)
 - **Middleware**: RequestIdMiddleware on all routes
-- **Security**: Helmet, CORS (explicit origin list), `express.raw()` scoped to `/webhooks/stripe`
+- **Security**: Helmet, CORS (`config/http-exposure.ts`: the apps' origins, the Capacitor WebViews, `https://<one-label>.vercel.app` previews, `FRONTEND_URL`, `DEV_ORIGINS`; **no credentials**, since auth is a bearer token and nothing uses cookies), `express.raw()` scoped to `/webhooks/stripe`
 
 ### Module Pattern
 `module.ts` + `controller.ts` + `service.ts` + `entities/` + `dto/`. Controllers are thin; business logic lives in services.
@@ -136,6 +136,8 @@ Roles: `SUPER_ADMIN`, `ADMIN`, `SUPPORT`, `INSTRUCTOR`, `WRITER`, `USER`
 - `@Roles('INSTRUCTOR')` + `@UseGuards(AuthGuard('jwt'), RolesGuard)`
 - `@Public()` for unauthenticated routes
 - `WRITER` role added in migration 017 for blog authorship
+- **Impersonation** (admin app, SUPER_ADMIN only, 30 min token with `act_as`, no refresh; read as `req.user.impersonatedBy`): never a staff account (ADMIN, SUPER_ADMIN, SUPPORT). `NoImpersonationGuard` (after `AuthGuard('jwt')`) refuses its writes on payments (coach and client controllers), devices, `change-password` and `logout-all`; reads pass, and `@AllowWhileImpersonating()` exempts a harmless write (only `onboarding/refresh-status`). **A new controller that moves money, changes credentials or registers something that outlives the session gets the guard.** Every other write it makes lands in `admin_action_log` as `impersonation.write` (`ImpersonationAuditInterceptor`, APP_INTERCEPTOR in AdminModule). Account deletion refuses it too (`account.notYou`).
+- **Staff vs staff**: nobody changes the status of, or schedules deletion of, their own account, and an ADMIN or SUPER_ADMIN account needs a SUPER_ADMIN (`AdminUsersService.assertMayManage`, errors `admin.*`).
 
 ### Database
 - PostgreSQL (Neon) via `DATABASE_URL` or individual `DB_*` vars
@@ -178,6 +180,9 @@ Rewritten by migration 046 from a legacy single-table design into a **template +
 - **Sanitization**: `title` and `description` go through `stripHtml` (common/utils/text.utils.ts) before persist — drops `<script>`, collapses whitespace. Title rejected if empty after sanitization.
 - **Future-date guard**: `firstStartAt` enforced by `@IsFutureOrCloseToNow({skewMinutes:5})` validator + service-level recheck.
 - **Notifications**: 7 types declared in `notification-types.ts` with conservative defaults (reminders→push+email, cancel→email+push, participant churn→in-app only). Builders live in `src/modules/session/notifications.ts` — see `SESSION-FLOWS.md` for usage.
+- **Membership ends members-only bookings**: removing someone from a group, or their leaving, ends their open bookings (confirmed, pending, waitlisted) in that group's `GROUP_ONLY` occurrences still ahead; OPEN and CLIENTS_ONLY sessions linked to the group stay. `GroupService` announces `group.membership.ended` (`group/group.events.ts`, EventEmitter2 `emitAsync`, awaited, failures logged) and `SessionGroupListener` calls `SessionBookingService.endGroupOnlyBookings`: one transaction per occurrence, freed confirmed seats go to the waitlist, one `session.groupBookingsEnded` notice with the count. These events are the way for GroupModule to reach sessions (SessionModule imports GroupModule, so the reverse import would be a cycle).
+- **Deleting a group stops its members-only series**: `group.deleted` → `SessionLifecycleService.cancelDeletedGroupSessions`: every `GROUP_ONLY` series of the group (ACTIVE or ENDED) has its occurrences ahead and their open bookings cancelled, an ACTIVE series becomes CANCELLED (no more nightly top-ups, even with nothing scheduled), past occurrences keep their history, OPEN and CLIENTS_ONLY series carry on. One transaction per series; each booked person gets one `session.groupDeletedBookingsEnded` notice with the count; the stopped series leave search.
+- **A capacity raise fills the waitlist**: `patchInstance` with `capacityOverride`, and a template whose `capacity` goes up (or to unlimited) for the future occurrences without an override (`SessionLifecycleService.promoteAfterSeriesCapacityRaise`), move the oldest waitlisters into every free seat (`SessionWaitlistService.promoteIntoFreeSeats`, same 2 h cutoff as a freed seat) and notify them. Only when the template has `waitlistEnabled`.
 - **Reminder schedule rows** are written into `session_reminder_schedule` on booking and dispatched by the `sessions.reminder_dispatch` cron (sweep model; idempotent via `sentAt`).
 - See `src/modules/session/SESSION-FLOWS.md` for the per-flow walkthrough.
 
@@ -240,7 +245,7 @@ Full schema in `src/config/env.validation.ts` (Joi, `abortEarly: false`).
   - **Live crons** — sessions: reminder_dispatch (5m), status_transition (5m), generate_recurring (daily), cleanup_stale_participants (hourly). workouts: auto_skip_past_workouts (02:00), close_stale_workouts (02:15), auto_complete_assignments (02:30). payments: invoice_due_soon/overdue/dunning (06:00–06:30), card_expiring (07:00), refund_window_closing (07:30), dispute_deadline (08:00), earnings_summary (monthly 1st 08:00), balance_cache_refresh (hourly), reconcile_webhooks (30m). maintenance: cleanup_refresh_tokens/lockouts/invitations/client_requests (04:00–04:30). Reminder idempotency is via the `notification.fingerprint` dedup (remind-once or date-bucketed once-per-day), not DB flags.
   - **Webhooks are async**: the Stripe webhook controller verifies + inserts the `webhook_event` row, then enqueues `payments.process_webhook` and acks fast (BullMQ owns retries; `reconcile_webhooks` cron sweeps ORPHANED rows). With no Redis it processes inline. See `webhook-handler.service.ts` (`handleIncomingEvent`/`processQueued`/`processEvent`/`reconcileOrphaned`).
   - **Still pending** (see memory `project_jobs_module_pending.md`): push/SMS notification channels only. The `// TODO [jobs-module]:` markers elsewhere are resolved.
-- **Bull Board** — admin UI at `/admin/queues`, HTTP basic auth via `BULL_BOARD_USER` + `BULL_BOARD_PASSWORD` env vars (both required to mount; missing either → route 404s, the "default off" posture). Queues auto-register from `QueueName`, so new queues appear without code changes. Never expose it unauthenticated in prod. Redis prod config: `REDIS_HOST` (required in production), `REDIS_PORT`, `REDIS_PASSWORD`, `REDIS_TLS` ("true" for managed/Redis Cloud).
+- **Bull Board** — admin UI at `/admin/queues`, HTTP basic auth via `BULL_BOARD_USER` + `BULL_BOARD_PASSWORD` env vars (both required to mount; missing either → route 404s, the "default off" posture). Credentials are compared as SHA-256 digests with `timingSafeEqual`; 10 wrong tries from one address in 15 min get 429 until the window ends (`createBasicAuthGate`, in memory, so a deploy resets it). Queues auto-register from `QueueName`, so new queues appear without code changes. Never expose it unauthenticated in prod. Redis prod config: `REDIS_HOST` (required in production), `REDIS_PORT`, `REDIS_PASSWORD`, `REDIS_TLS` ("true" for managed/Redis Cloud).
 - **Notification system** — Phase 1 stub only (logs). See `NOTIFICATION_SYSTEM_PLAN.md`. Research notes for the upcoming jobs/workers system live under `docs/research/jobs-system/`.
 - **Session overflow waitlist** — fully live (BE: `SessionWaitlistService` + `WAITLISTED` participant status + auto-promote on confirmed cancel; FE: "Join waitlist" CTA on session-showcase, status surfaced in my-sessions tabs + booking-confirmed dialog). Toggled per-template via `waitlistEnabled`. (Note: the `waitlist` module is for landing-page email capture — different feature.)
 - **APPROVAL join policy** — fully live (BE + FE). Owners review pending requests on the group members tab; clients see request status on group preview / discover cards.

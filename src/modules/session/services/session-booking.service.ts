@@ -20,6 +20,7 @@ import { SessionInstance } from '../entities/session-instance.entity';
 import { SessionParticipant } from '../entities/session-participant.entity';
 import { SessionTemplate } from '../entities/session-template.entity';
 import {
+  SessionAccess,
   SessionInstanceStatus,
   SessionParticipantStatus,
   SessionTemplateStatus,
@@ -35,6 +36,7 @@ import {
   bookingDeclinedForUser,
   bookingDeclinedSessionFullForUser,
   bookingPromotedForUser,
+  groupBookingsEndedForUser,
   participantJoinedForInstructor,
   participantLeftForInstructor,
   sessionBookedForUser,
@@ -338,6 +340,144 @@ export class SessionBookingService {
 
     await outbox.flush();
     return result;
+  }
+
+  // ─── MEMBERSHIP ENDED (removed from, or left, a group) ─────────────
+
+  /**
+   * End someone's open bookings in a group's members-only (GROUP_ONLY)
+   * sessions once they are no longer a member: removed by the owner, or
+   * left. They used to keep them, and with a confirmed booking the join
+   * link, though they could no longer book there. Only what is ahead:
+   * occurrences still SCHEDULED that have not started, bookings still
+   * open (confirmed, waiting for approval, waitlisted). Open and
+   * clients-only sessions linked to the group stay, since anyone allowed
+   * in may book those.
+   *
+   * Each occurrence is its own transaction, as when the person cancels:
+   * counters move, unsent reminders go, and a freed confirmed seat goes to
+   * the oldest waitlister, who is told. One occurrence failing is logged
+   * and the rest still end. The person hears once, with the count; the
+   * coach is not told per booking (they removed them, or already heard
+   * they left). Returns how many bookings ended.
+   */
+  async endGroupOnlyBookings(
+    groupId: string,
+    groupName: string,
+    userId: string,
+  ): Promise<number> {
+    const open = await this.participantModel.findAll({
+      where: {
+        userId,
+        status: [
+          SessionParticipantStatus.Confirmed,
+          SessionParticipantStatus.PendingApproval,
+          SessionParticipantStatus.Waitlisted,
+        ],
+      },
+      attributes: ['id', 'instanceId'],
+      include: [
+        {
+          model: SessionInstance,
+          required: true,
+          attributes: ['id'],
+          where: {
+            status: SessionInstanceStatus.Scheduled,
+            startAt: { [Op.gt]: new Date() },
+          },
+          include: [
+            {
+              model: SessionTemplate,
+              required: true,
+              attributes: ['id'],
+              where: { groupId, access: SessionAccess.GroupOnly },
+            },
+          ],
+        },
+      ],
+    });
+
+    let ended = 0;
+    for (const booking of open) {
+      const outbox = new NotificationOutbox(this.notifications, this.logger);
+      try {
+        const didEnd = await this.sequelize.transaction(async (tx) => {
+          const instance = await this.lockInstanceWithTemplate(
+            booking.instanceId,
+            tx,
+          );
+          if (instance.status !== SessionInstanceStatus.Scheduled) {
+            return false;
+          }
+          const participant = await this.participantModel.findOne({
+            where: { id: booking.id },
+            lock: tx.LOCK.UPDATE,
+            transaction: tx,
+          });
+          if (!participant || this.isTerminalStatus(participant.status)) {
+            return false;
+          }
+
+          const oldStatus = participant.status;
+          await participant.update(
+            {
+              status: SessionParticipantStatus.Cancelled,
+              cancelledAt: new Date(),
+              waitlistPosition: null,
+            },
+            { transaction: tx },
+          );
+          await this.incCounter(instance.id, oldStatus, -1, tx);
+          await this.waitlistService.deleteRemindersFor(participant.id, tx);
+
+          if (
+            oldStatus === SessionParticipantStatus.Confirmed &&
+            instance.template.waitlistEnabled
+          ) {
+            const promo = await this.waitlistService.tryPromote(instance, tx);
+            if (promo) {
+              outbox.add(
+                bookingPromotedForUser(promo.userId, this.toRef(instance)),
+              );
+            }
+          }
+          return true;
+        });
+        if (didEnd) {
+          ended += 1;
+        }
+        await outbox.flush();
+      } catch (err) {
+        outbox.discard();
+        this.logger.error(
+          `[sessions] could not end booking ${booking.id} of user ${userId} after leaving group ${groupId}: ${(err as Error).message}`,
+          'SessionBookingService',
+        );
+      }
+    }
+
+    if (ended > 0) {
+      // notify-after-commit: every occurrence above has committed.
+      await this.notifications
+        .notify(
+          groupBookingsEndedForUser(
+            userId,
+            { id: groupId, name: groupName },
+            ended,
+          ),
+        )
+        .catch((err: Error) =>
+          this.logger.error(
+            `[sessions] notify group bookings ended failed for user ${userId}, group ${groupId}: ${err.message}`,
+            'SessionBookingService',
+          ),
+        );
+    }
+    this.logger.log(
+      `[sessions] ended ${ended} group-only booking(s) of user ${userId} in group ${groupId}`,
+      'SessionBookingService',
+    );
+    return ended;
   }
 
   // ─── APPROVE (instructor) ─────────────────────────────────────────

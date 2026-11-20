@@ -15,6 +15,9 @@ export const common = {
   invalidInput: 'Some of the details are not valid. Check them and try again.',
   /** The route needs a coach (INSTRUCTOR) role. */
   coachesOnly: 'Only coaches can do this.',
+  /** A write support may not make while signed in as someone (admin impersonation). */
+  notWhileImpersonating:
+    "Support can't do this while signed in as someone. The person has to do it themselves.",
   noFile: 'No file provided.',
   imageOnly: 'Only image files are accepted.',
   fileTooLarge: 'File is larger than {maxMb} MB.',

@@ -28,6 +28,7 @@ import {
   SessionInstanceStatus,
   SessionTemplateStatus,
 } from '../entities/session.enums';
+import { SessionLifecycleService } from './session-lifecycle.service';
 import { RecurrenceService } from './recurrence.service';
 import { CreateTemplateDto } from '../dto/create-template.dto';
 import { UpdateTemplateDto } from '../dto/update-template.dto';
@@ -104,6 +105,7 @@ export class SessionTemplateService {
     @Inject(forwardRef(() => GroupService))
     private readonly groupService: GroupService,
     private readonly searchIndexService: SearchIndexService,
+    private readonly lifecycleService: SessionLifecycleService,
     @Inject(WINSTON_MODULE_NEST_PROVIDER)
     private readonly logger: LoggerService,
   ) {}
@@ -326,6 +328,7 @@ export class SessionTemplateService {
     }
 
     const updates: Partial<SessionTemplate> = {};
+    const previousCapacity = template.capacity;
 
     if (dto.title !== undefined) {
       const safe = stripHtml(dto.title, TITLE_MAX);
@@ -369,6 +372,22 @@ export class SessionTemplateService {
     }
 
     await template.update(updates);
+
+    // More seats in the series: occurrences without a capacity of their
+    // own grew too, so the people waiting there move in (notified).
+    if (
+      this.capacityRaised(previousCapacity, dto.capacity) &&
+      template.waitlistEnabled
+    ) {
+      await this.lifecycleService
+        .promoteAfterSeriesCapacityRaise(template.id)
+        .catch((err: Error) =>
+          this.logger.error?.(
+            `Waitlist fill failed after capacity raise on template ${template.id}: ${err.message}`,
+          ),
+        );
+    }
+
     // Search index follows the source of truth — a title or location
     // edit needs to surface in the next search.
     try {
@@ -379,6 +398,23 @@ export class SessionTemplateService {
       );
     }
     return template;
+  }
+
+  /**
+   * Whether an update gives the series more seats: a sent capacity above
+   * the old one, or none (unlimited) where there was a limit.
+   */
+  private capacityRaised(
+    previous: number | null,
+    next: number | null | undefined,
+  ): boolean {
+    if (next === undefined || previous === null) {
+      return false;
+    }
+    if (next === null) {
+      return true;
+    }
+    return next > previous;
   }
 
   async delete(instructorId: string, templateId: string): Promise<void> {

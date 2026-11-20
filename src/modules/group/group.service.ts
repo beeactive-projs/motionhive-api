@@ -1,3 +1,4 @@
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import type { LoggerService } from '@nestjs/common';
 import {
   BadRequestException,
@@ -74,6 +75,12 @@ import { categoryIdsSql, hasAnyCategorySql } from '../category/category-sql';
 import { CategoryPicker, CategoryService } from '../category/category.service';
 import { GroupCategory } from './entities/group-category.entity';
 import { PostApprovalState } from '../post/entities/post.entity';
+import {
+  GROUP_DELETED,
+  GROUP_MEMBERSHIP_ENDED,
+  type GroupDeletedEvent,
+  type GroupMembershipEndedEvent,
+} from './group.events';
 
 /**
  * Group Service
@@ -192,6 +199,7 @@ export class GroupService {
     private readonly searchIndexService: SearchIndexService,
     private readonly notificationService: NotificationService,
     private readonly categoryService: CategoryService,
+    private readonly events: EventEmitter2,
     @Inject(WINSTON_MODULE_NEST_PROVIDER)
     private readonly logger: LoggerService,
   ) {}
@@ -620,6 +628,12 @@ export class GroupService {
 
     await this.searchIndexService.removeIfExists('group', group.id);
 
+    // Its members-only sessions stop, and the people booked are told.
+    await this.announce(GROUP_DELETED, {
+      groupId: group.id,
+      groupName: group.name,
+    } satisfies GroupDeletedEvent);
+
     // notify-after-commit: the members hear it is gone.
     if (memberIds.length > 0) {
       await this.notificationService
@@ -669,6 +683,13 @@ export class GroupService {
       attributes: ['id', 'name', 'instructorId'],
     });
     if (!group) return;
+
+    await this.announceMembershipEnded({
+      groupId,
+      groupName: group.name,
+      userId,
+      reason: 'LEFT',
+    });
     const [leaver, owner] = await Promise.all([
       this.userModel.findByPk(userId, {
         attributes: ['firstName', 'lastName'],
@@ -838,6 +859,36 @@ export class GroupService {
   }
 
   /**
+   * Tell the rest of the app a membership ended (group.events.ts), after
+   * it is saved: sessions end the person's bookings in the group's
+   * members-only sessions.
+   */
+  private async announceMembershipEnded(
+    event: GroupMembershipEndedEvent,
+  ): Promise<void> {
+    await this.announce(GROUP_MEMBERSHIP_ENDED, event);
+  }
+
+  /**
+   * Emit a group event (group.events.ts) once the change is saved.
+   * Awaited, so its handlers have run when the request answers; a failure
+   * there is logged and never undoes the change.
+   */
+  private async announce(
+    name: string,
+    event: GroupMembershipEndedEvent | GroupDeletedEvent,
+  ): Promise<void> {
+    try {
+      await this.events.emitAsync(name, event);
+    } catch (err) {
+      this.logger.error(
+        `[groups] ${name} handlers failed for group ${event.groupId}: ${(err as Error).message}`,
+        'GroupService',
+      );
+    }
+  }
+
+  /**
    * Remove a member from the group (owner only)
    *
    * The owner cannot be removed.
@@ -867,6 +918,13 @@ export class GroupService {
       `Member ${memberId} removed from group ${groupId} by ${userId}`,
       'GroupService',
     );
+
+    await this.announceMembershipEnded({
+      groupId,
+      groupName: group.name,
+      userId: memberId,
+      reason: 'REMOVED',
+    });
 
     await this.notificationService
       .notify(groupMemberRemoved(memberId, { id: group.id, name: group.name }))

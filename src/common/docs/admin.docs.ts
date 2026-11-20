@@ -29,9 +29,16 @@ export const AdminDocs = {
   updateUserStatus: {
     summary: 'Update user status',
     description:
-      'Activate/deactivate, unlock (clear lockout), or force email-verified. ADMIN+.',
+      'Activate/deactivate, unlock (clear lockout), or force email-verified. ADMIN+. Never on your own account; an ADMIN or SUPER_ADMIN account needs a SUPER_ADMIN.',
     auth: true,
-    responses: [{ status: 200, description: 'Updated user detail' }],
+    responses: [
+      { status: 200, description: 'Updated user detail' },
+      {
+        status: 403,
+        description:
+          'Your own account, or an admin account and you are not SUPER_ADMIN',
+      },
+    ],
   },
   resendVerification: {
     summary: 'Resend verification email',
@@ -61,6 +68,11 @@ export const AdminDocs = {
     responses: [
       { status: 201, description: 'Updated user detail, with the deletion' },
       { status: 400, description: 'requestEmail is not the sign-in email' },
+      {
+        status: 403,
+        description:
+          'Your own account, or an admin account and you are not SUPER_ADMIN',
+      },
       { status: 404, description: 'User not found' },
       {
         status: 409,
@@ -80,7 +92,7 @@ export const AdminDocs = {
   impersonate: {
     summary: 'Impersonate user',
     description:
-      'Mint a short-lived (30m), refresh-less access token acting as the target user. Rejects self and admin targets. Audited. SUPER_ADMIN only.',
+      'Mint a short-lived (30m), refresh-less access token acting as the target user. Rejects self, admin and support targets. The token cannot make payment writes, change the password, sign out everywhere or register a device (403); every other write it makes is recorded in the audit log as `impersonation.write`. Audited. SUPER_ADMIN only.',
     auth: true,
     responses: [
       { status: 201, description: 'Impersonation token + target user' },

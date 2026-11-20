@@ -32,6 +32,13 @@ import { SessionReminderSchedule } from '../entities/session-reminder-schedule.e
  */
 const PRE_START_CUTOFF_MS = 2 * 60 * 60_000; // 2 hours
 
+/**
+ * The most seats one sweep fills: the DTO's capacity ceiling. Each
+ * promotion re-reads the counters and stops at the cap or when nobody is
+ * waiting, so this only bounds a loop that should never get near it.
+ */
+const MAX_PROMOTIONS_PER_SWEEP = 1000;
+
 export interface PromotionResult {
   participantId: string;
   userId: string;
@@ -126,6 +133,30 @@ export class SessionWaitlistService {
     );
 
     return { participantId: candidate.id, userId: candidate.userId };
+  }
+
+  /**
+   * Fill every seat that is free now from the waitlist, oldest first: what
+   * a capacity raise owes the people waiting, who used to stay waitlisted
+   * while the next new booker took the seat. Same rules as one freed seat
+   * (tryPromote): nothing inside PRE_START_CUTOFF_MS, counters and
+   * reminders move in the caller's transaction, and the caller must hold
+   * the UPDATE lock on the instance (with its template loaded fresh, since
+   * an unlimited or template capacity is read from it).
+   */
+  async promoteIntoFreeSeats(
+    instance: SessionInstance,
+    tx: Transaction,
+  ): Promise<PromotionResult[]> {
+    const promoted: PromotionResult[] = [];
+    for (let i = 0; i < MAX_PROMOTIONS_PER_SWEEP; i++) {
+      const next = await this.tryPromote(instance, tx);
+      if (!next) {
+        break;
+      }
+      promoted.push(next);
+    }
+    return promoted;
   }
 
   /**

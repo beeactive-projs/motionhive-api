@@ -1,4 +1,5 @@
 import { account } from './account';
+import { admin } from './admin';
 import { analytics } from './analytics';
 import { auth } from './auth';
 import { blog } from './blog';
@@ -33,6 +34,7 @@ import { workout } from './workout';
  */
 export const errors = {
   account,
+  admin,
   analytics,
   auth,
   blog,

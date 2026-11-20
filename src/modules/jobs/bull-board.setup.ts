@@ -1,6 +1,7 @@
 import type { Logger } from '@nestjs/common';
 import type { INestApplication } from '@nestjs/common';
 import type { Request, Response, NextFunction } from 'express';
+import { createHash, timingSafeEqual } from 'crypto';
 import { createBullBoard } from '@bull-board/api';
 import { BullMQAdapter } from '@bull-board/api/bullMQAdapter';
 import { ExpressAdapter } from '@bull-board/express';
@@ -9,6 +10,122 @@ import type { Queue } from 'bullmq';
 import { QueueName } from './job-registry';
 
 const BULL_BOARD_PATH = '/admin/queues';
+
+/** Wrong credentials one address may send before it has to wait. */
+export const BULL_BOARD_MAX_FAILURES = 10;
+/** How long those wrong tries are remembered. */
+export const BULL_BOARD_FAILURE_WINDOW_MS = 15 * 60_000;
+/** Addresses remembered at once; past it the oldest are forgotten first. */
+const MAX_TRACKED_ADDRESSES = 10_000;
+
+type Gate = (req: Request, res: Response, next: NextFunction) => void;
+
+interface Failures {
+  count: number;
+  resetAt: number;
+}
+
+function sha256(value: string): Buffer {
+  return createHash('sha256').update(value, 'utf8').digest();
+}
+
+/** The user and password of a `Basic` header, or null when there is none. */
+function readBasicCredentials(
+  header: string | undefined,
+): { user: string; password: string } | null {
+  if (!header || !header.startsWith('Basic ')) {
+    return null;
+  }
+  const decoded = Buffer.from(header.slice(6), 'base64').toString('utf-8');
+  const idx = decoded.indexOf(':');
+  if (idx < 0) {
+    return { user: decoded, password: '' };
+  }
+  return { user: decoded.slice(0, idx), password: decoded.slice(idx + 1) };
+}
+
+/**
+ * HTTP basic auth for Bull Board. It runs as Express middleware, outside
+ * the Nest throttler, so it counts wrong tries itself: after
+ * BULL_BOARD_MAX_FAILURES from one address in the window, that address
+ * gets 429 until the window ends, the right password included. A request
+ * with no credentials (the browser's first, which brings up its prompt)
+ * is not a try. Both values are compared as SHA-256 digests with
+ * timingSafeEqual, so the time taken says nothing about how close a guess
+ * was, and both are always compared.
+ */
+export function createBasicAuthGate(
+  user: string,
+  password: string,
+  now: () => number = Date.now,
+): Gate {
+  const expectedUser = sha256(user);
+  const expectedPassword = sha256(password);
+  const failures = new Map<string, Failures>();
+
+  const forgetExpired = (at: number): void => {
+    for (const [address, entry] of failures) {
+      if (entry.resetAt <= at) {
+        failures.delete(address);
+      }
+    }
+    while (failures.size >= MAX_TRACKED_ADDRESSES) {
+      const oldest = failures.keys().next();
+      if (oldest.done) {
+        break;
+      }
+      failures.delete(oldest.value);
+    }
+  };
+
+  return (req, res, next) => {
+    const address = req.ip ?? 'unknown';
+    const at = now();
+
+    let entry = failures.get(address);
+    if (entry && entry.resetAt <= at) {
+      failures.delete(address);
+      entry = undefined;
+    }
+    if (entry && entry.count >= BULL_BOARD_MAX_FAILURES) {
+      res.set('Retry-After', String(Math.ceil((entry.resetAt - at) / 1000)));
+      res.status(429).send('Too many attempts, try again later');
+      return;
+    }
+
+    const given = readBasicCredentials(req.headers.authorization);
+    if (!given) {
+      res.set('WWW-Authenticate', 'Basic realm="bull-board"');
+      res.status(401).send('Authentication required');
+      return;
+    }
+
+    const userMatches = timingSafeEqual(sha256(given.user), expectedUser);
+    const passwordMatches = timingSafeEqual(
+      sha256(given.password),
+      expectedPassword,
+    );
+    if (userMatches && passwordMatches) {
+      failures.delete(address);
+      next();
+      return;
+    }
+
+    if (entry) {
+      entry.count += 1;
+    } else {
+      if (failures.size >= MAX_TRACKED_ADDRESSES) {
+        forgetExpired(at);
+      }
+      failures.set(address, {
+        count: 1,
+        resetAt: at + BULL_BOARD_FAILURE_WINDOW_MS,
+      });
+    }
+    res.set('WWW-Authenticate', 'Basic realm="bull-board"');
+    res.status(401).send('Invalid credentials');
+  };
+}
 
 /**
  * Mount the Bull Board admin UI at /admin/queues, gated by HTTP
@@ -67,30 +184,7 @@ export function setupBullBoard(app: INestApplication, logger: Logger): void {
     serverAdapter,
   });
 
-  // HTTP basic auth gate. Constant-time-ish comparison via length
-  // check + char-by-char isn't strictly needed at our scale, but the
-  // simple `===` is fine here since the credential is short and a
-  // brute-force attacker would hit our network rate-limits long
-  // before timing-attacking this string compare.
-  const basicAuth = (req: Request, res: Response, next: NextFunction): void => {
-    const header = req.headers.authorization ?? '';
-    if (!header.startsWith('Basic ')) {
-      res.set('WWW-Authenticate', 'Basic realm="bull-board"');
-      res.status(401).send('Authentication required');
-      return;
-    }
-    const decoded = Buffer.from(header.slice(6), 'base64').toString('utf-8');
-    const idx = decoded.indexOf(':');
-    const u = idx >= 0 ? decoded.slice(0, idx) : '';
-    const p = idx >= 0 ? decoded.slice(idx + 1) : '';
-    if (u !== user || p !== password) {
-      res.set('WWW-Authenticate', 'Basic realm="bull-board"');
-      res.status(401).send('Invalid credentials');
-      return;
-    }
-    next();
-  };
-
+  const basicAuth = createBasicAuthGate(user, password);
   app.use(BULL_BOARD_PATH, basicAuth, serverAdapter.getRouter());
   logger.log(`Bull Board mounted at ${BULL_BOARD_PATH} (basic auth)`);
 }

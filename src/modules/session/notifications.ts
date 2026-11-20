@@ -149,6 +149,46 @@ export function bookingPromotedForUser(
   };
 }
 
+/**
+ * Client — they were removed from a group, or left it, so their open
+ * bookings in its members-only sessions ended. One notice for all of them.
+ */
+export function groupBookingsEndedForUser(
+  userId: string,
+  group: { id: string; name: string | null },
+  count: number,
+): NotifyParams {
+  return {
+    userId,
+    type: NotificationType.SESSION_CANCELLED,
+    message: {
+      key: 'session.groupBookingsEnded',
+      params: { group: group.name, count },
+    },
+    data: { screen: 'user/sessions', queryParams: { tab: 'cancelled' } },
+  };
+}
+
+/**
+ * Client — the group was deleted, so its members-only sessions were
+ * cancelled with their open bookings in them. One notice for all of them.
+ */
+export function groupDeletedBookingsEndedForUser(
+  userId: string,
+  group: { id: string; name: string | null },
+  count: number,
+): NotifyParams {
+  return {
+    userId,
+    type: NotificationType.SESSION_CANCELLED,
+    message: {
+      key: 'session.groupDeletedBookingsEnded',
+      params: { group: group.name, count },
+    },
+    data: { screen: 'user/sessions', queryParams: { tab: 'cancelled' } },
+  };
+}
+
 /** Client — the instructor cancelled the session they were booked into. */
 export function sessionCancelledForUser(
   userId: string,

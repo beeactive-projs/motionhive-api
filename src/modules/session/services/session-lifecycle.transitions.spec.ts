@@ -1,3 +1,4 @@
+import { SessionWaitlistService } from './session-waitlist.service';
 import { Test } from '@nestjs/testing';
 import { getModelToken } from '@nestjs/sequelize';
 import { WINSTON_MODULE_NEST_PROVIDER } from 'nest-winston';
@@ -34,6 +35,7 @@ describe('SessionLifecycleService.runStatusTransitions', () => {
         { provide: getModelToken(SessionTemplate), useValue: {} },
         { provide: SessionConflictService, useValue: {} },
         { provide: VenueService, useValue: {} },
+        { provide: SessionWaitlistService, useValue: {} },
         { provide: NotificationService, useValue: {} },
         { provide: Sequelize, useValue: fakeSequelize() },
         { provide: WINSTON_MODULE_NEST_PROVIDER, useValue: makeSilentLogger() },

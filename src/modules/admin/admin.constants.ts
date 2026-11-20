@@ -14,10 +14,23 @@ export const ADMIN_ROLE_NAMES = [
 
 export type AdminRoleName = (typeof ADMIN_ROLE_NAMES)[number];
 
-/** Roles that may NEVER be impersonated (and that gate self-protection). */
+/**
+ * Admin accounts: never impersonated, only a SUPER_ADMIN may change one's
+ * status or schedule its deletion, and nobody may revoke their own.
+ */
 export const PRIVILEGED_ROLE_NAMES: readonly string[] = [
   'SUPER_ADMIN',
   'ADMIN',
+];
+
+/**
+ * Accounts no one may impersonate: the admins, and SUPPORT too, whose
+ * token reaches the admin app's read routes; acting as them would put
+ * staff work under someone else's name.
+ */
+export const NON_IMPERSONABLE_ROLE_NAMES: readonly string[] = [
+  ...PRIVILEGED_ROLE_NAMES,
+  'SUPPORT',
 ];
 
 /**

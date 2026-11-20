@@ -27,6 +27,16 @@ export const session = {
     title: "You're in!",
     body: 'A seat opened up, so you\'re now confirmed for "{title}" on {when}.',
   },
+  groupBookingsEnded: {
+    title:
+      '{count, plural, one {Booking cancelled} other {Bookings cancelled}}',
+    body: '{count, plural, one {You\'re no longer in {group, select, null {the group} other {"{group}"}}, so your booking in its members-only session was cancelled.} other {You\'re no longer in {group, select, null {the group} other {"{group}"}}, so your # bookings in its members-only sessions were cancelled.}}',
+  },
+  groupDeletedBookingsEnded: {
+    title:
+      '{count, plural, one {Booking cancelled} other {Bookings cancelled}}',
+    body: '{count, plural, one {{group, select, null {A group you were in} other {"{group}"}} was deleted, so your booking in its session was cancelled.} other {{group, select, null {A group you were in} other {"{group}"}} was deleted, so your # bookings in its sessions were cancelled.}}',
+  },
   cancelled: {
     title: 'Session cancelled',
     body: '"{title}" on {when} has been cancelled.{reason, select, null {} other { Reason: {reason}.}}{note, select, null {} other { "{note}"}}',

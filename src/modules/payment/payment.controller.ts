@@ -21,6 +21,10 @@ import { ApiEndpoint } from '../../common/decorators/api-response.decorator';
 import { PaymentDocs } from '../../common/docs/payment.docs';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { RolesGuard } from '../../common/guards/roles.guard';
+import {
+  AllowWhileImpersonating,
+  NoImpersonationGuard,
+} from '../../common/guards/no-impersonation.guard';
 import { PaginationDto } from '../../common/dto/pagination.dto';
 import { ListPaymentsDto } from './dto/list-payments.dto';
 
@@ -63,7 +67,7 @@ import { ListProductsQueryDto } from './dto/list-products.query.dto';
  */
 @ApiTags('Payments')
 @Controller('payments')
-@UseGuards(AuthGuard('jwt'))
+@UseGuards(AuthGuard('jwt'), NoImpersonationGuard)
 export class PaymentController {
   constructor(
     private readonly connectService: ConnectService,
@@ -112,6 +116,8 @@ export class PaymentController {
    * delivery) and the UI is stuck on a stale state. Rate-limited so
    * a stuck client can't DOS Stripe via this endpoint.
    */
+  // Only copies Stripe's state into ours: support may run it while acting as the coach.
+  @AllowWhileImpersonating()
   @Post('onboarding/refresh-status')
   @UseGuards(RolesGuard)
   @Roles('INSTRUCTOR')

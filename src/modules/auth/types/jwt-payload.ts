@@ -15,6 +15,13 @@ export const TokenTypes = {
    * nothing else. See `AccountDeletionService.issueRestoreTicket`.
    */
   ACCOUNT_RESTORE: 'account-restore',
+  /**
+   * A refresh token. Opens `POST /auth/refresh` only: every other strategy
+   * refuses a token with a `typ`, so even with JWT_REFRESH_SECRET equal to
+   * JWT_SECRET a refresh token is never an access token. Older refresh
+   * tokens carry none and still refresh.
+   */
+  REFRESH: 'refresh',
 } as const;
 
 export type TokenType = (typeof TokenTypes)[keyof typeof TokenTypes];
@@ -44,6 +51,11 @@ export interface JwtPayload {
    * refresh token, which is what makes reading it purely additive.
    */
   typ?: string;
+  /**
+   * Unique per refresh token (its row id), so two minted in the same second
+   * are different strings with different hashes.
+   */
+  jti?: string;
   /** Issued-at (unix seconds). */
   iat?: number;
   /** Expiry (unix seconds). */

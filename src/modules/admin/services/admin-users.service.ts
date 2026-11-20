@@ -33,6 +33,7 @@ import { Program } from '../../workout/entities/program.entity';
 import { Post } from '../../post/entities/post.entity';
 import { ListUsersDto } from '../dto/list-users.dto';
 import { UpdateUserStatusDto } from '../dto/update-user-status.dto';
+import { apiError } from '../../../common/i18n';
 import { PRIVILEGED_ROLE_NAMES } from '../admin.constants';
 import { AdminAuditService } from './admin-audit.service';
 
@@ -317,6 +318,7 @@ export class AdminUsersService {
   ) {
     const user = await this.userModel.findByPk(id, { paranoid: false });
     if (!user) throw new NotFoundException('User not found');
+    await this.assertMayManage(adminId, id);
 
     if (dto.isActive !== undefined) user.isActive = dto.isActive;
     if (dto.unlock) {
@@ -436,6 +438,7 @@ export class AdminUsersService {
     requestEmail: string,
     ip: string | null = null,
   ) {
+    await this.assertMayManage(adminId, id);
     const { scheduledFor } =
       await this.accountDeletionService.scheduleOnRequest(id, requestEmail);
     await this.audit.record({
@@ -472,6 +475,31 @@ export class AdminUsersService {
       'AdminUsersService',
     );
     return this.getUserDetail(id);
+  }
+
+  /**
+   * Staff may not lock each other out. Nobody changes the status of, or
+   * schedules the deletion of, their own account; an ADMIN or SUPER_ADMIN
+   * account is changed by a SUPER_ADMIN only. Without this an ADMIN could
+   * deactivate or delete a SUPER_ADMIN, or force-verify an address so a
+   * provider sign in links to it.
+   */
+  private async assertMayManage(adminId: string, targetId: string) {
+    if (adminId === targetId) {
+      throw new ForbiddenException(apiError('admin.notOnYourself'));
+    }
+    const targetIsPrivileged = await this.roleService.userHasAnyRole(targetId, [
+      ...PRIVILEGED_ROLE_NAMES,
+    ]);
+    if (!targetIsPrivileged) {
+      return;
+    }
+    const actorIsSuperAdmin = await this.roleService.userHasAnyRole(adminId, [
+      'SUPER_ADMIN',
+    ]);
+    if (!actorIsSuperAdmin) {
+      throw new ForbiddenException(apiError('admin.superAdminOnly'));
+    }
   }
 
   private toListItem(u: User) {

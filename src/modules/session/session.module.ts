@@ -45,6 +45,8 @@ import { GroupModule } from '../group/group.module';
  * those modules) so `SessionAccessService` can check eligibility
  * without forcing a circular import on the client/group modules.
  */
+import { SessionGroupListener } from './session-group.listener';
+
 @Module({
   imports: [
     SequelizeModule.forFeature([
@@ -80,6 +82,8 @@ import { GroupModule } from '../group/group.module';
     SessionReminderDispatchService,
     SessionDiscoverService,
     SessionClientService,
+    // Members-only bookings and series when a group membership ends or the group goes.
+    SessionGroupListener,
   ],
   exports: [
     RecurrenceService,

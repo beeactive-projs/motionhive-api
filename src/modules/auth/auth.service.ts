@@ -8,6 +8,7 @@ import type { LoggerService } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import { InjectModel } from '@nestjs/sequelize';
+import { randomUUID } from 'crypto';
 import { WINSTON_MODULE_NEST_PROVIDER } from 'nest-winston';
 import { OAuth2Client } from 'google-auth-library';
 import { Sequelize } from 'sequelize-typescript';
@@ -28,6 +29,7 @@ import { ResetPasswordDto } from './dto/reset-password.dto';
 import { VerifyEmailDto } from './dto/verify-email.dto';
 import { ResendVerificationDto } from './dto/resend-verification.dto';
 import { RoleService } from '../role/role.service';
+import { TokenTypes } from './types/jwt-payload';
 import type { JwtPayload } from './types/jwt-payload';
 import { ProfileService } from '../profile/profile.service';
 import { CustomerService } from '../payment/services/customer.service';
@@ -118,6 +120,12 @@ export interface AuthUserResponse {
  * - Refresh tokens with DB-backed storage and revocation
  * - Change password with token invalidation
  */
+/**
+ * How long a rotated refresh token still refreshes, for two requests a moment
+ * apart (two tabs, a retry after a lost answer). Later it ends the sign in.
+ */
+const REFRESH_REUSE_GRACE_MS = 60_000;
+
 @Injectable()
 export class AuthService {
   constructor(
@@ -448,11 +456,15 @@ export class AuthService {
   // =====================================================
 
   /**
-   * Generate access + refresh tokens and store refresh token hash in DB
+   * Generate access + refresh tokens and store refresh token hash in DB.
+   * A sign in starts a family; a rotation passes the family it continues.
+   *
+   * @Arguments userId, email, opts.id?, opts.familyId?, opts.transaction?
    */
   private async generateAndStoreTokens(
     userId: string,
     email: string,
+    opts: { id?: string; familyId?: string; transaction?: Transaction } = {},
   ): Promise<AuthTokens> {
     const payload = { sub: userId, email };
 
@@ -460,10 +472,14 @@ export class AuthService {
       expiresIn: this.configService.get('JWT_EXPIRES_IN') || '2h',
     });
 
-    const refreshToken = this.jwtService.sign(payload, {
-      secret: this.configService.get('JWT_REFRESH_SECRET'),
-      expiresIn: this.configService.get('JWT_REFRESH_EXPIRES_IN') || '7d',
-    });
+    const id = opts.id ?? randomUUID();
+    const refreshToken = this.jwtService.sign(
+      { ...payload, typ: TokenTypes.REFRESH, jti: id },
+      {
+        secret: this.configService.get('JWT_REFRESH_SECRET'),
+        expiresIn: this.configService.get('JWT_REFRESH_EXPIRES_IN') || '7d',
+      },
+    );
 
     // Store hashed refresh token in DB
     const tokenHash = this.cryptoService.hashToken(refreshToken);
@@ -473,11 +489,21 @@ export class AuthService {
     const days = parseInt(refreshExpiresIn, 10) || 7;
     expiresAt.setDate(expiresAt.getDate() + days);
 
-    await this.refreshTokenModel.create({
-      userId,
-      tokenHash,
-      expiresAt,
-    });
+    let familyId = id;
+    if (opts.familyId) {
+      familyId = opts.familyId;
+    }
+
+    await this.refreshTokenModel.create(
+      {
+        id,
+        userId,
+        tokenHash,
+        expiresAt,
+        familyId,
+      },
+      { transaction: opts.transaction },
+    );
 
     return { accessToken, refreshToken };
   }
@@ -518,8 +544,16 @@ export class AuthService {
   /**
    * Refresh access token
    *
-   * Validates refresh token against DB (must exist, not revoked, not expired).
-   * Rotates the refresh token: issues new one, revokes old one.
+   * Validates refresh token against DB (must exist, not expired) and rotates
+   * it: the old row is claimed in one update, so two refreshes with the same
+   * token never both rotate it. A rotated token that comes back:
+   * - within REFRESH_REUSE_GRACE_MS (two tabs, a retried request) gets its
+   *   own pair in the same sign in;
+   * - later, is a copy someone kept: the whole sign in (family) ends, so a
+   *   thief and the person are both signed out and only the password gets
+   *   back in. Before, the thief kept rotating and the person was signed out.
+   *
+   * @Arguments refreshToken
    */
   async refreshAccessToken(refreshToken: string) {
     let payload: JwtPayload;
@@ -528,6 +562,12 @@ export class AuthService {
         secret: this.configService.get('JWT_REFRESH_SECRET'),
       });
     } catch {
+      throw new UnauthorizedException(apiError('common.unauthorized'));
+    }
+
+    // A refresh token says so (older ones say nothing); a narrower token
+    // signed with the same secret is not one.
+    if (payload.typ !== undefined && payload.typ !== TokenTypes.REFRESH) {
       throw new UnauthorizedException(apiError('common.unauthorized'));
     }
 
@@ -546,13 +586,12 @@ export class AuthService {
       }
     }
 
-    // Verify token exists in DB and is not revoked
+    // Revoked or not: a rotated token coming back is what gives a copy away.
     const tokenHash = this.cryptoService.hashToken(refreshToken);
     const storedToken = await this.refreshTokenModel.findOne({
       where: {
         userId: user.id,
         tokenHash,
-        revokedAt: null,
       },
     });
 
@@ -564,16 +603,95 @@ export class AuthService {
       throw new UnauthorizedException(apiError('common.unauthorized'));
     }
 
-    // Revoke old token
-    await storedToken.update({ revokedAt: new Date() });
+    let familyId = storedToken.id;
+    if (storedToken.familyId) {
+      familyId = storedToken.familyId;
+    }
 
-    // Issue new token pair (rotation)
-    const tokens = await this.generateAndStoreTokens(user.id, user.email);
+    if (storedToken.revokedAt === null) {
+      const rotated = await this.rotateRefreshToken(
+        storedToken.id,
+        familyId,
+        user,
+      );
+      if (rotated) {
+        return rotated;
+      }
+      // Another request rotated it a moment ago: read what it left.
+      await storedToken.reload();
+    }
 
-    return {
-      accessToken: tokens.accessToken,
-      refreshToken: tokens.refreshToken,
-    };
+    const revokedAt = storedToken.revokedAt;
+    const wasRotated = storedToken.replacedById !== null;
+    let withinGrace = false;
+    if (wasRotated && revokedAt) {
+      withinGrace = Date.now() - revokedAt.getTime() <= REFRESH_REUSE_GRACE_MS;
+    }
+    if (withinGrace) {
+      // Only while the sign in is still live: signing out (here or
+      // everywhere) or a new password a moment after a rotation revoked
+      // its successor, and the old token must not undo that.
+      const live = await this.refreshTokenModel.count({
+        where: { familyId, revokedAt: null },
+      });
+      withinGrace = live > 0;
+    }
+
+    if (withinGrace) {
+      const tokens = await this.generateAndStoreTokens(user.id, user.email, {
+        familyId,
+      });
+      return {
+        accessToken: tokens.accessToken,
+        refreshToken: tokens.refreshToken,
+      };
+    }
+
+    if (wasRotated) {
+      await this.refreshTokenModel.update(
+        { revokedAt: new Date() },
+        { where: { familyId, revokedAt: null } },
+      );
+      this.logger.warn(
+        `Refresh token reused after rotation: sign in ${familyId} of user ${user.id} ended`,
+        'AuthService',
+      );
+    }
+
+    throw new UnauthorizedException(apiError('common.unauthorized'));
+  }
+
+  /**
+   * Rotate a live refresh token: claim it (revoke and name its successor)
+   * and store the successor, in one transaction. Null when another request
+   * claimed it first.
+   *
+   * @Arguments tokenId, familyId, user
+   */
+  private async rotateRefreshToken(
+    tokenId: string,
+    familyId: string,
+    user: User,
+  ): Promise<AuthTokens | null> {
+    const nextId = randomUUID();
+    return this.sequelize.transaction(async (transaction) => {
+      const [claimed] = await this.refreshTokenModel.update(
+        { revokedAt: new Date(), replacedById: nextId },
+        { where: { id: tokenId, revokedAt: null }, transaction },
+      );
+      if (claimed === 0) {
+        return null;
+      }
+      const tokens = await this.generateAndStoreTokens(user.id, user.email, {
+        id: nextId,
+        familyId,
+        transaction,
+      });
+      return {
+        accessToken: tokens.accessToken,
+        refreshToken: tokens.refreshToken,
+      };
+    });
   }
 
   /**

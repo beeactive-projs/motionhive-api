@@ -1,5 +1,6 @@
 import { Test } from '@nestjs/testing';
 import { getModelToken } from '@nestjs/sequelize';
+import type { Transaction } from 'sequelize';
 import { WINSTON_MODULE_NEST_PROVIDER } from 'nest-winston';
 import { SessionWaitlistService } from './session-waitlist.service';
 import { SessionInstance } from '../entities/session-instance.entity';
@@ -150,6 +151,44 @@ describe('SessionWaitlistService', () => {
         fakeTx,
       );
       expect(result).toBeNull();
+    });
+  });
+
+  describe('promoteIntoFreeSeats', () => {
+    const instance = {} as SessionInstance;
+    const tx = {} as Transaction;
+
+    it('promotes one by one until nobody waits or the seats are full', async () => {
+      const tryPromote = jest
+        .spyOn(service, 'tryPromote')
+        .mockResolvedValueOnce({ participantId: 'p-1', userId: 'u-1' })
+        .mockResolvedValueOnce({ participantId: 'p-2', userId: 'u-2' })
+        .mockResolvedValueOnce(null);
+
+      await expect(service.promoteIntoFreeSeats(instance, tx)).resolves.toEqual(
+        [
+          { participantId: 'p-1', userId: 'u-1' },
+          { participantId: 'p-2', userId: 'u-2' },
+        ],
+      );
+      expect(tryPromote).toHaveBeenCalledTimes(3);
+      expect(tryPromote).toHaveBeenCalledWith(instance, tx);
+    });
+
+    it('promotes nobody when the first try finds no seat or no one', async () => {
+      jest.spyOn(service, 'tryPromote').mockResolvedValue(null);
+      await expect(service.promoteIntoFreeSeats(instance, tx)).resolves.toEqual(
+        [],
+      );
+    });
+
+    it('stops at the capacity ceiling even if every try succeeds', async () => {
+      const tryPromote = jest
+        .spyOn(service, 'tryPromote')
+        .mockResolvedValue({ participantId: 'p', userId: 'u' });
+      const promoted = await service.promoteIntoFreeSeats(instance, tx);
+      expect(promoted).toHaveLength(1000);
+      expect(tryPromote).toHaveBeenCalledTimes(1000);
     });
   });
 

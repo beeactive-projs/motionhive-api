@@ -12,7 +12,7 @@ import { AuthService } from '../../auth/auth.service';
 import { RoleService } from '../../role/role.service';
 import { User } from '../../user/entities/user.entity';
 import { AdminImpersonationLog } from '../entities/admin-impersonation-log.entity';
-import { PRIVILEGED_ROLE_NAMES } from '../admin.constants';
+import { NON_IMPERSONABLE_ROLE_NAMES } from '../admin.constants';
 
 /**
  * Mints short-lived impersonation tokens (SUPER_ADMIN only). The audit
@@ -49,10 +49,10 @@ export class AdminImpersonationService {
       throw new ForbiddenException('Cannot impersonate a deactivated account.');
     }
 
-    // Never impersonate another admin — privilege-escalation guard.
+    // Never impersonate staff (admins, support): privilege-escalation guard.
     const targetIsPrivileged = await this.roleService.userHasAnyRole(
       targetUserId,
-      [...PRIVILEGED_ROLE_NAMES],
+      [...NON_IMPERSONABLE_ROLE_NAMES],
     );
     if (targetIsPrivileged) {
       throw new ForbiddenException('Cannot impersonate an admin account.');

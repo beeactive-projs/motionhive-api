@@ -14,6 +14,7 @@ import { AuthGuard } from '@nestjs/passport';
 import { ApiTags } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
 import { byAddress } from '../../common/guards/user-throttler.guard';
+import { NoImpersonationGuard } from '../../common/guards/no-impersonation.guard';
 import type { Response } from 'express';
 import { AuthService } from './auth.service';
 import type { AuthenticatedRequest } from '../../common/types/authenticated-request';
@@ -97,7 +98,7 @@ export class AuthController {
    * Logout from all devices — revoke all refresh tokens
    */
   @Delete('logout-all')
-  @UseGuards(AuthGuard('jwt'))
+  @UseGuards(AuthGuard('jwt'), NoImpersonationGuard)
   @Throttle({ default: { limit: 3, ttl: 900000 } })
   async logoutAll(@Request() req: AuthenticatedRequest) {
     return this.authService.logoutAll(req.user.id);
@@ -107,7 +108,7 @@ export class AuthController {
    * Change password (authenticated)
    */
   @Patch('change-password')
-  @UseGuards(AuthGuard('jwt'))
+  @UseGuards(AuthGuard('jwt'), NoImpersonationGuard)
   @Throttle({ default: { limit: 5, ttl: 3600000 } })
   async changePassword(
     @Body() dto: ChangePasswordDto,

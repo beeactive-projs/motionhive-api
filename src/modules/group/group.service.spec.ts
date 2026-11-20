@@ -1,3 +1,5 @@
+import { EventEmitter2 } from '@nestjs/event-emitter';
+import { GROUP_DELETED, GROUP_MEMBERSHIP_ENDED } from './group.events';
 import { Invitation } from '../invitation/entities/invitation.entity';
 import { Op } from 'sequelize';
 import {
@@ -52,6 +54,7 @@ describe('GroupService', () => {
   let groupCategoryModel: ModelMock & { bulkCreate: jest.Mock };
   let categoryService: { assertPickable: jest.Mock };
   let notificationService: { notify: jest.Mock; notifyMany: jest.Mock };
+  let events: { emitAsync: jest.Mock };
 
   // Fake transaction object that the service hands through.
   const tx = {
@@ -93,9 +96,12 @@ describe('GroupService', () => {
       notifyMany: jest.fn().mockResolvedValue(undefined),
     };
 
+    events = { emitAsync: jest.fn().mockResolvedValue([]) };
+
     const moduleRef = await Test.createTestingModule({
       providers: [
         GroupService,
+        { provide: EventEmitter2, useValue: events },
         { provide: getModelToken(Group), useValue: groupModel },
         { provide: getModelToken(GroupMember), useValue: memberModel },
         {
@@ -433,6 +439,14 @@ describe('GroupService', () => {
           message: { key: 'group.deleted', params: { group: 'Yoga' } },
         }),
       );
+      // Its members-only sessions stop, once the delete has committed.
+      expect(events.emitAsync).toHaveBeenCalledWith(GROUP_DELETED, {
+        groupId: 'g-1',
+        groupName: 'Yoga',
+      });
+      expect(tx.commit.mock.invocationCallOrder[0]).toBeLessThan(
+        events.emitAsync.mock.invocationCallOrder[0],
+      );
     });
   });
 
@@ -479,6 +493,42 @@ describe('GroupService', () => {
       );
     });
 
+    it('announces the ended membership after saving it, so their members-only bookings end', async () => {
+      groupModel.findByPk.mockResolvedValue({ id: 'g-1', name: 'Yoga' });
+      const member = activeMember();
+      memberModel.findOne
+        .mockResolvedValueOnce(activeOwner())
+        .mockResolvedValueOnce(member);
+
+      await service.removeMember('g-1', 'm-1', 'owner-1');
+
+      expect(events.emitAsync).toHaveBeenCalledWith(GROUP_MEMBERSHIP_ENDED, {
+        groupId: 'g-1',
+        groupName: 'Yoga',
+        userId: 'm-1',
+        reason: 'REMOVED',
+      });
+      expect(member.update.mock.invocationCallOrder[0]).toBeLessThan(
+        events.emitAsync.mock.invocationCallOrder[0],
+      );
+    });
+
+    it('still removes the member when ending the bookings fails', async () => {
+      groupModel.findByPk.mockResolvedValue({ id: 'g-1', name: 'Yoga' });
+      const member = activeMember();
+      memberModel.findOne
+        .mockResolvedValueOnce(activeOwner())
+        .mockResolvedValueOnce(member);
+      events.emitAsync.mockRejectedValue(new Error('db down'));
+
+      await expect(
+        service.removeMember('g-1', 'm-1', 'owner-1'),
+      ).resolves.toBeUndefined();
+      expect(notificationService.notify).toHaveBeenCalledWith(
+        expect.objectContaining({ userId: 'm-1' }),
+      );
+    });
+
     it('rejects non-owner caller with 403', async () => {
       groupModel.findByPk.mockResolvedValue({ id: 'g-1', name: 'Yoga' });
       memberModel.findOne.mockResolvedValueOnce({
@@ -514,6 +564,53 @@ describe('GroupService', () => {
       await expect(
         service.removeMember('g-1', 'ghost', 'owner-1'),
       ).rejects.toBeInstanceOf(NotFoundException);
+      expect(events.emitAsync).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('leaveGroup', () => {
+    it('announces the ended membership, so their members-only bookings end', async () => {
+      const update = jest.fn().mockResolvedValue(undefined);
+      memberModel.findOne.mockResolvedValueOnce({
+        groupId: 'g-1',
+        userId: 'm-1',
+        leftAt: null,
+        isOwner: false,
+        role: GroupMemberRole.MEMBER,
+        update,
+      });
+      groupModel.findByPk.mockResolvedValue({
+        id: 'g-1',
+        name: 'Yoga',
+        instructorId: 'owner-1',
+      });
+
+      await service.leaveGroup('g-1', 'm-1');
+
+      expect(update).toHaveBeenCalledWith(
+        expect.objectContaining({ leftAt: expect.any(Date) }),
+      );
+      expect(events.emitAsync).toHaveBeenCalledWith(GROUP_MEMBERSHIP_ENDED, {
+        groupId: 'g-1',
+        groupName: 'Yoga',
+        userId: 'm-1',
+        reason: 'LEFT',
+      });
+    });
+
+    it('announces nothing when the owner tries to leave', async () => {
+      memberModel.findOne.mockResolvedValueOnce({
+        groupId: 'g-1',
+        userId: 'owner-1',
+        leftAt: null,
+        isOwner: true,
+        role: GroupMemberRole.OWNER,
+        update: jest.fn(),
+      });
+      await expect(service.leaveGroup('g-1', 'owner-1')).rejects.toBeInstanceOf(
+        ForbiddenException,
+      );
+      expect(events.emitAsync).not.toHaveBeenCalled();
     });
   });
 

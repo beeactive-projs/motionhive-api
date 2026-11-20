@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { APP_INTERCEPTOR } from '@nestjs/core';
 import { SequelizeModule } from '@nestjs/sequelize';
 import { AuthModule } from '../auth/auth.module';
 import { AccountDeletionModule } from '../account-deletion/account-deletion.module';
@@ -60,6 +61,7 @@ import { AdminJobsService } from './services/admin-jobs.service';
 import { AdminPaymentsService } from './services/admin-payments.service';
 import { AdminContentService } from './services/admin-content.service';
 import { AdminDomainService } from './services/admin-domain.service';
+import { ImpersonationAuditInterceptor } from './impersonation-audit.interceptor';
 import { AdminAuditService } from './services/admin-audit.service';
 
 /**
@@ -132,6 +134,8 @@ import { AdminAuditService } from './services/admin-audit.service';
     AdminContentService,
     AdminDomainService,
     AdminAuditService,
+    // Every write made while impersonating gets an audit row, app-wide.
+    { provide: APP_INTERCEPTOR, useClass: ImpersonationAuditInterceptor },
   ],
 })
 export class AdminModule {}

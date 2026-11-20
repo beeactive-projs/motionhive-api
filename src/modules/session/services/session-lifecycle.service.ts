@@ -19,16 +19,20 @@ import { SessionInstance } from '../entities/session-instance.entity';
 import { SessionParticipant } from '../entities/session-participant.entity';
 import { SessionTemplate } from '../entities/session-template.entity';
 import {
+  SessionAccess,
   SessionInstanceStatus,
   SessionParticipantStatus,
   SessionTemplateStatus,
 } from '../entities/session.enums';
 import { SessionConflictService } from './session-conflict.service';
+import { SessionWaitlistService } from './session-waitlist.service';
 import { CancelInstanceDto } from '../dto/cancel-instance.dto';
 import { RescheduleInstanceDto } from '../dto/reschedule-instance.dto';
 import { PatchInstanceDto } from '../dto/patch-instance.dto';
 import { FollowUpDto } from '../dto/follow-up.dto';
 import {
+  bookingPromotedForUser,
+  groupDeletedBookingsEndedForUser,
   sessionCancelledForUser,
   sessionFollowUpForUser,
   sessionRescheduledForUser,
@@ -74,6 +78,7 @@ export class SessionLifecycleService {
     private readonly templateModel: typeof SessionTemplate,
     private readonly conflictService: SessionConflictService,
     private readonly venueService: VenueService,
+    private readonly waitlistService: SessionWaitlistService,
     private readonly notifications: NotificationService,
     private readonly sequelize: Sequelize,
     @Inject(WINSTON_MODULE_NEST_PROVIDER)
@@ -389,6 +394,148 @@ export class SessionLifecycleService {
     return result;
   }
 
+  // ─── GROUP DELETED ────────────────────────────────────────────────────
+
+  /**
+   * A group was deleted: its members-only (GROUP_ONLY) series stop, since
+   * nobody can be a member any more. For each series still running (ACTIVE,
+   * or ENDED with occurrences left) the occurrences ahead are cancelled
+   * with their open bookings, and an ACTIVE series becomes CANCELLED so the
+   * nightly top-up makes no more. Past occurrences keep their history.
+   * Open and clients-only series linked to the group carry on: anyone
+   * allowed in may still book them.
+   *
+   * One transaction per series; one failing is logged and the rest still
+   * stop. Everyone whose booking ended hears once, with the count (the
+   * coach deleted the group, so they are not told). Returns the series
+   * that changed, for the search index.
+   */
+  async cancelDeletedGroupSessions(
+    groupId: string,
+    groupName: string,
+  ): Promise<{
+    templateIds: string[];
+    cancelledInstances: number;
+    notifiedUserIds: string[];
+  }> {
+    const open = [
+      SessionParticipantStatus.Confirmed,
+      SessionParticipantStatus.PendingApproval,
+      SessionParticipantStatus.Waitlisted,
+    ];
+    const series = await this.templateModel.findAll({
+      where: {
+        groupId,
+        access: SessionAccess.GroupOnly,
+        status: [SessionTemplateStatus.Active, SessionTemplateStatus.Ended],
+      },
+      attributes: ['id'],
+    });
+
+    const templateIds: string[] = [];
+    const endedPerUser = new Map<string, number>();
+    let cancelledInstances = 0;
+    for (const row of series) {
+      try {
+        const stopped = await this.sequelize.transaction(async (tx) => {
+          const template = await this.templateModel.findOne({
+            where: { id: row.id },
+            lock: tx.LOCK.UPDATE,
+            transaction: tx,
+          });
+          if (!template) {
+            return null;
+          }
+          const now = new Date();
+          const ahead = await this.instanceModel.findAll({
+            where: {
+              templateId: template.id,
+              status: SessionInstanceStatus.Scheduled,
+              startAt: { [Op.gt]: now },
+            },
+            attributes: ['id'],
+            lock: tx.LOCK.UPDATE,
+            transaction: tx,
+          });
+          const instanceIds = ahead.map((instance) => instance.id);
+
+          let bookedUserIds: string[] = [];
+          if (instanceIds.length > 0) {
+            await this.instanceModel.update(
+              { status: SessionInstanceStatus.Cancelled, cancelledAt: now },
+              { where: { id: instanceIds }, transaction: tx },
+            );
+            const booked = await this.participantModel.findAll({
+              where: { instanceId: instanceIds, status: open },
+              attributes: ['userId'],
+              transaction: tx,
+            });
+            bookedUserIds = booked.map((participant) => participant.userId);
+            await this.participantModel.update(
+              {
+                status: SessionParticipantStatus.Cancelled,
+                cancelledAt: now,
+                waitlistPosition: null,
+              },
+              {
+                where: { instanceId: instanceIds, status: open },
+                transaction: tx,
+              },
+            );
+          }
+          if (template.status === SessionTemplateStatus.Active) {
+            await template.update(
+              { status: SessionTemplateStatus.Cancelled, endedAt: now },
+              { transaction: tx },
+            );
+          }
+          return { cancelled: instanceIds.length, bookedUserIds };
+        });
+        if (!stopped) {
+          continue;
+        }
+        templateIds.push(row.id);
+        cancelledInstances += stopped.cancelled;
+        for (const userId of stopped.bookedUserIds) {
+          endedPerUser.set(userId, (endedPerUser.get(userId) ?? 0) + 1);
+        }
+      } catch (err) {
+        this.logger.error(
+          `[lifecycle] could not stop series ${row.id} of deleted group ${groupId}: ${(err as Error).message}`,
+          'SessionLifecycleService',
+        );
+      }
+    }
+
+    // notify-after-commit: every series above has committed.
+    for (const [userId, count] of endedPerUser) {
+      await this.notifications
+        .notify(
+          groupDeletedBookingsEndedForUser(
+            userId,
+            { id: groupId, name: groupName },
+            count,
+          ),
+        )
+        .catch((err: Error) =>
+          this.logger.error(
+            `[lifecycle] notify deleted-group bookings failed for user ${userId}, group ${groupId}: ${err.message}`,
+            'SessionLifecycleService',
+          ),
+        );
+    }
+
+    this.logger.log?.(
+      `[lifecycle] deleted group ${groupId}: stopped ${templateIds.length} series, cancelled ${cancelledInstances} sessions, told ${endedPerUser.size} people`,
+      'SessionLifecycleService',
+    );
+    return {
+      templateIds,
+      cancelledInstances,
+      notifiedUserIds: [...endedPerUser.keys()],
+    };
+  }
+
   // ─── PATCH (per-occurrence overrides) ────────────────────────────────
 
   async patchInstance(
@@ -396,7 +543,8 @@ export class SessionLifecycleService {
     instanceId: string,
     dto: PatchInstanceDto,
   ): Promise<SessionInstance> {
-    return this.sequelize.transaction(async (tx) => {
+    const outbox = new NotificationOutbox(this.notifications, this.logger);
+    const result = await this.sequelize.transaction(async (tx) => {
       const instance = await this.lockInstanceWithTemplate(instanceId, tx);
       this.assertOwner(instance, instructorId);
 
@@ -468,12 +616,93 @@ export class SessionLifecycleService {
         await instance.update(updates, { transaction: tx });
       }
 
+      // A raised capacity (or a cleared override back to a larger series
+      // capacity) frees seats: the oldest waitlisters move in, as when a
+      // booking is cancelled. They used to stay waitlisted while the next
+      // new booker took the seat.
+      if (
+        dto.capacityOverride !== undefined &&
+        instance.status === SessionInstanceStatus.Scheduled &&
+        instance.template.waitlistEnabled
+      ) {
+        const promoted = await this.waitlistService.promoteIntoFreeSeats(
+          instance,
+          tx,
+        );
+        if (promoted.length > 0) {
+          await this.refreshCounters(instance, tx);
+          const ref = this.toRef(instance, instance.template);
+          for (const promo of promoted) {
+            outbox.add(bookingPromotedForUser(promo.userId, ref));
+          }
+        }
+      }
+
       this.logger.log?.(
         `[lifecycle] override instance=${instance.id} fields=${Object.keys(updates).join(',')}`,
         'SessionLifecycleService',
       );
       return instance;
     });
+
+    // notify-after-commit: the people who moved off the waitlist.
+    await outbox.flush();
+    return result;
+  }
+
+  /**
+   * After a series' capacity went up (SessionTemplateService.update): fill
+   * the free seats of every future occurrence that follows the series
+   * capacity (no capacity of its own) and has people waiting. One
+   * transaction per occurrence, each under its lock; one failing is logged
+   * and the rest still fill. Returns how many people moved in.
+   */
+  async promoteAfterSeriesCapacityRaise(templateId: string): Promise<number> {
+    const waiting = await this.instanceModel.findAll({
+      where: {
+        templateId,
+        status: SessionInstanceStatus.Scheduled,
+        startAt: { [Op.gt]: new Date() },
+        capacityOverride: null,
+        waitlistedCount: { [Op.gt]: 0 },
+      },
+      attributes: ['id'],
+      order: [['startAt', 'ASC']],
+    });
+
+    let total = 0;
+    for (const row of waiting) {
+      const outbox = new NotificationOutbox(this.notifications, this.logger);
+      try {
+        const moved = await this.sequelize.transaction(async (tx) => {
+          const instance = await this.lockInstanceWithTemplate(row.id, tx);
+          if (
+            instance.status !== SessionInstanceStatus.Scheduled ||
+            !instance.template.waitlistEnabled
+          ) {
+            return 0;
+          }
+          const promoted = await this.waitlistService.promoteIntoFreeSeats(
+            instance,
+            tx,
+          );
+          const ref = this.toRef(instance, instance.template);
+          for (const promo of promoted) {
+            outbox.add(bookingPromotedForUser(promo.userId, ref));
+          }
+          return promoted.length;
+        });
+        total += moved;
+        await outbox.flush();
+      } catch (err) {
+        outbox.discard();
+        this.logger.error(
+          `[lifecycle] waitlist fill failed on instance=${row.id} after a series capacity raise: ${(err as Error).message}`,
+          'SessionLifecycleService',
+        );
+      }
+    }
+    return total;
   }
 
   // ─── FOLLOW-UP (post-session blast) ──────────────────────────────────
@@ -578,6 +807,23 @@ export class SessionLifecycleService {
     });
     if (!instance) throw new NotFoundException(apiError('session.notFound'));
     return instance;
+  }
+
+  /** Re-read the seat counters a promotion moved, so the answer is current. */
+  private async refreshCounters(
+    instance: SessionInstance,
+    tx: Transaction,
+  ): Promise<void> {
+    const fresh = await this.instanceModel.findOne({
+      where: { id: instance.id },
+      attributes: ['confirmedCount', 'waitlistedCount'],
+      transaction: tx,
+    });
+    if (!fresh) {
+      return;
+    }
+    instance.setDataValue('confirmedCount', fresh.confirmedCount);
+    instance.setDataValue('waitlistedCount', fresh.waitlistedCount);
   }
 
   private assertOwner(instance: SessionInstance, callerId: string): void {

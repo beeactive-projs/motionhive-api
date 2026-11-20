@@ -13,6 +13,7 @@ import {
 import { VenueService } from '../../venue/venue.service';
 import { GroupService } from '../../group/group.service';
 import { SearchIndexService } from '../../search/search-index.service';
+import { SessionLifecycleService } from './session-lifecycle.service';
 import { makeSilentLogger } from '../../../../test/helpers/sequelize-mocks';
 
 const makeTx = () => ({
@@ -73,8 +74,12 @@ describe('SessionTemplateService', () => {
   let venueServiceMock: ReturnType<typeof makeVenueServiceMock>;
   let groupServiceMock: ReturnType<typeof makeGroupServiceMock>;
   let searchIndexServiceMock: ReturnType<typeof makeSearchIndexServiceMock>;
+  let lifecycleMock: { promoteAfterSeriesCapacityRaise: jest.Mock };
 
   beforeEach(async () => {
+    lifecycleMock = {
+      promoteAfterSeriesCapacityRaise: jest.fn().mockResolvedValue(0),
+    };
     templateMock = makeTemplateMock();
     instanceMock = makeInstanceMock();
     venueServiceMock = makeVenueServiceMock();
@@ -90,6 +95,7 @@ describe('SessionTemplateService', () => {
         { provide: VenueService, useValue: venueServiceMock },
         { provide: GroupService, useValue: groupServiceMock },
         { provide: SearchIndexService, useValue: searchIndexServiceMock },
+        { provide: SessionLifecycleService, useValue: lifecycleMock },
         { provide: WINSTON_MODULE_NEST_PROVIDER, useValue: makeSilentLogger() },
       ],
     }).compile();
@@ -348,6 +354,70 @@ describe('SessionTemplateService', () => {
         expect.objectContaining({ title: 'New Title' }),
       );
       expect(result).toBe(tmpl);
+    });
+
+    describe('a capacity change', () => {
+      const templateWith = (
+        capacity: number | null,
+        waitlistEnabled = true,
+      ) => ({
+        id: 'tmpl-1',
+        instructorId: 'usr-1',
+        capacity,
+        waitlistEnabled,
+        update: jest.fn().mockImplementation(function (
+          this: unknown,
+          updates: unknown,
+        ) {
+          Object.assign(this as object, updates as object);
+          return Promise.resolve(this);
+        }),
+      });
+
+      it('fills the waitlists when the series gets more seats', async () => {
+        templateMock.findOne.mockResolvedValue(templateWith(10));
+        await service.update('usr-1', 'tmpl-1', { capacity: 12 });
+        expect(
+          lifecycleMock.promoteAfterSeriesCapacityRaise,
+        ).toHaveBeenCalledWith('tmpl-1');
+      });
+
+      it('fills them when the limit is removed', async () => {
+        templateMock.findOne.mockResolvedValue(templateWith(10));
+        await service.update('usr-1', 'tmpl-1', {
+          capacity: null as unknown as number,
+        });
+        expect(
+          lifecycleMock.promoteAfterSeriesCapacityRaise,
+        ).toHaveBeenCalledWith('tmpl-1');
+      });
+
+      it('moves nobody on a lower or equal capacity, an unlimited series, or no waitlist', async () => {
+        templateMock.findOne.mockResolvedValue(templateWith(10));
+        await service.update('usr-1', 'tmpl-1', { capacity: 8 });
+        templateMock.findOne.mockResolvedValue(templateWith(10));
+        await service.update('usr-1', 'tmpl-1', { capacity: 10 });
+        templateMock.findOne.mockResolvedValue(templateWith(null));
+        await service.update('usr-1', 'tmpl-1', { capacity: 30 });
+        templateMock.findOne.mockResolvedValue(templateWith(10, false));
+        await service.update('usr-1', 'tmpl-1', { capacity: 30 });
+        templateMock.findOne.mockResolvedValue(templateWith(10));
+        await service.update('usr-1', 'tmpl-1', { title: 'Renamed' });
+        expect(
+          lifecycleMock.promoteAfterSeriesCapacityRaise,
+        ).not.toHaveBeenCalled();
+      });
+
+      it('still saves the change when filling the waitlists fails', async () => {
+        const tmpl = templateWith(10);
+        templateMock.findOne.mockResolvedValue(tmpl);
+        lifecycleMock.promoteAfterSeriesCapacityRaise.mockRejectedValue(
+          new Error('db down'),
+        );
+        await expect(
+          service.update('usr-1', 'tmpl-1', { capacity: 12 }),
+        ).resolves.toBe(tmpl);
+      });
     });
 
     it('throws BadRequestException for invalid timezone in update', async () => {

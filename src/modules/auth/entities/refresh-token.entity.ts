@@ -59,6 +59,23 @@ export class RefreshToken extends Model {
   })
   declare revokedAt: Date | null;
 
+  /**
+   * The first token of this sign in; every rotation keeps it (migration
+   * 087). Null on a token written before it: read as the token's own id.
+   */
+  @Column({
+    type: DataType.CHAR(36),
+    allowNull: true,
+  })
+  declare familyId: string | null;
+
+  /** The token this one was rotated into; null while live or signed out. */
+  @Column({
+    type: DataType.CHAR(36),
+    allowNull: true,
+  })
+  declare replacedById: string | null;
+
   @CreatedAt
   declare createdAt: Date;
 

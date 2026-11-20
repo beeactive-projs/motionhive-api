@@ -49,6 +49,7 @@ describe('AuthService (smoke)', () => {
     create: jest.Mock;
     findOne: jest.Mock;
     update: jest.Mock;
+    count: jest.Mock;
   };
   let sequelizeMock: { transaction: jest.Mock };
   let cryptoService: { hashToken: jest.Mock; generateToken: jest.Mock };
@@ -94,6 +95,7 @@ describe('AuthService (smoke)', () => {
       create: jest.fn().mockResolvedValue(undefined),
       findOne: jest.fn(),
       update: jest.fn().mockResolvedValue(undefined),
+      count: jest.fn().mockResolvedValue(1),
     };
     sequelizeMock = {
       transaction: jest.fn().mockResolvedValue(tx),
@@ -418,5 +420,168 @@ describe('AuthService (smoke)', () => {
     await expect(
       service.refreshAccessToken('some.jwt.token'),
     ).rejects.toBeInstanceOf(UnauthorizedException);
+  });
+
+  describe('refresh token rotation', () => {
+    const now = Date.now();
+
+    function storedToken(fields: Record<string, unknown>) {
+      const row: Record<string, unknown> = {
+        id: 't-1',
+        familyId: 'f-1',
+        expiresAt: new Date(now + 86_400_000),
+        revokedAt: null,
+        replacedById: null,
+        ...fields,
+      };
+      row.reload = jest.fn().mockResolvedValue(row);
+      return row;
+    }
+
+    beforeEach(() => {
+      jwtService.verify.mockReturnValue({
+        sub: 'u-1',
+        email: 'jane@example.com',
+        typ: 'refresh',
+        iat: Math.floor(now / 1000),
+      });
+      userService.findById.mockResolvedValue({
+        id: 'u-1',
+        email: 'jane@example.com',
+        isActive: true,
+        passwordChangedAt: null,
+      });
+      sequelizeMock.transaction.mockImplementation((work: unknown) => {
+        if (typeof work === 'function') {
+          return (work as (t: unknown) => Promise<unknown>)(tx);
+        }
+        return Promise.resolve(tx);
+      });
+    });
+
+    it('claims the old token and names its successor, in one transaction', async () => {
+      refreshTokenModel.findOne.mockResolvedValue(storedToken({}));
+      refreshTokenModel.update.mockResolvedValue([1]);
+
+      const result = await service.refreshAccessToken('old.refresh.token');
+
+      expect(result).toHaveProperty('refreshToken');
+      const [values, options] = refreshTokenModel.update.mock.calls[0] as [
+        { revokedAt: Date; replacedById: string },
+        { where: Record<string, unknown>; transaction: unknown },
+      ];
+      expect(options).toEqual({
+        where: { id: 't-1', revokedAt: null },
+        transaction: tx,
+      });
+      const [row] = refreshTokenModel.create.mock.calls[0] as [
+        { id: string; familyId: string },
+      ];
+      expect(row.id).toBe(values.replacedById);
+      expect(row.familyId).toBe('f-1');
+      // Unique per token, and never usable as an access token.
+      expect(jwtService.sign).toHaveBeenCalledWith(
+        expect.objectContaining({ typ: 'refresh', jti: row.id }),
+        expect.anything(),
+      );
+    });
+
+    // Two tabs, or a retry after a lost answer: the second refresh a moment
+    // later must not sign the person out.
+    it('gives a second refresh a moment later its own pair in the same sign in', async () => {
+      const row = storedToken({});
+      row.reload = jest.fn(() => {
+        row.revokedAt = new Date(now - 1_000);
+        row.replacedById = 't-2';
+        return Promise.resolve(row);
+      });
+      refreshTokenModel.findOne.mockResolvedValue(row);
+      refreshTokenModel.update.mockResolvedValue([0]);
+
+      await expect(
+        service.refreshAccessToken('old.refresh.token'),
+      ).resolves.toHaveProperty('accessToken');
+
+      expect(refreshTokenModel.create).toHaveBeenCalledWith(
+        expect.objectContaining({ familyId: 'f-1' }),
+        expect.anything(),
+      );
+    });
+
+    // A stolen token kept rotating for the thief while the person was
+    // simply signed out.
+    it('ends the whole sign in when a rotated token comes back later', async () => {
+      refreshTokenModel.findOne.mockResolvedValue(
+        storedToken({
+          revokedAt: new Date(now - 5 * 60_000),
+          replacedById: 't-2',
+        }),
+      );
+
+      await expect(
+        service.refreshAccessToken('old.refresh.token'),
+      ).rejects.toBeInstanceOf(UnauthorizedException);
+
+      expect(refreshTokenModel.update).toHaveBeenCalledWith(
+        { revokedAt: expect.any(Date) as unknown },
+        { where: { familyId: 'f-1', revokedAt: null } },
+      );
+      expect(refreshTokenModel.create).not.toHaveBeenCalled();
+    });
+
+    it('lets no old token undo a sign out made a moment after a rotation', async () => {
+      refreshTokenModel.findOne.mockResolvedValue(
+        storedToken({ revokedAt: new Date(now - 1_000), replacedById: 't-2' }),
+      );
+      refreshTokenModel.count.mockResolvedValue(0);
+
+      await expect(
+        service.refreshAccessToken('old.refresh.token'),
+      ).rejects.toBeInstanceOf(UnauthorizedException);
+      expect(refreshTokenModel.create).not.toHaveBeenCalled();
+    });
+
+    it('refuses a signed out token without touching the rest', async () => {
+      refreshTokenModel.findOne.mockResolvedValue(
+        storedToken({ revokedAt: new Date(now - 5 * 60_000) }),
+      );
+
+      await expect(
+        service.refreshAccessToken('old.refresh.token'),
+      ).rejects.toBeInstanceOf(UnauthorizedException);
+      expect(refreshTokenModel.update).not.toHaveBeenCalled();
+    });
+
+    it('refuses a narrower token signed with the same secret', async () => {
+      jwtService.verify.mockReturnValue({
+        sub: 'u-1',
+        typ: 'account-restore',
+        iat: Math.floor(now / 1000),
+      });
+
+      await expect(
+        service.refreshAccessToken('restore.ticket'),
+      ).rejects.toBeInstanceOf(UnauthorizedException);
+      expect(refreshTokenModel.findOne).not.toHaveBeenCalled();
+    });
+
+    it('reads a token from before families as its own family', async () => {
+      jwtService.verify.mockReturnValue({
+        sub: 'u-1',
+        email: 'jane@example.com',
+        iat: Math.floor(now / 1000),
+      });
+      refreshTokenModel.findOne.mockResolvedValue(
+        storedToken({ id: 't-old', familyId: null }),
+      );
+      refreshTokenModel.update.mockResolvedValue([1]);
+
+      await service.refreshAccessToken('old.refresh.token');
+
+      expect(refreshTokenModel.create).toHaveBeenCalledWith(
+        expect.objectContaining({ familyId: 't-old' }),
+        expect.anything(),
+      );
+    });
   });
 });

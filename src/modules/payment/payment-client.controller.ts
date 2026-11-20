@@ -18,6 +18,7 @@ import { ApiEndpoint } from '../../common/decorators/api-response.decorator';
 import { PaymentDocs } from '../../common/docs/payment.docs';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { RolesGuard } from '../../common/guards/roles.guard';
+import { NoImpersonationGuard } from '../../common/guards/no-impersonation.guard';
 import { PaginationDto } from '../../common/dto/pagination.dto';
 
 import { InvoiceService } from './services/invoice.service';
@@ -27,7 +28,7 @@ import { CreateCheckoutDto } from './dto/create-checkout.dto';
 
 @ApiTags('Payments (Client)')
 @Controller('payments/my')
-@UseGuards(AuthGuard('jwt'))
+@UseGuards(AuthGuard('jwt'), NoImpersonationGuard)
 export class PaymentClientController {
   constructor(
     private readonly invoiceService: InvoiceService,

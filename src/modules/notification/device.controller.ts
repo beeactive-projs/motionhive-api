@@ -14,6 +14,7 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
+import { NoImpersonationGuard } from '../../common/guards/no-impersonation.guard';
 import { ApiTags } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
 import { ApiEndpoint } from '../../common/decorators/api-response.decorator';
@@ -34,7 +35,7 @@ import { RegisterDeviceDto } from './dto/register-device.dto';
  */
 @ApiTags('Devices')
 @Controller('devices')
-@UseGuards(AuthGuard('jwt'))
+@UseGuards(AuthGuard('jwt'), NoImpersonationGuard)
 export class DeviceController {
   constructor(private readonly devices: DeviceTokenService) {}
 

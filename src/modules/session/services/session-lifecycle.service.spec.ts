@@ -6,6 +6,7 @@ import { Op } from 'sequelize';
 import { Sequelize } from 'sequelize-typescript';
 import { SessionLifecycleService } from './session-lifecycle.service';
 import { SessionConflictService } from './session-conflict.service';
+import { SessionWaitlistService } from './session-waitlist.service';
 import { SessionInstance } from '../entities/session-instance.entity';
 import { SessionParticipant } from '../entities/session-participant.entity';
 import { SessionTemplate } from '../entities/session-template.entity';
@@ -89,10 +90,11 @@ describe('SessionLifecycleService', () => {
     update: jest.Mock;
   };
   let participantModel: { findAll: jest.Mock; update: jest.Mock };
-  let templateModel: { findOne: jest.Mock };
+  let templateModel: { findOne: jest.Mock; findAll: jest.Mock };
   let conflictService: { recomputeFor: jest.Mock };
   let venueService: { get: jest.Mock };
   let notifyService: { notify: jest.Mock };
+  let waitlistService: { promoteIntoFreeSeats: jest.Mock };
 
   beforeEach(async () => {
     instanceModel = {
@@ -104,10 +106,14 @@ describe('SessionLifecycleService', () => {
       findAll: jest.fn().mockResolvedValue([]),
       update: jest.fn().mockResolvedValue([0]),
     };
-    templateModel = { findOne: jest.fn() };
+    templateModel = {
+      findOne: jest.fn(),
+      findAll: jest.fn().mockResolvedValue([]),
+    };
     conflictService = { recomputeFor: jest.fn().mockResolvedValue([]) };
     venueService = { get: jest.fn().mockResolvedValue({ id: 'v' }) };
     notifyService = { notify: jest.fn().mockResolvedValue(undefined) };
+    waitlistService = { promoteIntoFreeSeats: jest.fn().mockResolvedValue([]) };
 
     const module = await Test.createTestingModule({
       providers: [
@@ -120,6 +126,7 @@ describe('SessionLifecycleService', () => {
         { provide: getModelToken(SessionTemplate), useValue: templateModel },
         { provide: SessionConflictService, useValue: conflictService },
         { provide: VenueService, useValue: venueService },
+        { provide: SessionWaitlistService, useValue: waitlistService },
         { provide: NotificationService, useValue: notifyService },
         { provide: Sequelize, useValue: fakeSequelize() },
         { provide: WINSTON_MODULE_NEST_PROVIDER, useValue: makeSilentLogger() },
@@ -325,6 +332,74 @@ describe('SessionLifecycleService', () => {
   // ─── PATCH (overrides) ────────────────────────────────────────────
 
   describe('patchInstance', () => {
+    it('moves the waitlist into the seats a raised capacity frees, and tells each person', async () => {
+      const inst = makeInst({
+        confirmedCount: 5,
+        capacityOverride: 5,
+        template: { waitlistEnabled: true },
+      });
+      instanceModel.findOne
+        .mockResolvedValueOnce(inst)
+        .mockResolvedValueOnce({ confirmedCount: 7, waitlistedCount: 1 });
+      waitlistService.promoteIntoFreeSeats.mockResolvedValue([
+        { participantId: 'p-1', userId: 'usr-a' },
+        { participantId: 'p-2', userId: 'usr-b' },
+      ]);
+      const setDataValue = jest.fn();
+      Object.assign(inst, { setDataValue });
+
+      await service.patchInstance('usr-instr', 'inst-1', {
+        capacityOverride: 7,
+      });
+
+      expect(waitlistService.promoteIntoFreeSeats).toHaveBeenCalledWith(
+        inst,
+        expect.anything(),
+      );
+      expect(setDataValue).toHaveBeenCalledWith('confirmedCount', 7);
+      expect(setDataValue).toHaveBeenCalledWith('waitlistedCount', 1);
+      const told = notifyService.notify.mock.calls.map(
+        (c: [{ userId: string; message: { key: string } }]) => [
+          c[0].userId,
+          c[0].message.key,
+        ],
+      );
+      expect(told).toEqual([
+        ['usr-a', 'session.bookingPromoted'],
+        ['usr-b', 'session.bookingPromoted'],
+      ]);
+    });
+
+    it('moves nobody when the session has no waitlist, or the patch is not about capacity', async () => {
+      instanceModel.findOne.mockResolvedValue(
+        makeInst({ template: { waitlistEnabled: false } }),
+      );
+      await service.patchInstance('usr-instr', 'inst-1', {
+        capacityOverride: 20,
+      });
+      instanceModel.findOne.mockResolvedValue(
+        makeInst({ template: { waitlistEnabled: true } }),
+      );
+      await service.patchInstance('usr-instr', 'inst-1', {
+        titleOverride: 'New title',
+      });
+      expect(waitlistService.promoteIntoFreeSeats).not.toHaveBeenCalled();
+      expect(notifyService.notify).not.toHaveBeenCalled();
+    });
+
+    it('moves nobody into a session that is no longer scheduled', async () => {
+      instanceModel.findOne.mockResolvedValue(
+        makeInst({
+          status: SessionInstanceStatus.Completed,
+          template: { waitlistEnabled: true },
+        }),
+      );
+      await service.patchInstance('usr-instr', 'inst-1', {
+        capacityOverride: 20,
+      });
+      expect(waitlistService.promoteIntoFreeSeats).not.toHaveBeenCalled();
+    });
+
     it('D6: rejects capacityOverride below confirmedCount', async () => {
       const inst = makeInst({ confirmedCount: 5 });
       instanceModel.findOne.mockResolvedValue(inst);
@@ -404,6 +479,196 @@ describe('SessionLifecycleService', () => {
   });
 
   // ─── FOLLOW-UP (Phase G) ──────────────────────────────────────────
+
+  describe('cancelDeletedGroupSessions', () => {
+    const seriesRow = (id: string, status: SessionTemplateStatus) => ({
+      id,
+      status,
+      update: jest.fn().mockResolvedValue(undefined),
+    });
+
+    it('stops the group’s members-only series and tells each booked person once', async () => {
+      const active = seriesRow('tmpl-a', SessionTemplateStatus.Active);
+      const ended = seriesRow('tmpl-e', SessionTemplateStatus.Ended);
+      templateModel.findAll.mockResolvedValue([
+        { id: 'tmpl-a' },
+        { id: 'tmpl-e' },
+      ]);
+      templateModel.findOne.mockImplementation((q: { where: { id: string } }) =>
+        Promise.resolve(q.where.id === 'tmpl-a' ? active : ended),
+      );
+      instanceModel.findAll
+        .mockResolvedValueOnce([{ id: 'i-1' }, { id: 'i-2' }])
+        .mockResolvedValueOnce([{ id: 'i-9' }]);
+      participantModel.findAll
+        .mockResolvedValueOnce([
+          { userId: 'usr-a' },
+          { userId: 'usr-a' },
+          { userId: 'usr-b' },
+        ])
+        .mockResolvedValueOnce([{ userId: 'usr-b' }]);
+
+      const result = await service.cancelDeletedGroupSessions(
+        'group-1',
+        'Runners',
+      );
+
+      const seriesQuery = (
+        templateModel.findAll.mock.calls[0] as [
+          { where: Record<string, unknown> },
+        ]
+      )[0].where;
+      expect(seriesQuery).toEqual({
+        groupId: 'group-1',
+        access: 'GROUP_ONLY',
+        status: [SessionTemplateStatus.Active, SessionTemplateStatus.Ended],
+      });
+      expect(instanceModel.update).toHaveBeenCalledWith(
+        {
+          status: SessionInstanceStatus.Cancelled,
+          cancelledAt: expect.any(Date),
+        },
+        expect.objectContaining({ where: { id: ['i-1', 'i-2'] } }),
+      );
+      expect(participantModel.update).toHaveBeenCalledWith(
+        expect.objectContaining({ status: SessionParticipantStatus.Cancelled }),
+        expect.objectContaining({
+          where: {
+            instanceId: ['i-1', 'i-2'],
+            status: [
+              SessionParticipantStatus.Confirmed,
+              SessionParticipantStatus.PendingApproval,
+              SessionParticipantStatus.Waitlisted,
+            ],
+          },
+        }),
+      );
+      // ACTIVE becomes CANCELLED; ENDED stays ENDED (no more top-ups either way).
+      expect(active.update).toHaveBeenCalledWith(
+        { status: SessionTemplateStatus.Cancelled, endedAt: expect.any(Date) },
+        expect.anything(),
+      );
+      expect(ended.update).not.toHaveBeenCalled();
+      expect(result).toEqual({
+        templateIds: ['tmpl-a', 'tmpl-e'],
+        cancelledInstances: 3,
+        notifiedUserIds: ['usr-a', 'usr-b'],
+      });
+      const told = notifyService.notify.mock.calls.map(
+        (
+          c: [{ userId: string; message: { key: string; params: unknown } }],
+        ) => [c[0].userId, c[0].message.key, c[0].message.params],
+      );
+      expect(told).toEqual([
+        [
+          'usr-a',
+          'session.groupDeletedBookingsEnded',
+          { group: 'Runners', count: 2 },
+        ],
+        [
+          'usr-b',
+          'session.groupDeletedBookingsEnded',
+          { group: 'Runners', count: 2 },
+        ],
+      ]);
+    });
+
+    it('still stops a series with nothing scheduled, so no more are made', async () => {
+      const active = seriesRow('tmpl-a', SessionTemplateStatus.Active);
+      templateModel.findAll.mockResolvedValue([{ id: 'tmpl-a' }]);
+      templateModel.findOne.mockResolvedValue(active);
+      instanceModel.findAll.mockResolvedValue([]);
+
+      await expect(
+        service.cancelDeletedGroupSessions('group-1', 'Runners'),
+      ).resolves.toMatchObject({
+        templateIds: ['tmpl-a'],
+        cancelledInstances: 0,
+      });
+      expect(active.update).toHaveBeenCalled();
+      expect(instanceModel.update).not.toHaveBeenCalled();
+      expect(notifyService.notify).not.toHaveBeenCalled();
+    });
+
+    it('keeps going when one series fails', async () => {
+      templateModel.findAll.mockResolvedValue([
+        { id: 'tmpl-x' },
+        { id: 'tmpl-a' },
+      ]);
+      templateModel.findOne
+        .mockRejectedValueOnce(new Error('lock timeout'))
+        .mockResolvedValueOnce(
+          seriesRow('tmpl-a', SessionTemplateStatus.Active),
+        );
+      instanceModel.findAll.mockResolvedValue([{ id: 'i-1' }]);
+      participantModel.findAll.mockResolvedValue([{ userId: 'usr-a' }]);
+
+      await expect(
+        service.cancelDeletedGroupSessions('group-1', 'Runners'),
+      ).resolves.toMatchObject({
+        templateIds: ['tmpl-a'],
+        cancelledInstances: 1,
+      });
+      expect(notifyService.notify).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('promoteAfterSeriesCapacityRaise', () => {
+    it('fills every future occurrence that follows the series and has people waiting', async () => {
+      instanceModel.findAll.mockResolvedValue([
+        { id: 'inst-1' },
+        { id: 'inst-2' },
+      ]);
+      instanceModel.findOne.mockImplementation((q: { where: { id: string } }) =>
+        Promise.resolve(
+          makeInst({ id: q.where.id, template: { waitlistEnabled: true } }),
+        ),
+      );
+      waitlistService.promoteIntoFreeSeats
+        .mockResolvedValueOnce([{ participantId: 'p-1', userId: 'usr-a' }])
+        .mockResolvedValueOnce([
+          { participantId: 'p-2', userId: 'usr-b' },
+          { participantId: 'p-3', userId: 'usr-c' },
+        ]);
+
+      await expect(
+        service.promoteAfterSeriesCapacityRaise('tmpl-1'),
+      ).resolves.toBe(3);
+
+      const where = (
+        instanceModel.findAll.mock.calls[0] as [
+          { where: Record<string, unknown> },
+        ]
+      )[0].where;
+      expect(where).toMatchObject({
+        templateId: 'tmpl-1',
+        status: SessionInstanceStatus.Scheduled,
+        capacityOverride: null,
+      });
+      expect(where.waitlistedCount).toEqual({ [Op.gt]: 0 });
+      expect(notifyService.notify).toHaveBeenCalledTimes(3);
+    });
+
+    it('keeps going when one occurrence fails, and tells nobody about it', async () => {
+      instanceModel.findAll.mockResolvedValue([
+        { id: 'inst-1' },
+        { id: 'inst-2' },
+      ]);
+      instanceModel.findOne.mockImplementation((q: { where: { id: string } }) =>
+        Promise.resolve(
+          makeInst({ id: q.where.id, template: { waitlistEnabled: true } }),
+        ),
+      );
+      waitlistService.promoteIntoFreeSeats
+        .mockRejectedValueOnce(new Error('deadlock'))
+        .mockResolvedValueOnce([{ participantId: 'p-2', userId: 'usr-b' }]);
+
+      await expect(
+        service.promoteAfterSeriesCapacityRaise('tmpl-1'),
+      ).resolves.toBe(1);
+      expect(notifyService.notify).toHaveBeenCalledTimes(1);
+    });
+  });
 
   describe('followUp', () => {
     const pastInstance = () =>

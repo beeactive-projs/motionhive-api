@@ -8,6 +8,7 @@ import { SessionInstance } from '../entities/session-instance.entity';
 import { VenueService } from '../../venue/venue.service';
 import { GroupService } from '../../group/group.service';
 import { SearchIndexService } from '../../search/search-index.service';
+import { SessionLifecycleService } from './session-lifecycle.service';
 import { SessionTemplateStatus } from '../entities/session.enums';
 import { makeSilentLogger } from '../../../../test/helpers/sequelize-mocks';
 
@@ -68,6 +69,7 @@ describe('SessionTemplateService.generateDueRecurringForAll', () => {
         { provide: VenueService, useValue: {} },
         { provide: GroupService, useValue: {} },
         { provide: SearchIndexService, useValue: {} },
+        { provide: SessionLifecycleService, useValue: {} },
         { provide: WINSTON_MODULE_NEST_PROVIDER, useValue: makeSilentLogger() },
       ],
     }).compile();

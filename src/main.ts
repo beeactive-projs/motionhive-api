@@ -14,6 +14,7 @@ import * as express from 'express';
 import { HttpExceptionFilter } from './common/filters/http-exception.filter';
 import { validationErrorBody } from './common/i18n';
 import { setupBullBoard } from './modules/jobs/bull-board.setup';
+import { corsOrigins, swaggerEnabled } from './config/http-exposure';
 
 /** How long shutdown lets open connections finish before cutting them. */
 const SHUTDOWN_GRACE_MS = 8_000;
@@ -86,7 +87,101 @@ async function bootstrap() {
     }),
   );
 
-  // Swagger Configuration
+  // Swagger on a local run only, never on a deploy: it lists every route,
+  // the admin ones too (config/http-exposure.ts).
+  const docsMounted = swaggerEnabled(process.env);
+  if (docsMounted) {
+    mountSwagger(app);
+  }
+
+  // Origins and why: config/http-exposure.ts.
+  const allowedOrigins = corsOrigins(process.env);
+
+  app.enableCors({
+    origin: allowedOrigins,
+    // No cookies anywhere: the apps send a bearer token, and no request
+    // is made with credentials. Without this, an allowed origin that is
+    // not ours (any *.vercel.app host) can never ride a cookie added later.
+    credentials: false,
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowedHeaders: [
+      'Content-Type',
+      'Authorization',
+      'X-Request-ID',
+      'Accept',
+      // The apps send their UI language; error messages answer in it.
+      'Accept-Language',
+      'Origin',
+    ],
+    exposedHeaders: ['X-Request-ID'],
+    maxAge: 3600,
+  });
+
+  // No-op when BULL_BOARD_USER / BULL_BOARD_PASSWORD aren't set —
+  // see modules/jobs/bull-board.setup.ts.
+  setupBullBoard(app, new Logger('BullBoard'));
+
+  const port = process.env.PORT || 3000;
+  await app.listen(port, '0.0.0.0');
+
+  const appLogger = new Logger('Bootstrap');
+  appLogger.log(`🚀 Application is running on: http://localhost:${port}`);
+  appLogger.log(`📝 Environment: ${process.env.NODE_ENV || 'development'}`);
+  if (docsMounted) {
+    appLogger.log(`📚 Swagger docs: http://localhost:${port}/api/docs`);
+  }
+  appLogger.log(`💚 Health check: http://localhost:${port}/health`);
+
+  // Railway/Docker sends SIGTERM on container stop; we drain in-flight
+  // requests + close DB connections before exiting.
+  //
+  // The HTTP server only finishes closing once every open connection has
+  // ended, and a long-lived stream (the messaging SSE an open app holds)
+  // never ends on its own: `app.close()` then waits forever with the port
+  // already released, so nothing serves and nothing exits. Past the grace
+  // period the remaining connections are cut, and if shutdown still hangs
+  // the process goes anyway.
+  const gracefulShutdown = async (signal: string) => {
+    appLogger.warn(`${signal} signal received: closing HTTP server`);
+
+    setTimeout(() => {
+      appLogger.warn(
+        `Shutdown still waiting after ${SHUTDOWN_GRACE_MS / 1000}s: closing open connections`,
+      );
+      app.getHttpServer().closeAllConnections();
+      setTimeout(() => process.exit(1), SHUTDOWN_FORCE_MS).unref();
+    }, SHUTDOWN_GRACE_MS).unref();
+
+    try {
+      await app.close();
+      appLogger.log('HTTP server closed successfully');
+      process.exit(0);
+    } catch (error) {
+      appLogger.error('Error during shutdown:', error);
+      process.exit(1);
+    }
+  };
+
+  process.on('SIGTERM', () => {
+    void gracefulShutdown('SIGTERM');
+  });
+  process.on('SIGINT', () => {
+    void gracefulShutdown('SIGINT');
+  });
+
+  process.on('uncaughtException', (error) => {
+    appLogger.error('Uncaught Exception:', error);
+    process.exit(1);
+  });
+
+  process.on('unhandledRejection', (reason, promise) => {
+    appLogger.error('Unhandled Rejection at:', promise, 'reason:', reason);
+    process.exit(1);
+  });
+}
+
+/** The API reference at /api/docs. */
+function mountSwagger(app: NestExpressApplication): void {
   const config = new DocumentBuilder()
     .setTitle('MotionHive API')
     .setDescription(
@@ -217,137 +312,6 @@ A comprehensive REST API for managing fitness training sessions, trainers, and c
       filter: true,
       tagsSorter: 'alpha',
     },
-  });
-
-  const productionOrigins = (
-    [
-      process.env.FRONTEND_URL,
-      'https://motionhive.fit',
-      'https://www.motionhive.fit',
-      'https://app.motionhive.fit',
-      'https://dev.motionhive.fit',
-      'https://dev.app.motionhive.fit',
-      'https://app-dev.motionhive.fit',
-      'https://admin.motionhive.fit',
-      'https://admin-dev.motionhive.fit',
-      'https://dev.admin.motionhive.fit',
-      // Capacitor WebView origins (mobile app): iOS / Android
-      'capacitor://localhost',
-      'https://localhost',
-      /\.vercel\.app$/,
-      /\.railway\.app$/,
-      /\.netlify\.app$/,
-    ] as (string | RegExp | undefined)[]
-  ).filter((o): o is string | RegExp => Boolean(o));
-
-  const developmentOrigins = [
-    'http://localhost:4200',
-    'http://localhost:4203', // admin app
-    'http://localhost:3000',
-    'http://localhost:8100',
-    'http://localhost:5173',
-    'http://localhost:8080',
-    'http://127.0.0.1:4200',
-    'http://127.0.0.1:4203', // admin app
-    'http://127.0.0.1:3000',
-    'http://127.0.0.1:8100',
-    // The Capacitor app is not served over http — its WebView has its own
-    // origin, and without these the browser discards every reply as
-    // cross-origin. The symptom is not a network error: the request
-    // succeeds, the response is thrown away, and a login looks like wrong
-    // credentials.
-    'capacitor://localhost', // iOS
-    'https://localhost', // Android, Capacitor 6+ default androidScheme
-    'http://localhost', // Android, androidScheme 'http'
-    'ionic://localhost', // iOS, Capacitor 2 and earlier
-  ];
-
-  // Comma-separated extra origins for prod (e.g. tunnel hosts during a
-  // demo). DEV_ORIGINS=http://localhost:4200,http://192.168.1.100:4200
-  const additionalDevOrigins = process.env.DEV_ORIGINS
-    ? process.env.DEV_ORIGINS.split(',').map((origin) => origin.trim())
-    : [];
-
-  const allowedOrigins =
-    process.env.NODE_ENV === 'production'
-      ? [...productionOrigins, ...additionalDevOrigins]
-      : developmentOrigins;
-
-  app.enableCors({
-    origin: allowedOrigins,
-    credentials: true,
-    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: [
-      'Content-Type',
-      'Authorization',
-      'X-Request-ID',
-      'Accept',
-      // The apps send their UI language; error messages answer in it.
-      'Accept-Language',
-      'Origin',
-    ],
-    exposedHeaders: ['X-Request-ID'],
-    maxAge: 3600,
-  });
-
-  // No-op when BULL_BOARD_USER / BULL_BOARD_PASSWORD aren't set —
-  // see modules/jobs/bull-board.setup.ts.
-  setupBullBoard(app, new Logger('BullBoard'));
-
-  const port = process.env.PORT || 3000;
-  await app.listen(port, '0.0.0.0');
-
-  const appLogger = new Logger('Bootstrap');
-  appLogger.log(`🚀 Application is running on: http://localhost:${port}`);
-  appLogger.log(`📝 Environment: ${process.env.NODE_ENV || 'development'}`);
-  appLogger.log(`📚 Swagger docs: http://localhost:${port}/api/docs`);
-  appLogger.log(`💚 Health check: http://localhost:${port}/health`);
-
-  // Railway/Docker sends SIGTERM on container stop; we drain in-flight
-  // requests + close DB connections before exiting.
-  //
-  // The HTTP server only finishes closing once every open connection has
-  // ended, and a long-lived stream (the messaging SSE an open app holds)
-  // never ends on its own: `app.close()` then waits forever with the port
-  // already released, so nothing serves and nothing exits. Past the grace
-  // period the remaining connections are cut, and if shutdown still hangs
-  // the process goes anyway.
-  const gracefulShutdown = async (signal: string) => {
-    appLogger.warn(`${signal} signal received: closing HTTP server`);
-
-    setTimeout(() => {
-      appLogger.warn(
-        `Shutdown still waiting after ${SHUTDOWN_GRACE_MS / 1000}s: closing open connections`,
-      );
-      app.getHttpServer().closeAllConnections();
-      setTimeout(() => process.exit(1), SHUTDOWN_FORCE_MS).unref();
-    }, SHUTDOWN_GRACE_MS).unref();
-
-    try {
-      await app.close();
-      appLogger.log('HTTP server closed successfully');
-      process.exit(0);
-    } catch (error) {
-      appLogger.error('Error during shutdown:', error);
-      process.exit(1);
-    }
-  };
-
-  process.on('SIGTERM', () => {
-    void gracefulShutdown('SIGTERM');
-  });
-  process.on('SIGINT', () => {
-    void gracefulShutdown('SIGINT');
-  });
-
-  process.on('uncaughtException', (error) => {
-    appLogger.error('Uncaught Exception:', error);
-    process.exit(1);
-  });
-
-  process.on('unhandledRejection', (reason, promise) => {
-    appLogger.error('Unhandled Rejection at:', promise, 'reason:', reason);
-    process.exit(1);
   });
 }
 
