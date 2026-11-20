@@ -411,6 +411,54 @@ describe('SessionDiscoverService', () => {
       expect(tpl['capacity']).toBeUndefined();
     });
 
+    // The page said "To be announced" for a session at its series' usual
+    // place: the read loaded only the per-occurrence override.
+    it("reads the series' venue with the session, public fields only", async () => {
+      instanceModel.findOne.mockResolvedValue(fakeInst({}));
+      await service.getInstancePublic('inst-1', null);
+
+      const call = instanceModel.findOne.mock.calls[0][0] as {
+        include: Array<{
+          model: unknown;
+          as?: string;
+          attributes?: string[];
+          include?: Array<{ as?: string; attributes?: string[] }>;
+        }>;
+      };
+      const template = call.include.find((i) => i.model === SessionTemplate);
+      const venue = template?.include?.find((i) => i.as === 'venue');
+      expect(venue?.attributes).toEqual(['id', 'name', 'city', 'kind']);
+      const override = call.include.find((i) => i.as === 'venueOverride');
+      expect(override?.attributes).toEqual(['id', 'name', 'city', 'kind']);
+    });
+
+    it('keeps the venue off the blocked shape', async () => {
+      const inst = fakeInst({
+        access: SessionAccess.GroupOnly,
+        groupId: 'grp-1',
+      });
+      (inst.template as unknown as { venue: object }).venue = {
+        id: 'v-1',
+        name: 'Members gym',
+        city: 'Cluj',
+      };
+      (inst as unknown as { venueOverride: object }).venueOverride = {
+        id: 'v-2',
+        name: 'Secret park',
+      };
+      instanceModel.findOne.mockResolvedValue(inst);
+      accessService.evaluate.mockResolvedValue({
+        canView: false,
+        isOwner: false,
+        isParticipant: false,
+        isEligible: false,
+      });
+      const result = await service.getInstancePublic('inst-1', 'usr-x');
+      const json = JSON.stringify(result);
+      expect(json).not.toContain('Members gym');
+      expect(json).not.toContain('Secret park');
+    });
+
     it('returns 404 when instance missing', async () => {
       instanceModel.findOne.mockResolvedValue(null);
       await expect(service.getInstancePublic('inst-x', null)).rejects.toThrow(

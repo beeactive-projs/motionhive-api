@@ -368,25 +368,7 @@ export class SessionDiscoverService {
   ): Promise<SessionInstance | BlockedInstanceShape> {
     const instance = await this.instanceModel.findOne({
       where: { id: instanceId },
-      include: [
-        {
-          model: SessionTemplate,
-          attributes: [...PUBLIC_TEMPLATE_FIELDS, 'status'],
-          required: true,
-        },
-        {
-          model: User,
-          as: 'instructor',
-          attributes: [...PUBLIC_INSTRUCTOR_FIELDS],
-          required: false,
-        },
-        {
-          model: Venue,
-          as: 'venueOverride',
-          attributes: [...PUBLIC_VENUE_FIELDS],
-          required: false,
-        },
-      ],
+      include: this.detailIncludes(),
       attributes: this.publicInstanceAttributes(),
     });
     if (!instance) throw new NotFoundException(apiError('session.notFound'));
@@ -479,6 +461,43 @@ export class SessionDiscoverService {
     };
   }
 
+  /**
+   * What one session's page reads with it: the series, the coach and the
+   * place. The series' own venue rides on the template, as in the list;
+   * `venueOverride` only carries a per-occurrence change, so without it a
+   * session at its usual place read "To be announced". The blocked shape
+   * copies named template fields only, so neither venue reaches it.
+   */
+  private detailIncludes(): IncludeOptions[] {
+    return [
+      {
+        model: SessionTemplate,
+        attributes: [...PUBLIC_TEMPLATE_FIELDS, 'status'],
+        required: true,
+        include: [
+          {
+            model: Venue,
+            as: 'venue',
+            attributes: [...PUBLIC_VENUE_FIELDS],
+            required: false,
+          },
+        ],
+      },
+      {
+        model: User,
+        as: 'instructor',
+        attributes: [...PUBLIC_INSTRUCTOR_FIELDS],
+        required: false,
+      },
+      {
+        model: Venue,
+        as: 'venueOverride',
+        attributes: [...PUBLIC_VENUE_FIELDS],
+        required: false,
+      },
+    ];
+  }
+
   private async findNextUpcoming(
     templateId: string,
   ): Promise<SessionInstance | null> {
@@ -488,25 +507,7 @@ export class SessionDiscoverService {
         status: SessionInstanceStatus.Scheduled,
         startAt: { [Op.gte]: new Date() },
       },
-      include: [
-        {
-          model: SessionTemplate,
-          attributes: [...PUBLIC_TEMPLATE_FIELDS, 'status'],
-          required: true,
-        },
-        {
-          model: User,
-          as: 'instructor',
-          attributes: [...PUBLIC_INSTRUCTOR_FIELDS],
-          required: false,
-        },
-        {
-          model: Venue,
-          as: 'venueOverride',
-          attributes: [...PUBLIC_VENUE_FIELDS],
-          required: false,
-        },
-      ],
+      include: this.detailIncludes(),
       order: [['startAt', 'ASC']],
       attributes: this.publicInstanceAttributes(),
     });
